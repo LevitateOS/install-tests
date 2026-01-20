@@ -115,6 +115,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "distro-spec"
+version = "0.1.0"
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,6 +131,7 @@ dependencies = [
  "anyhow",
  "clap",
  "colored",
+ "distro-spec",
  "serde",
  "serde_json",
 ]

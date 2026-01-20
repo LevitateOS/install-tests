@@ -5,6 +5,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use distro_spec::PartitionLayout;
 use std::time::{Duration, Instant};
 
 /// Step 3: Identify target disk
@@ -54,11 +55,9 @@ impl Step for PartitionDisk {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Use sfdisk for non-interactive partitioning
-        // Layout: 512M EFI (type EF00), rest for root (type 8300)
-        let partition_script = r#"label: gpt
-,512M,U,*
-,,L
-"#;
+        // Layout from levitate-spec
+        let layout = PartitionLayout::default();
+        let partition_script = layout.to_sfdisk_script();
 
         // Write partition table
         let sfdisk_result = console.exec(

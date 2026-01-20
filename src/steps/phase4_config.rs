@@ -5,6 +5,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use distro_spec::levitate::{DEFAULT_HOSTNAME, default_user};
 use std::time::{Duration, Instant};
 
 /// Step 10: Set timezone
@@ -113,7 +114,8 @@ impl Step for SetHostname {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        let hostname = "levitateos";
+        // Use hostname from levitate-spec
+        let hostname = DEFAULT_HOSTNAME;
 
         // Write hostname
         console.write_file("/mnt/etc/hostname", &format!("{}\n", hostname))?;
@@ -207,11 +209,13 @@ impl Step for CreateUser {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        let username = "levitate";
+        // Use user spec from distro-spec (LevitateOS defaults)
+        let user = default_user("levitate");
+        let username = &user.username;
 
-        // Create user with home directory
+        // Create user with home directory using generated command
         let useradd_result = console.exec_chroot(
-            &format!("useradd -m -G wheel -s /bin/bash {}", username),
+            &user.useradd_command(),
             Duration::from_secs(10),
         )?;
 

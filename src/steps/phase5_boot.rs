@@ -5,6 +5,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use distro_spec::levitate::{BootEntry, LoaderConfig, ENABLED_SERVICES};
 use std::time::{Duration, Instant};
 
 /// Step 15: Install systemd-boot bootloader
@@ -45,35 +46,26 @@ impl Step for InstallBootloader {
         let uuid_result = console.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
         let root_uuid = uuid_result.output.trim();
 
-        // Create loader.conf
-        let loader_conf = "default levitateos.conf
-timeout 3
-console-mode max
-editor no
-";
-        console.write_file("/mnt/boot/loader/loader.conf", loader_conf)?;
+        // Create loader.conf using levitate-spec
+        let mut loader_config = LoaderConfig::default();
+        loader_config.editor = false; // Disable for security
+        loader_config.console_mode = Some("max".to_string());
+        console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
 
-        // Create boot entry
-        let entry = format!(
-            "title   LevitateOS
-linux   /vmlinuz
-initrd  /initramfs.img
-options root=UUID={} rw quiet
-",
-            root_uuid
-        );
-        console.write_file("/mnt/boot/loader/entries/levitateos.conf", &entry)?;
+        // Create boot entry using levitate-spec
+        let boot_entry = BootEntry::with_root(format!("UUID={}", root_uuid));
+        console.write_file(&format!("/mnt{}", boot_entry.entry_path()), &boot_entry.to_entry_file())?;
 
         // Verify boot entry exists
         let verify = console.exec(
-            "cat /mnt/boot/loader/entries/levitateos.conf",
+            &format!("cat /mnt{}", boot_entry.entry_path()),
             Duration::from_secs(5),
         )?;
 
         if verify.output.contains(root_uuid) {
             result.add_check(
                 "Boot entry created",
-                CheckResult::Pass("levitateos.conf with correct UUID".to_string()),
+                CheckResult::Pass(format!("{} with correct UUID", boot_entry.filename)),
             );
         } else {
             result.add_check(
@@ -101,24 +93,33 @@ impl Step for EnableServices {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Services to enable
-        let services = [
-            "systemd-networkd",
-            "systemd-resolved",
-            "sshd",
-        ];
-
-        for service in services {
+        // Services to enable from levitate-spec
+        for service in ENABLED_SERVICES {
             let enable_result = console.exec_chroot(
-                &format!("systemctl enable {} 2>/dev/null || true", service),
+                &service.enable_command(),
                 Duration::from_secs(10),
             )?;
 
-            // We use || true because some services might not exist in minimal stage3
-            result.add_check(
-                &format!("{} enable attempted", service),
-                CheckResult::Pass(format!("exit {}", enable_result.exit_code)),
-            );
+            if enable_result.success() {
+                result.add_check(
+                    &format!("{} enabled", service.name),
+                    CheckResult::Pass(service.description.to_string()),
+                );
+            } else if service.required {
+                result.add_check(
+                    &format!("{} enabled", service.name),
+                    CheckResult::Fail {
+                        expected: "systemctl enable exit 0".to_string(),
+                        actual: format!("exit {}", enable_result.exit_code),
+                    },
+                );
+            } else {
+                // Optional service failed, just note it
+                result.add_check(
+                    &format!("{} enable attempted", service.name),
+                    CheckResult::Pass(format!("Optional, exit {}", enable_result.exit_code)),
+                );
+            }
         }
 
         // Exit chroot since we're done with installation

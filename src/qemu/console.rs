@@ -3,6 +3,7 @@
 //! Handles command execution with exit code capture and chroot state tracking.
 
 use anyhow::{bail, Context, Result};
+use distro_spec::{mounts_in_order, mounts_in_unmount_order};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -173,19 +174,23 @@ impl Console {
             bail!("Already in chroot at {:?}", self.chroot_path);
         }
 
-        // Bind mount essential filesystems
-        let mounts = [
-            ("--bind /dev", format!("{}/dev", path)),
-            ("--bind /proc", format!("{}/proc", path)),
-            ("--bind /sys", format!("{}/sys", path)),
-            ("--bind /run", format!("{}/run", path)),
-        ];
-
-        for (flags, target) in mounts {
-            self.exec_ok(
-                &format!("mount {} {}", flags, target),
+        // Bind mount essential filesystems in order from levitate-spec
+        for mount in mounts_in_order() {
+            let target = mount.full_target(path);
+            let result = self.exec(
+                &mount.mount_command(path),
                 Duration::from_secs(5),
             )?;
+
+            if !result.success() {
+                if mount.required {
+                    bail!(
+                        "Failed to mount {} -> {}: {}",
+                        mount.source, target, result.output
+                    );
+                }
+                // Non-required mount failed, continue
+            }
         }
 
         self.in_chroot = true;
@@ -225,10 +230,9 @@ impl Console {
         let path = self.chroot_path.take().unwrap();
         self.in_chroot = false;
 
-        // Unmount in reverse order
-        let mounts = ["/run", "/sys", "/proc", "/dev"];
-        for mount in mounts {
-            let target = format!("{}{}", path, mount);
+        // Unmount in reverse order from levitate-spec
+        for mount in mounts_in_unmount_order() {
+            let target = mount.full_target(&path);
             // Use lazy unmount to avoid busy errors
             let _ = self.exec(&format!("umount -l {}", target), Duration::from_secs(5));
         }
