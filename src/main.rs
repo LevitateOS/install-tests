@@ -26,7 +26,7 @@ struct Cli {
 enum Commands {
     /// Run installation tests
     Run {
-        /// Run only a specific step (1-16)
+        /// Run only a specific step (1-17)
         #[arg(long)]
         step: Option<usize>,
 
@@ -37,6 +37,10 @@ enum Commands {
         /// Path to leviso directory (default: ../leviso)
         #[arg(long, default_value = "../leviso")]
         leviso_dir: PathBuf,
+
+        /// Path to ISO file (default: <leviso_dir>/output/leviso.iso)
+        #[arg(long)]
+        iso: Option<PathBuf>,
 
         /// Disk size for virtual disk
         #[arg(long, default_value = "8G")]
@@ -55,8 +59,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { step, phase, leviso_dir, disk_size, keep_vm } => {
-            run_tests(step, phase, &leviso_dir, &disk_size, keep_vm)
+        Commands::Run { step, phase, leviso_dir, iso, disk_size, keep_vm } => {
+            run_tests(step, phase, &leviso_dir, iso, &disk_size, keep_vm)
         }
         Commands::List => {
             list_steps();
@@ -87,6 +91,7 @@ fn run_tests(
     step_num: Option<usize>,
     phase_num: Option<usize>,
     leviso_dir: &PathBuf,
+    iso_path: Option<PathBuf>,
     disk_size: &str,
     _keep_vm: bool,
 ) -> Result<()> {
@@ -96,6 +101,7 @@ fn run_tests(
     // Validate leviso directory
     let kernel_path = leviso_dir.join("downloads/iso-contents/images/pxeboot/vmlinuz");
     let initramfs_path = leviso_dir.join("output/initramfs.cpio.gz");
+    let iso_path = iso_path.unwrap_or_else(|| leviso_dir.join("output/leviso.iso"));
 
     if !kernel_path.exists() {
         bail!(
@@ -109,9 +115,16 @@ fn run_tests(
             initramfs_path.display()
         );
     }
+    if !iso_path.exists() {
+        bail!(
+            "ISO not found at {}. Run 'cargo run -- iso' in leviso first.",
+            iso_path.display()
+        );
+    }
 
     println!("  Kernel:    {}", kernel_path.display());
     println!("  Initramfs: {}", initramfs_path.display());
+    println!("  ISO:       {}", iso_path.display());
 
     // Find OVMF for UEFI boot
     let ovmf = find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
@@ -132,6 +145,7 @@ fn run_tests(
         .initrd(initramfs_path)
         .append("console=tty0 console=ttyS0,115200n8 rdinit=/init panic=30")
         .disk(disk_path.clone())
+        .cdrom(iso_path)
         .uefi(ovmf)
         .nographic()
         .no_reboot()

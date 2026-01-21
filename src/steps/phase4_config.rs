@@ -1,6 +1,6 @@
 //! Phase 4: System configuration steps.
 //!
-//! Steps 10-14: Timezone, locale, hostname, root password, user creation.
+//! Steps 11-15: Timezone, locale, hostname, root password, user creation.
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub struct SetTimezone;
 
 impl Step for SetTimezone {
-    fn num(&self) -> usize { 10 }
+    fn num(&self) -> usize { 11 }
     fn name(&self) -> &str { "Set Timezone" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -67,7 +67,7 @@ impl Step for SetTimezone {
 pub struct ConfigureLocale;
 
 impl Step for ConfigureLocale {
-    fn num(&self) -> usize { 11 }
+    fn num(&self) -> usize { 12 }
     fn name(&self) -> &str { "Configure Locale" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -107,7 +107,7 @@ impl Step for ConfigureLocale {
 pub struct SetHostname;
 
 impl Step for SetHostname {
-    fn num(&self) -> usize { 12 }
+    fn num(&self) -> usize { 13 }
     fn name(&self) -> &str { "Set Hostname" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -130,11 +130,16 @@ impl Step for SetHostname {
         );
         console.write_file("/mnt/etc/hosts", &hosts)?;
 
-        // Verify
+        // Verify (use contains since output may include command echo)
         let verify_hostname = console.exec("cat /mnt/etc/hostname", Duration::from_secs(5))?;
         let verify_hosts = console.exec("cat /mnt/etc/hosts", Duration::from_secs(5))?;
 
-        if verify_hostname.output.trim() == hostname {
+        // Check if hostname appears as a separate line in output
+        let hostname_found = verify_hostname.output
+            .lines()
+            .any(|line| line.trim() == hostname);
+
+        if hostname_found {
             result.add_check(
                 "Hostname set",
                 CheckResult::Pass(hostname.to_string()),
@@ -165,7 +170,7 @@ impl Step for SetHostname {
 pub struct SetRootPassword;
 
 impl Step for SetRootPassword {
-    fn num(&self) -> usize { 13 }
+    fn num(&self) -> usize { 14 }
     fn name(&self) -> &str { "Set Root Password" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -202,7 +207,7 @@ impl Step for SetRootPassword {
 pub struct CreateUser;
 
 impl Step for CreateUser {
-    fn num(&self) -> usize { 14 }
+    fn num(&self) -> usize { 15 }
     fn name(&self) -> &str { "Create User Account" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -213,9 +218,29 @@ impl Step for CreateUser {
         let user = default_user("levitate");
         let username = &user.username;
 
-        // Create user with home directory using generated command
+        // First, check which groups actually exist in the target system
+        let mut available_groups = Vec::new();
+        for group in user.groups.iter() {
+            let check = console.exec_chroot(
+                &format!("getent group {}", group),
+                Duration::from_secs(5),
+            )?;
+            if check.exit_code == 0 {
+                available_groups.push(group.as_str());
+            }
+        }
+
+        // Build useradd command with only available groups
+        let groups_str = available_groups.join(",");
+        let useradd_cmd = if available_groups.is_empty() {
+            format!("useradd -m -s {} {}", user.shell, username)
+        } else {
+            format!("useradd -m -s {} -G {} {}", user.shell, groups_str, username)
+        };
+
+        // Create user with home directory
         let useradd_result = console.exec_chroot(
-            &user.useradd_command(),
+            &useradd_cmd,
             Duration::from_secs(10),
         )?;
 

@@ -252,12 +252,16 @@ impl Console {
 
     /// Write a file directly (useful for configs)
     pub fn write_file(&mut self, path: &str, content: &str) -> Result<()> {
-        // Use heredoc to write content
-        let escaped = content.replace('\\', "\\\\");
-        let cmd = format!(
-            "cat > {} << 'INSTALL_TEST_EOF'\n{}\nINSTALL_TEST_EOF",
-            path, escaped
-        );
+        // Use printf with escaped content (heredocs don't work well with serial console)
+        // Escape special characters for shell
+        let escaped = content
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`")
+            .replace('\n', "\\n");
+
+        let cmd = format!("printf \"{}\" > {}", escaped, path);
         self.exec_ok(&cmd, Duration::from_secs(10))?;
         Ok(())
     }

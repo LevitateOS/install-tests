@@ -55,7 +55,7 @@ impl QemuBuilder {
         self
     }
 
-    /// Set ISO for CD-ROM boot
+    /// Set ISO for CD-ROM (exposed as /dev/sr0 via virtio-scsi)
     pub fn cdrom(mut self, path: PathBuf) -> Self {
         self.cdrom = Some(path);
         self
@@ -121,9 +121,14 @@ impl QemuBuilder {
             cmd.args(["-append", append]);
         }
 
-        // CD-ROM boot
+        // CD-ROM (use virtio-scsi for better compatibility with modern kernels)
         if let Some(cdrom) = &self.cdrom {
-            cmd.args(["-cdrom", cdrom.to_str().unwrap()]);
+            // Add virtio-scsi controller and attach CD-ROM as SCSI device
+            cmd.args([
+                "-device", "virtio-scsi-pci,id=scsi0",
+                "-device", "scsi-cd,drive=cdrom0,bus=scsi0.0",
+                "-drive", &format!("id=cdrom0,if=none,format=raw,readonly=on,file={}", cdrom.display()),
+            ]);
         }
 
         // Virtio disk

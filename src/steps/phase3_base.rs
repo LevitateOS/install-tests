@@ -1,6 +1,6 @@
 //! Phase 3: Base system installation steps.
 //!
-//! Steps 7-9: Extract tarball, generate fstab, setup chroot.
+//! Steps 7-10: Mount install media, extract tarball, generate fstab, setup chroot.
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
@@ -9,31 +9,109 @@ use distro_spec::levitate::{TARBALL_NAME, paths::TARBALL_SEARCH_PATHS};
 use distro_spec::shared::partitions::{EFI_FILESYSTEM, ROOT_FILESYSTEM};
 use std::time::{Duration, Instant};
 
-/// Step 7: Extract stage3 tarball
+/// Step 7: Mount installation media (CDROM)
+pub struct MountInstallMedia;
+
+impl Step for MountInstallMedia {
+    fn num(&self) -> usize { 7 }
+    fn name(&self) -> &str { "Mount Installation Media" }
+
+    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+        let start = Instant::now();
+        let mut result = StepResult::new(self.num(), self.name());
+
+        // Check for /dev/sr0 (CDROM device via virtio-scsi)
+        let lsblk = console.exec("lsblk -d -o NAME,TYPE | grep rom", Duration::from_secs(5))?;
+
+        if lsblk.output.contains("sr0") {
+            result.add_check(
+                "CDROM device found",
+                CheckResult::Pass("/dev/sr0 detected".to_string()),
+            );
+        } else {
+            result.add_check(
+                "CDROM device found",
+                CheckResult::Fail {
+                    expected: "/dev/sr0 (virtio-scsi CDROM)".to_string(),
+                    actual: format!("Found: {}", lsblk.output.trim()),
+                },
+            );
+            result.fail("Ensure ISO is attached as virtio-scsi CDROM");
+            return Ok(result);
+        }
+
+        // Create mount point and mount CDROM
+        console.exec("mkdir -p /mnt/cdrom", Duration::from_secs(5))?;
+        let mount_result = console.exec("mount /dev/sr0 /mnt/cdrom", Duration::from_secs(10))?;
+
+        if mount_result.success() {
+            result.add_check(
+                "CDROM mounted",
+                CheckResult::Pass("/dev/sr0 -> /mnt/cdrom".to_string()),
+            );
+        } else {
+            result.add_check(
+                "CDROM mounted",
+                CheckResult::Fail {
+                    expected: "mount exit 0".to_string(),
+                    actual: format!("exit {}: {}", mount_result.exit_code, mount_result.output),
+                },
+            );
+            result.fail("Check kernel modules: virtio_scsi, cdrom, sr_mod, isofs");
+            return Ok(result);
+        }
+
+        // Verify tarball is accessible
+        let tarball_check = console.exec(
+            &format!("ls -la /mnt/cdrom/{}", TARBALL_NAME),
+            Duration::from_secs(5),
+        )?;
+
+        if tarball_check.success() && tarball_check.output.contains(TARBALL_NAME) {
+            result.add_check(
+                "Tarball accessible",
+                CheckResult::Pass(format!("/mnt/cdrom/{}", TARBALL_NAME)),
+            );
+        } else {
+            result.add_check(
+                "Tarball accessible",
+                CheckResult::Fail {
+                    expected: format!("{} on CDROM", TARBALL_NAME),
+                    actual: "Tarball not found on CDROM".to_string(),
+                },
+            );
+            result.fail("Ensure ISO contains the base tarball");
+        }
+
+        result.duration = start.elapsed();
+        Ok(result)
+    }
+}
+
+/// Step 8: Extract stage3 tarball
 pub struct ExtractTarball;
 
 impl Step for ExtractTarball {
-    fn num(&self) -> usize { 7 }
+    fn num(&self) -> usize { 8 }
     fn name(&self) -> &str { "Extract Stage3 Tarball" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Build search command from levitate-spec paths
-        let search_cmd = TARBALL_SEARCH_PATHS
-            .iter()
-            .map(|p| format!("ls -la {} 2>/dev/null", p))
-            .collect::<Vec<_>>()
-            .join(" || ");
-
-        let check_tarball = console.exec(&search_cmd, Duration::from_secs(5))?;
-
-        // Find which path exists
-        let tarball_path = TARBALL_SEARCH_PATHS
-            .iter()
-            .find(|p| check_tarball.output.contains(*p))
-            .copied();
+        // Find tarball by checking each path individually
+        // Use exit code (test -f returns 0 if file exists)
+        let mut tarball_path: Option<&str> = None;
+        for path in TARBALL_SEARCH_PATHS {
+            let check = console.exec(
+                &format!("test -f {}", path),
+                Duration::from_secs(5),
+            )?;
+            if check.exit_code == 0 {
+                tarball_path = Some(path);
+                break;
+            }
+        }
 
         let tarball_path = match tarball_path {
             Some(path) => path,
@@ -46,8 +124,8 @@ impl Step for ExtractTarball {
                     },
                 );
                 result.fail(&format!(
-                    "Ensure {} is included in the ISO or copied to the live system",
-                    TARBALL_NAME
+                    "Ensure {} is included in the ISO or copied to the live system. Searched: {:?}",
+                    TARBALL_NAME, TARBALL_SEARCH_PATHS
                 ));
                 return Ok(result);
             }
@@ -58,9 +136,9 @@ impl Step for ExtractTarball {
             CheckResult::Pass(format!("Found at {}", tarball_path)),
         );
 
-        // Extract tarball
+        // Extract tarball (--no-same-owner to avoid ownership errors in live environment)
         let extract = console.exec(
-            &format!("tar xf {} -C /mnt", tarball_path),
+            &format!("tar xpf {} --no-same-owner -C /mnt", tarball_path),
             Duration::from_secs(300), // 5 minutes for extraction
         )?;
 
@@ -110,7 +188,7 @@ impl Step for ExtractTarball {
 pub struct GenerateFstab;
 
 impl Step for GenerateFstab {
-    fn num(&self) -> usize { 8 }
+    fn num(&self) -> usize { 9 }
     fn name(&self) -> &str { "Generate fstab" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -118,6 +196,7 @@ impl Step for GenerateFstab {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Get UUIDs for partitions
+        // Note: output may contain command echo, so we extract just the UUID line
         let uuid_root = console.exec(
             "blkid -s UUID -o value /dev/vda2",
             Duration::from_secs(5),
@@ -127,8 +206,28 @@ impl Step for GenerateFstab {
             Duration::from_secs(5),
         )?;
 
-        let root_uuid = uuid_root.output.trim();
-        let boot_uuid = uuid_boot.output.trim();
+        // Extract UUID from output (it's the line that looks like a UUID)
+        let root_uuid = uuid_root.output
+            .lines()
+            .find(|line| {
+                let trimmed = line.trim();
+                // UUID looks like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                trimmed.len() == 36 && trimmed.chars().filter(|c| *c == '-').count() == 4
+            })
+            .map(|s| s.trim())
+            .unwrap_or("");
+
+        let boot_uuid = uuid_boot.output
+            .lines()
+            .find(|line| {
+                let trimmed = line.trim();
+                // FAT UUID looks like: XXXX-XXXX (8 chars with dash)
+                (trimmed.len() == 9 && trimmed.chars().nth(4) == Some('-')) ||
+                // Or standard UUID
+                (trimmed.len() == 36 && trimmed.chars().filter(|c| *c == '-').count() == 4)
+            })
+            .map(|s| s.trim())
+            .unwrap_or("");
 
         if root_uuid.is_empty() || boot_uuid.is_empty() {
             result.add_check(
@@ -187,7 +286,7 @@ UUID={}  /boot  {}   defaults  0  2
 pub struct SetupChroot;
 
 impl Step for SetupChroot {
-    fn num(&self) -> usize { 9 }
+    fn num(&self) -> usize { 10 }
     fn name(&self) -> &str { "Setup Chroot" }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {

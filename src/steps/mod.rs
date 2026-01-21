@@ -83,9 +83,9 @@ pub trait Step {
         match self.num() {
             1..=2 => 1,   // Boot verification
             3..=6 => 2,   // Disk setup (partition, format, mount)
-            7..=9 => 3,   // Base system (extract, fstab, chroot)
-            10..=14 => 4, // Configuration (timezone, locale, hostname, passwords, users)
-            15..=16 => 5, // Bootloader
+            7..=10 => 3,  // Base system (mount media, extract, fstab, chroot)
+            11..=15 => 4, // Configuration (timezone, locale, hostname, passwords, users)
+            16..=17 => 5, // Bootloader
             _ => 0,
         }
     }
@@ -103,6 +103,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase2_disk::FormatPartitions),
         Box::new(phase2_disk::MountPartitions),
         // Phase 3: Base system
+        Box::new(phase3_base::MountInstallMedia),
         Box::new(phase3_base::ExtractTarball),
         Box::new(phase3_base::GenerateFstab),
         Box::new(phase3_base::SetupChroot),
