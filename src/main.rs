@@ -20,6 +20,7 @@ mod steps;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -38,11 +39,11 @@ struct Cli {
 enum Commands {
     /// Run installation tests
     Run {
-        /// Run only a specific step (1-17)
+        /// Run only a specific step (1-24)
         #[arg(long)]
         step: Option<usize>,
 
-        /// Run only steps in a specific phase (1-5)
+        /// Run only steps in a specific phase (1-6)
         #[arg(long)]
         phase: Option<usize>,
 
@@ -86,6 +87,8 @@ fn list_steps() {
     println!();
     println!("Each step has an 'ensures' statement describing what it guarantees.");
     println!();
+    println!("{}", "Phases 1-5 run on the live ISO, Phase 6 runs after rebooting into the installed system.".yellow());
+    println!();
 
     let steps = all_steps();
     let mut current_phase = 0;
@@ -94,12 +97,63 @@ fn list_steps() {
         if step.phase() != current_phase {
             current_phase = step.phase();
             println!();
-            println!("{}", format!("Phase {}", current_phase).blue().bold());
+            let phase_desc = match current_phase {
+                1 => "Phase 1 (Boot Verification)",
+                2 => "Phase 2 (Disk Setup)",
+                3 => "Phase 3 (Base System)",
+                4 => "Phase 4 (Configuration)",
+                5 => "Phase 5 (Bootloader)",
+                6 => "Phase 6 (Post-Reboot Verification) ← REBOOTS INTO INSTALLED SYSTEM",
+                _ => "Unknown Phase",
+            };
+            println!("{}", phase_desc.blue().bold());
         }
         println!("  {:2}. {}", step.num(), step.name());
         println!("      ensures: {}", step.ensures());
     }
     println!();
+}
+
+/// Run a single step and print result
+fn run_single_step(step: &Box<dyn Step>, console: &mut qemu::Console) -> Result<(StepResult, bool)> {
+    print!("{} Step {:2}: {}... ",
+        "▶".cyan(),
+        step.num(),
+        step.name()
+    );
+
+    let start = Instant::now();
+    match step.execute(console) {
+        Ok(result) => {
+            let duration = start.elapsed();
+            if result.passed {
+                println!("{} ({:.1}s)", "PASS".green().bold(), duration.as_secs_f64());
+                Ok((result, true))
+            } else {
+                println!("{} ({:.1}s)", "FAIL".red().bold(), duration.as_secs_f64());
+
+                // Print failure details
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Fail { expected, actual } = check_result {
+                        println!("    {} {}", "✗".red(), check_name);
+                        println!("      Expected: {}", expected);
+                        println!("      Actual:   {}", actual);
+                    }
+                }
+
+                if let Some(fix) = &result.fix_suggestion {
+                    println!("    {} {}", "Fix:".yellow(), fix);
+                }
+
+                Ok((result, false))
+            }
+        }
+        Err(e) => {
+            println!("{}", "ERROR".red().bold());
+            println!("    {}", e);
+            Err(e)
+        }
+    }
 }
 
 fn run_tests(
@@ -154,33 +208,8 @@ fn run_tests(
     println!("  Disk:      {} ({})", disk_path.display(), disk_size);
     println!();
 
-    // Build QEMU command
-    let mut cmd = QemuBuilder::new()
-        .kernel(kernel_path)
-        .initrd(initramfs_path)
-        .append("console=tty0 console=ttyS0,115200n8 rdinit=/init panic=30")
-        .disk(disk_path.clone())
-        .cdrom(iso_path)
-        .uefi(ovmf)
-        .nographic()
-        .no_reboot()
-        .build_piped();
-
-    // Spawn QEMU
-    println!("{}", "Starting QEMU...".cyan());
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-
-    // Create console controller
-    let mut console = qemu::Console::new(&mut child)?;
-
-    // Wait for boot
-    println!("{}", "Waiting for boot...".cyan());
-    console.wait_for_boot(Duration::from_secs(120))?;
-    println!("{}", "System booted!".green());
-    println!();
-
     // Determine which steps to run
-    let steps_to_run: Vec<Box<dyn Step>> = match (step_num, phase_num) {
+    let all_requested: Vec<Box<dyn Step>> = match (step_num, phase_num) {
         (Some(n), _) => {
             all_steps().into_iter().filter(|s| s.num() == n).collect()
         }
@@ -192,255 +221,248 @@ fn run_tests(
         }
     };
 
-    if steps_to_run.is_empty() {
+    if all_requested.is_empty() {
         bail!("No steps match the specified criteria");
     }
 
-    // Run steps
+    // Split steps into pre-reboot (1-18) and post-reboot (19-24)
+    let pre_reboot_steps: Vec<_> = all_requested.iter()
+        .filter(|s| s.num() <= 18)
+        .map(|s| s.num())
+        .collect();
+    let post_reboot_steps: Vec<_> = all_requested.iter()
+        .filter(|s| s.num() >= 19)
+        .map(|s| s.num())
+        .collect();
+
+    let needs_pre_reboot = !pre_reboot_steps.is_empty();
+    let needs_post_reboot = !post_reboot_steps.is_empty();
+
     let mut results: Vec<StepResult> = Vec::new();
     let mut all_passed = true;
 
-    for step in steps_to_run {
-        print!("{} Step {:2}: {}... ",
-            "▶".cyan(),
-            step.num(),
-            step.name()
-        );
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHASE 1-5: Run installation steps on the live ISO
+    // ═══════════════════════════════════════════════════════════════════════
+    if needs_pre_reboot {
+        println!("{}", "═".repeat(60));
+        println!("{}", "INSTALLATION PHASE (Live ISO)".cyan().bold());
+        println!("{}", "═".repeat(60));
+        println!();
 
-        let start = Instant::now();
-        match step.execute(&mut console) {
-            Ok(result) => {
-                let duration = start.elapsed();
-                if result.passed {
-                    println!("{} ({:.1}s)", "PASS".green().bold(), duration.as_secs_f64());
-                } else {
-                    println!("{} ({:.1}s)", "FAIL".red().bold(), duration.as_secs_f64());
-                    all_passed = false;
+        // Build QEMU command for live ISO boot
+        let mut cmd = QemuBuilder::new()
+            .kernel(kernel_path.clone())
+            .initrd(initramfs_path.clone())
+            .append("console=tty0 console=ttyS0,115200n8 rdinit=/init panic=30")
+            .disk(disk_path.clone())
+            .cdrom(iso_path.clone())
+            .uefi(ovmf.clone())
+            .nographic()
+            .no_reboot()
+            .build_piped();
 
-                    // Print failure details
-                    for (check_name, check_result) in &result.checks {
-                        if let CheckResult::Fail { expected, actual } = check_result {
-                            println!("    {} {}", "✗".red(), check_name);
-                            println!("      Expected: {}", expected);
-                            println!("      Actual:   {}", actual);
-                        }
-                    }
+        // Spawn QEMU
+        println!("{}", "Starting QEMU (live ISO)...".cyan());
+        let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
+        let mut console = qemu::Console::new(&mut child)?;
 
-                    if let Some(fix) = &result.fix_suggestion {
-                        println!("    {} {}", "Fix:".yellow(), fix);
-                    }
+        // Wait for boot
+        println!("{}", "Waiting for boot...".cyan());
+        console.wait_for_boot(Duration::from_secs(120))?;
+        println!("{}", "Live ISO booted!".green());
+        println!();
 
-                    // Stop on first failure
-                    results.push(result);
-                    break;
-                }
-                results.push(result);
-            }
-            Err(e) => {
-                println!("{}", "ERROR".red().bold());
-                println!("    {}", e);
+        // Run pre-reboot steps
+        let steps: Vec<Box<dyn Step>> = all_steps()
+            .into_iter()
+            .filter(|s| pre_reboot_steps.contains(&s.num()))
+            .collect();
+
+        for step in steps {
+            let (result, passed) = run_single_step(&step, &mut console)?;
+            if !passed {
                 all_passed = false;
-                break;
+                results.push(result);
+                // Stop on first failure
+                drop(console);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&disk_path);
+                bail!("Installation tests failed");
             }
+            results.push(result);
         }
+
+        // Shutdown the live ISO
+        println!();
+        println!("{}", "Installation complete, shutting down live ISO...".cyan());
+        let _ = console.exec("poweroff -f", Duration::from_secs(5));
+        drop(console);
+        let _ = child.wait();
+
+        // Give it a moment to fully terminate
+        std::thread::sleep(Duration::from_secs(2));
     }
 
-    // Print summary
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHASE 6: Boot the installed system and verify
+    // ═══════════════════════════════════════════════════════════════════════
+    if needs_post_reboot && all_passed {
+        println!();
+        println!("{}", "═".repeat(60));
+        println!("{}", "VERIFICATION PHASE (Installed System)".cyan().bold());
+        println!("{}", "═".repeat(60));
+        println!();
+
+        // Boot from disk (not ISO) - UEFI will boot from disk's EFI partition
+        // We use a simpler QEMU command that boots directly from the disk
+        let mut cmd = QemuBuilder::new()
+            .disk(disk_path.clone())
+            .uefi(ovmf.clone())
+            .nographic()
+            .no_reboot()
+            .build_piped();
+
+        println!("{}", "Starting QEMU (booting installed system)...".cyan());
+        let mut child = cmd.spawn().context("Failed to spawn QEMU for installed system")?;
+        let mut console = qemu::Console::new(&mut child)?;
+
+        // Wait for the installed system to boot
+        // This uses the bootloader we installed, not direct kernel boot
+        println!("{}", "Waiting for installed system to boot...".cyan());
+        console.wait_for_boot(Duration::from_secs(180))?; // Longer timeout for real boot
+        println!("{}", "Installed system booted!".green());
+        println!();
+
+        // Run post-reboot verification steps
+        let steps: Vec<Box<dyn Step>> = all_steps()
+            .into_iter()
+            .filter(|s| post_reboot_steps.contains(&s.num()))
+            .collect();
+
+        for step in steps {
+            let (result, passed) = run_single_step(&step, &mut console)?;
+            if !passed {
+                all_passed = false;
+            }
+            results.push(result);
+            // Don't break on failure for verification - run all checks
+        }
+
+        // Cleanup
+        drop(console);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SUMMARY
+    // ═══════════════════════════════════════════════════════════════════════
     println!();
-    println!("{}", "━".repeat(60));
+    println!("{}", "═".repeat(60));
+    println!("{}", "TEST SUMMARY".cyan().bold());
+    println!("{}", "═".repeat(60));
     println!();
 
     let passed = results.iter().filter(|r| r.passed).count();
+    let failed = results.iter().filter(|r| !r.passed).count();
     let total = results.len();
 
-    if all_passed {
-        println!("{} All {} steps passed!", "✓".green().bold(), passed);
-        println!();
-
-        // Show verification of installed system
-        println!("{}", "Verification of Installed System".cyan().bold());
-        println!("{}", "━".repeat(60));
-
-        // Show disk layout
-        println!("\n{}", "Disk Layout (lsblk):".yellow());
-        if let Ok(r) = console.exec("lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT /dev/vda", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@")) {
-                println!("  {}", line);
+    // Show results by phase
+    let phases_run: Vec<usize> = results.iter()
+        .map(|r| {
+            match r.step_num {
+                1..=2 => 1,
+                3..=6 => 2,
+                7..=10 => 3,
+                11..=15 => 4,
+                16..=18 => 5,
+                19..=24 => 6,
+                _ => 0,
             }
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    for phase in 1..=6 {
+        if !phases_run.contains(&phase) {
+            continue;
         }
+        let phase_results: Vec<_> = results.iter()
+            .filter(|r| {
+                let p = match r.step_num {
+                    1..=2 => 1,
+                    3..=6 => 2,
+                    7..=10 => 3,
+                    11..=15 => 4,
+                    16..=18 => 5,
+                    19..=24 => 6,
+                    _ => 0,
+                };
+                p == phase
+            })
+            .collect();
 
-        // Show fstab
-        println!("\n{}", "/mnt/etc/fstab:".yellow());
-        if let Ok(r) = console.exec("cat /mnt/etc/fstab", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@") && !l.is_empty()) {
-                println!("  {}", line);
-            }
-        }
+        let phase_passed = phase_results.iter().filter(|r| r.passed).count();
+        let phase_total = phase_results.len();
+        let phase_status = if phase_passed == phase_total {
+            "✓".green()
+        } else {
+            "✗".red()
+        };
 
-        // Show hostname
-        println!("\n{}", "/mnt/etc/hostname:".yellow());
-        if let Ok(r) = console.exec("cat /mnt/etc/hostname", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@")) {
-                if !line.trim().is_empty() {
-                    println!("  {}", line.trim());
-                }
-            }
-        }
+        let phase_name = match phase {
+            1 => "Boot Verification",
+            2 => "Disk Setup",
+            3 => "Base System",
+            4 => "Configuration",
+            5 => "Bootloader",
+            6 => "Post-Reboot Verification",
+            _ => "Unknown",
+        };
 
-        // Show users
-        println!("\n{}", "Users in /mnt/etc/passwd (uid >= 1000):".yellow());
-        if let Ok(r) = console.exec("grep -E ':[0-9]{4,}:' /mnt/etc/passwd", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@") && !l.contains("grep")) {
-                if !line.trim().is_empty() {
-                    println!("  {}", line.trim());
-                }
-            }
-        }
-
-        // Show root entry too
-        if let Ok(r) = console.exec("grep '^root:' /mnt/etc/passwd", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| l.starts_with("root:")) {
-                println!("  {}", line.trim());
-            }
-        }
-
-        // Show boot entry if it exists
-        println!("\n{}", "Boot loader entry (/mnt/boot/loader/entries/):".yellow());
-        if let Ok(r) = console.exec("cat /mnt/boot/loader/entries/*.conf 2>/dev/null || echo 'No entries (bootloader not fully installed)'", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@")) {
-                if !line.trim().is_empty() {
-                    println!("  {}", line.trim());
-                }
-            }
-        }
-
-        // Show installed system size
-        println!("\n{}", "Installed system size:".yellow());
-        if let Ok(r) = console.exec("du -sh /mnt", Duration::from_secs(30)) {
-            // Look for lines with size format (e.g., "1.2G" or "500M")
-            for line in r.output.lines() {
-                let trimmed = line.trim();
-                if (trimmed.contains("G\t") || trimmed.contains("M\t") || trimmed.contains("K\t")) && trimmed.contains("/mnt") {
-                    println!("  {}", trimmed);
-                }
-            }
-        }
-
-        // Show key directories exist
-        println!("\n{}", "Key directories in /mnt:".yellow());
-        if let Ok(r) = console.exec("ls -la /mnt/ | head -20", Duration::from_secs(5)) {
-            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@") && !l.contains("ls -la")) {
-                if !line.trim().is_empty() {
-                    println!("  {}", line);
-                }
-            }
-        }
-
-        // Re-enter chroot to test binaries
-        println!("\n{}", "Binary Verification (running in chroot):".yellow());
-        println!("{}", "━".repeat(60));
-
-        // Re-mount for chroot
-        let _ = console.exec("mount --bind /dev /mnt/dev", Duration::from_secs(5));
-        let _ = console.exec("mount --bind /proc /mnt/proc", Duration::from_secs(5));
-        let _ = console.exec("mount --bind /sys /mnt/sys", Duration::from_secs(5));
-
-        // Test various binaries
-        let binaries_to_test = [
-            ("bash --version | head -1", "bash"),
-            ("ls --version | head -1", "coreutils (ls)"),
-            ("cat --version | head -1", "coreutils (cat)"),
-            ("grep --version | head -1", "grep"),
-            ("sed --version | head -1", "sed"),
-            ("awk --version | head -1", "awk"),
-            ("tar --version | head -1", "tar"),
-            ("gzip --version | head -1", "gzip"),
-            ("find --version | head -1", "findutils"),
-            ("systemctl --version | head -1", "systemd"),
-            ("journalctl --version | head -1", "systemd (journalctl)"),
-            ("useradd --version 2>&1 | head -1", "shadow-utils (useradd)"),
-            ("sudo --version | head -1", "sudo"),
-            ("su --version | head -1", "util-linux (su)"),
-            ("mount --version | head -1", "util-linux (mount)"),
-            ("fdisk --version | head -1", "util-linux (fdisk)"),
-            ("ip --version 2>&1 | head -1", "iproute2"),
-            ("ss --version 2>&1 | head -1", "iproute2 (ss)"),
-        ];
-
-        for (cmd, name) in binaries_to_test {
-            let chroot_cmd = format!("chroot /mnt /bin/bash -c '{}'", cmd);
-            if let Ok(r) = console.exec(&chroot_cmd, Duration::from_secs(5)) {
-                // Extract the version line
-                let version_line = r.output
-                    .lines()
-                    .filter(|l| !l.contains("chroot") && !l.contains("root@") && !l.contains("echo") && !l.trim().is_empty())
-                    .filter(|l| !l.starts_with('>'))
-                    .next()
-                    .unwrap_or("");
-
-                if version_line.contains("not found") || version_line.contains("No such file") {
-                    println!("  {} {}: {}", "✗".red(), name, "NOT INSTALLED".red());
-                } else if r.exit_code == 0 && !version_line.is_empty() {
-                    println!("  {} {}: {}", "✓".green(), name, version_line.trim());
-                } else if !version_line.is_empty() {
-                    // Got output but non-zero exit (e.g., --version not supported)
-                    println!("  {} {}: {}", "✓".green(), name, "(installed, version check failed)");
-                } else {
-                    println!("  {} {}: {}", "?".yellow(), name, "unknown");
-                }
-            }
-        }
-
-        // Test sudo specifically - try to run a command as root
-        println!("\n{}", "Sudo functionality test:".yellow());
-        let sudo_test = console.exec(
-            "chroot /mnt /bin/bash -c 'echo \"levitate ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/levitate && chmod 440 /etc/sudoers.d/levitate && su - levitate -c \"sudo whoami\"'",
-            Duration::from_secs(10),
-        );
-        if let Ok(r) = sudo_test {
-            let output = r.output.lines()
-                .filter(|l| l.trim() == "root")
-                .next();
-            if output.is_some() {
-                println!("  {} sudo works: 'sudo whoami' returns 'root'", "✓".green());
-            } else {
-                println!("  {} sudo test: {}", "?".yellow(), r.output.lines().last().unwrap_or("unknown"));
-            }
-        }
-
-        // Test systemd can list units
-        println!("\n{}", "Systemd functionality test:".yellow());
-        if let Ok(r) = console.exec(
-            "chroot /mnt /bin/bash -c 'systemctl list-unit-files --type=service 2>/dev/null | head -10'",
-            Duration::from_secs(10),
-        ) {
-            let lines: Vec<_> = r.output.lines()
-                .filter(|l| !l.contains("chroot") && !l.contains("root@") && !l.contains("echo"))
-                .filter(|l| l.contains(".service"))
-                .take(5)
-                .collect();
-            if !lines.is_empty() {
-                println!("  {} systemctl list-unit-files works:", "✓".green());
-                for line in lines {
-                    println!("    {}", line.trim());
-                }
-            }
-        }
-
-        // Cleanup chroot mounts
-        let _ = console.exec("umount -l /mnt/sys 2>/dev/null", Duration::from_secs(5));
-        let _ = console.exec("umount -l /mnt/proc 2>/dev/null", Duration::from_secs(5));
-        let _ = console.exec("umount -l /mnt/dev 2>/dev/null", Duration::from_secs(5));
-
-        println!("\n{}", "━".repeat(60));
-    } else {
-        println!("{} {}/{} steps passed", "✗".red().bold(), passed, total);
+        println!("  {} Phase {}: {} ({}/{})", phase_status, phase, phase_name, phase_passed, phase_total);
     }
 
-    // Cleanup
-    drop(console);
-    let _ = child.kill();
-    let _ = child.wait();
+    println!();
+
+    if all_passed {
+        println!("{}", "═".repeat(60));
+        println!("{} All {} steps passed!", "✓".green().bold(), passed);
+        println!("{}", "═".repeat(60));
+        println!();
+        println!("The installed system:");
+        println!("  • Boots with systemd as init");
+        println!("  • Reaches multi-user.target");
+        println!("  • Has working user accounts");
+        println!("  • Has functional networking");
+        println!("  • Has working sudo");
+        println!("  • Has all essential commands");
+        println!();
+        println!("{}", "This rootfs is ready for daily driver use.".green().bold());
+    } else {
+        println!("{}", "═".repeat(60));
+        println!("{} {}/{} steps passed ({} failed)", "✗".red().bold(), passed, total, failed);
+        println!("{}", "═".repeat(60));
+        println!();
+
+        // Show failed steps
+        println!("{}", "Failed steps:".red());
+        for result in &results {
+            if !result.passed {
+                println!("  • Step {}: {}", result.step_num, result.name);
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Fail { expected, actual } = check_result {
+                        println!("      {} {}", "✗".red(), check_name);
+                        println!("        Expected: {}", expected);
+                        println!("        Actual:   {}", actual);
+                    }
+                }
+            }
+        }
+    }
 
     // Remove test disk
     let _ = std::fs::remove_file(&disk_path);

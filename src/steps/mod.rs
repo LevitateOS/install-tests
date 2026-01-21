@@ -5,7 +5,7 @@
 //! # STOP. READ. THEN ACT.
 //!
 //! Before adding or modifying steps:
-//! 1. Read all existing phase files (phase1_boot.rs through phase5_boot.rs)
+//! 1. Read all existing phase files (phase1_boot.rs through phase6_verify.rs)
 //! 2. Understand the Step trait and how steps are structured
 //! 3. Check if similar functionality already exists
 //!
@@ -30,12 +30,14 @@ mod phase2_disk;
 mod phase3_base;
 mod phase4_config;
 mod phase5_boot;
+mod phase6_verify;
 
 pub use phase1_boot::*;
 pub use phase2_disk::*;
 pub use phase3_base::*;
 pub use phase4_config::*;
 pub use phase5_boot::*;
+pub use phase6_verify::*;
 
 use crate::qemu::Console;
 use anyhow::Result;
@@ -92,7 +94,7 @@ impl StepResult {
 
 /// A single installation step
 pub trait Step {
-    /// Step number (1-18)
+    /// Step number (1-24)
     fn num(&self) -> usize;
 
     /// Step name for display
@@ -113,6 +115,7 @@ pub trait Step {
             7..=10 => 3,  // Base system (mount media, extract, fstab, chroot)
             11..=15 => 4, // Configuration (timezone, locale, hostname, passwords, users)
             16..=18 => 5, // Bootloader (initramfs, bootloader, services)
+            19..=24 => 6, // Post-reboot verification (systemd, user, network, sudo)
             _ => 0,
         }
     }
@@ -144,6 +147,13 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase5_boot::GenerateInitramfs),
         Box::new(phase5_boot::InstallBootloader),
         Box::new(phase5_boot::EnableServices),
+        // Phase 6: Post-reboot verification (runs AFTER booting installed system)
+        Box::new(phase6_verify::VerifySystemdBoot),
+        Box::new(phase6_verify::VerifyHostname),
+        Box::new(phase6_verify::VerifyUserLogin),
+        Box::new(phase6_verify::VerifyNetworking),
+        Box::new(phase6_verify::VerifySudo),
+        Box::new(phase6_verify::VerifyEssentialCommands),
     ]
 }
 
