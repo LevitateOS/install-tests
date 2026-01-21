@@ -85,7 +85,7 @@ impl StepResult {
 
 /// A single installation step
 pub trait Step {
-    /// Step number (1-16)
+    /// Step number (1-18)
     fn num(&self) -> usize;
 
     /// Step name for display
@@ -105,7 +105,7 @@ pub trait Step {
             3..=6 => 2,   // Disk setup (partition, format, mount)
             7..=10 => 3,  // Base system (mount media, extract, fstab, chroot)
             11..=15 => 4, // Configuration (timezone, locale, hostname, passwords, users)
-            16..=17 => 5, // Bootloader
+            16..=18 => 5, // Bootloader (initramfs, bootloader, services)
             _ => 0,
         }
     }
@@ -133,7 +133,8 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase4_config::SetHostname),
         Box::new(phase4_config::SetRootPassword),
         Box::new(phase4_config::CreateUser),
-        // Phase 5: Bootloader
+        // Phase 5: Boot setup (initramfs, bootloader, services)
+        Box::new(phase5_boot::GenerateInitramfs),
         Box::new(phase5_boot::InstallBootloader),
         Box::new(phase5_boot::EnableServices),
     ]

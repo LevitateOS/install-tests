@@ -1,6 +1,6 @@
 //! Phase 5: Bootloader installation steps.
 //!
-//! Steps 16-17: Install bootloader, enable services.
+//! Steps 16-18: Generate initramfs, install bootloader, enable services.
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
@@ -8,11 +8,150 @@ use anyhow::Result;
 use distro_spec::levitate::{BootEntry, LoaderConfig, ENABLED_SERVICES};
 use std::time::{Duration, Instant};
 
-/// Step 15: Install systemd-boot bootloader
+/// Step 16: Generate initramfs with dracut
+///
+/// Dracut detects installed kernel and hardware, then generates an initramfs
+/// containing drivers needed to boot the system.
+pub struct GenerateInitramfs;
+
+impl Step for GenerateInitramfs {
+    fn num(&self) -> usize { 16 }
+    fn name(&self) -> &str { "Generate Initramfs" }
+    fn ensures(&self) -> &str {
+        "Initramfs exists at /boot/initramfs.img with drivers for installed hardware"
+    }
+
+    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+        let start = Instant::now();
+        let mut result = StepResult::new(self.num(), self.name());
+
+        // Check if kernel exists
+        let kernel_check = console.exec_chroot(
+            "test -f /boot/vmlinuz",
+            Duration::from_secs(5),
+        )?;
+
+        if kernel_check.exit_code != 0 {
+            result.add_check(
+                "kernel present",
+                CheckResult::Fail {
+                    expected: "/boot/vmlinuz exists".to_string(),
+                    actual: "Kernel not found - tarball may be incomplete".to_string(),
+                },
+            );
+            result.fail("Install kernel to /boot/vmlinuz before generating initramfs");
+            return Ok(result);
+        }
+
+        result.add_check(
+            "kernel present",
+            CheckResult::Pass("/boot/vmlinuz found".to_string()),
+        );
+
+        // Check if dracut is available
+        let dracut_check = console.exec_chroot(
+            "which dracut",
+            Duration::from_secs(5),
+        )?;
+
+        if dracut_check.exit_code != 0 {
+            result.add_check(
+                "dracut available",
+                CheckResult::Fail {
+                    expected: "dracut binary present".to_string(),
+                    actual: "dracut not found - install dracut package".to_string(),
+                },
+            );
+            result.fail("dracut is required to generate initramfs");
+            return Ok(result);
+        }
+
+        result.add_check(
+            "dracut available",
+            CheckResult::Pass("dracut found".to_string()),
+        );
+
+        // Get kernel version
+        let kver_result = console.exec_chroot(
+            "ls /usr/lib/modules/ | head -1",
+            Duration::from_secs(5),
+        )?;
+        let kernel_version = kver_result.output.trim();
+
+        if kernel_version.is_empty() {
+            result.add_check(
+                "kernel modules present",
+                CheckResult::Fail {
+                    expected: "/usr/lib/modules/<version> directory".to_string(),
+                    actual: "No kernel modules found".to_string(),
+                },
+            );
+            result.fail("Kernel modules required for dracut");
+            return Ok(result);
+        }
+
+        result.add_check(
+            "kernel modules present",
+            CheckResult::Pass(format!("modules for kernel {}", kernel_version)),
+        );
+
+        // Generate initramfs with dracut
+        // --force: overwrite existing initramfs
+        // --no-hostonly: include all drivers, not just for current hardware
+        // This is important for a generic installation
+        let dracut_result = console.exec_chroot(
+            &format!("dracut --force --no-hostonly /boot/initramfs.img {}", kernel_version),
+            Duration::from_secs(120), // Dracut can take a while
+        )?;
+
+        if dracut_result.success() {
+            result.add_check(
+                "initramfs generated",
+                CheckResult::Pass(format!("/boot/initramfs.img for kernel {}", kernel_version)),
+            );
+        } else {
+            result.add_check(
+                "initramfs generated",
+                CheckResult::Fail {
+                    expected: "dracut exit 0".to_string(),
+                    actual: format!("exit {}: {}", dracut_result.exit_code, dracut_result.output),
+                },
+            );
+            result.fail("dracut failed - check for missing dependencies");
+            return Ok(result);
+        }
+
+        // Verify initramfs was created
+        let verify = console.exec_chroot(
+            "test -f /boot/initramfs.img && ls -lh /boot/initramfs.img",
+            Duration::from_secs(5),
+        )?;
+
+        if verify.success() {
+            result.add_check(
+                "initramfs verified",
+                CheckResult::Pass(verify.output.trim().to_string()),
+            );
+        } else {
+            result.add_check(
+                "initramfs verified",
+                CheckResult::Fail {
+                    expected: "/boot/initramfs.img exists".to_string(),
+                    actual: "File not found after dracut".to_string(),
+                },
+            );
+        }
+
+        result.duration = start.elapsed();
+        Ok(result)
+    }
+}
+
+/// Step 17: Install systemd-boot bootloader
 pub struct InstallBootloader;
 
 impl Step for InstallBootloader {
-    fn num(&self) -> usize { 16 }
+    fn num(&self) -> usize { 17 }
     fn name(&self) -> &str { "Install Bootloader" }
     fn ensures(&self) -> &str {
         "System is bootable via systemd-boot with correct kernel and root"
@@ -101,11 +240,11 @@ impl Step for InstallBootloader {
     }
 }
 
-/// Step 16: Enable essential services
+/// Step 18: Enable essential services
 pub struct EnableServices;
 
 impl Step for EnableServices {
-    fn num(&self) -> usize { 17 }
+    fn num(&self) -> usize { 18 }
     fn name(&self) -> &str { "Enable Services" }
     fn ensures(&self) -> &str {
         "Essential services (networkd, sshd, getty) start automatically on boot"
