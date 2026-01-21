@@ -2,6 +2,13 @@
 //!
 //! Each phase of the installation has corresponding step implementations.
 //!
+//! # STOP. READ. THEN ACT.
+//!
+//! Before adding or modifying steps:
+//! 1. Read all existing phase files (phase1_boot.rs through phase5_boot.rs)
+//! 2. Understand the Step trait and how steps are structured
+//! 3. Check if similar functionality already exists
+//!
 //! ## Anti-Reward-Hacking Design
 //!
 //! Each step follows principles from Anthropic's emergent misalignment research:

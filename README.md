@@ -1,5 +1,7 @@
 # install-tests
 
+> **STOP. READ. THEN ACT.** This is the CORRECT location for E2E installation tests. Not `leviso/tests/`. Read this crate's source before writing anything.
+
 E2E test runner that boots LevitateOS in QEMU and verifies the complete installation process.
 
 ## Prerequisites

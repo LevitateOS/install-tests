@@ -1,6 +1,16 @@
 //! Console control for QEMU serial I/O.
 //!
 //! Handles command execution with exit code capture and chroot state tracking.
+//!
+//! # STOP. READ. THEN ACT.
+//!
+//! This module already has:
+//! - `exec()` / `exec_ok()` - Run commands with exit code capture
+//! - `wait_for_boot()` - Wait for systemd startup
+//! - `enter_chroot()` / `exit_chroot()` - Chroot management with bind mounts
+//! - `write_file()` - Write files via serial console
+//!
+//! Read all methods before adding new ones. Don't duplicate functionality.
 
 use anyhow::{bail, Context, Result};
 use distro_spec::{mounts_in_order, mounts_in_unmount_order};

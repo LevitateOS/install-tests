@@ -1,6 +1,18 @@
 //! E2E Installation Test Runner for LevitateOS.
 //!
 //! Runs installation steps in QEMU and verifies each step completes correctly.
+//!
+//! # STOP. READ. THEN ACT.
+//!
+//! This is the CORRECT location for E2E installation tests.
+//! NOT `leviso/tests/`. THIS crate. Read before writing.
+//!
+//! Before modifying this code:
+//! 1. Read the existing modules in `qemu/` and `steps/`
+//! 2. Understand what already exists
+//! 3. Don't duplicate functionality
+//!
+//! See `/home/vince/Projects/LevitateOS/STOP_READ_THEN_ACT.md` for why this matters.
 
 mod qemu;
 mod steps;
