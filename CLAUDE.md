@@ -4,6 +4,8 @@
 
 E2E test runner for LevitateOS installation process. Boots the ISO in QEMU and verifies installation steps work correctly.
 
+LevitateOS is a **daily driver Linux distribution competing with Arch Linux**. The installation experience should match or exceed Arch's - users partition, format, extract tarball, configure, and boot into a working system.
+
 ## Development
 
 ```bash
