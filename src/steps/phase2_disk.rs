@@ -14,6 +14,9 @@ pub struct IdentifyDisk;
 impl Step for IdentifyDisk {
     fn num(&self) -> usize { 3 }
     fn name(&self) -> &str { "Identify Target Disk" }
+    fn ensures(&self) -> &str {
+        "Target disk is detected and accessible for installation"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -49,6 +52,9 @@ pub struct PartitionDisk;
 impl Step for PartitionDisk {
     fn num(&self) -> usize { 4 }
     fn name(&self) -> &str { "Partition Disk (GPT)" }
+    fn ensures(&self) -> &str {
+        "Disk has GPT layout with EFI and root partitions"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -111,6 +117,9 @@ pub struct FormatPartitions;
 impl Step for FormatPartitions {
     fn num(&self) -> usize { 5 }
     fn name(&self) -> &str { "Format Partitions" }
+    fn ensures(&self) -> &str {
+        "Partitions have proper filesystems (FAT32 for EFI, ext4 for root)"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -169,6 +178,9 @@ pub struct MountPartitions;
 impl Step for MountPartitions {
     fn num(&self) -> usize { 6 }
     fn name(&self) -> &str { "Mount Partitions" }
+    fn ensures(&self) -> &str {
+        "Root and boot partitions are mounted at /mnt and /mnt/boot"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();

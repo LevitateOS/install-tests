@@ -14,6 +14,9 @@ pub struct SetTimezone;
 impl Step for SetTimezone {
     fn num(&self) -> usize { 11 }
     fn name(&self) -> &str { "Set Timezone" }
+    fn ensures(&self) -> &str {
+        "System timezone is configured for correct local time display"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -69,6 +72,9 @@ pub struct ConfigureLocale;
 impl Step for ConfigureLocale {
     fn num(&self) -> usize { 12 }
     fn name(&self) -> &str { "Configure Locale" }
+    fn ensures(&self) -> &str {
+        "System locale is set for proper character encoding and language"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -109,6 +115,9 @@ pub struct SetHostname;
 impl Step for SetHostname {
     fn num(&self) -> usize { 13 }
     fn name(&self) -> &str { "Set Hostname" }
+    fn ensures(&self) -> &str {
+        "System has a hostname configured for network identification"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -172,6 +181,9 @@ pub struct SetRootPassword;
 impl Step for SetRootPassword {
     fn num(&self) -> usize { 14 }
     fn name(&self) -> &str { "Set Root Password" }
+    fn ensures(&self) -> &str {
+        "Root account has a password for emergency system recovery"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -209,6 +221,9 @@ pub struct CreateUser;
 impl Step for CreateUser {
     fn num(&self) -> usize { 15 }
     fn name(&self) -> &str { "Create User Account" }
+    fn ensures(&self) -> &str {
+        "Primary user account exists with proper groups for daily use"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();

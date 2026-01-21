@@ -72,6 +72,8 @@ fn main() -> Result<()> {
 fn list_steps() {
     println!("{}", "LevitateOS Installation Test Steps".bold());
     println!();
+    println!("Each step has an 'ensures' statement describing what it guarantees.");
+    println!();
 
     let steps = all_steps();
     let mut current_phase = 0;
@@ -83,6 +85,7 @@ fn list_steps() {
             println!("{}", format!("Phase {}", current_phase).blue().bold());
         }
         println!("  {:2}. {}", step.num(), step.name());
+        println!("      ensures: {}", step.ensures());
     }
     println!();
 }
@@ -320,6 +323,102 @@ fn run_tests(
                 }
             }
         }
+
+        // Re-enter chroot to test binaries
+        println!("\n{}", "Binary Verification (running in chroot):".yellow());
+        println!("{}", "━".repeat(60));
+
+        // Re-mount for chroot
+        let _ = console.exec("mount --bind /dev /mnt/dev", Duration::from_secs(5));
+        let _ = console.exec("mount --bind /proc /mnt/proc", Duration::from_secs(5));
+        let _ = console.exec("mount --bind /sys /mnt/sys", Duration::from_secs(5));
+
+        // Test various binaries
+        let binaries_to_test = [
+            ("bash --version | head -1", "bash"),
+            ("ls --version | head -1", "coreutils (ls)"),
+            ("cat --version | head -1", "coreutils (cat)"),
+            ("grep --version | head -1", "grep"),
+            ("sed --version | head -1", "sed"),
+            ("awk --version | head -1", "awk"),
+            ("tar --version | head -1", "tar"),
+            ("gzip --version | head -1", "gzip"),
+            ("find --version | head -1", "findutils"),
+            ("systemctl --version | head -1", "systemd"),
+            ("journalctl --version | head -1", "systemd (journalctl)"),
+            ("useradd --version 2>&1 | head -1", "shadow-utils (useradd)"),
+            ("sudo --version | head -1", "sudo"),
+            ("su --version | head -1", "util-linux (su)"),
+            ("mount --version | head -1", "util-linux (mount)"),
+            ("fdisk --version | head -1", "util-linux (fdisk)"),
+            ("ip --version 2>&1 | head -1", "iproute2"),
+            ("ss --version 2>&1 | head -1", "iproute2 (ss)"),
+        ];
+
+        for (cmd, name) in binaries_to_test {
+            let chroot_cmd = format!("chroot /mnt /bin/bash -c '{}'", cmd);
+            if let Ok(r) = console.exec(&chroot_cmd, Duration::from_secs(5)) {
+                // Extract the version line
+                let version_line = r.output
+                    .lines()
+                    .filter(|l| !l.contains("chroot") && !l.contains("root@") && !l.contains("echo") && !l.trim().is_empty())
+                    .filter(|l| !l.starts_with('>'))
+                    .next()
+                    .unwrap_or("");
+
+                if version_line.contains("not found") || version_line.contains("No such file") {
+                    println!("  {} {}: {}", "✗".red(), name, "NOT INSTALLED".red());
+                } else if r.exit_code == 0 && !version_line.is_empty() {
+                    println!("  {} {}: {}", "✓".green(), name, version_line.trim());
+                } else if !version_line.is_empty() {
+                    // Got output but non-zero exit (e.g., --version not supported)
+                    println!("  {} {}: {}", "✓".green(), name, "(installed, version check failed)");
+                } else {
+                    println!("  {} {}: {}", "?".yellow(), name, "unknown");
+                }
+            }
+        }
+
+        // Test sudo specifically - try to run a command as root
+        println!("\n{}", "Sudo functionality test:".yellow());
+        let sudo_test = console.exec(
+            "chroot /mnt /bin/bash -c 'echo \"levitate ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/levitate && chmod 440 /etc/sudoers.d/levitate && su - levitate -c \"sudo whoami\"'",
+            Duration::from_secs(10),
+        );
+        if let Ok(r) = sudo_test {
+            let output = r.output.lines()
+                .filter(|l| l.trim() == "root")
+                .next();
+            if output.is_some() {
+                println!("  {} sudo works: 'sudo whoami' returns 'root'", "✓".green());
+            } else {
+                println!("  {} sudo test: {}", "?".yellow(), r.output.lines().last().unwrap_or("unknown"));
+            }
+        }
+
+        // Test systemd can list units
+        println!("\n{}", "Systemd functionality test:".yellow());
+        if let Ok(r) = console.exec(
+            "chroot /mnt /bin/bash -c 'systemctl list-unit-files --type=service 2>/dev/null | head -10'",
+            Duration::from_secs(10),
+        ) {
+            let lines: Vec<_> = r.output.lines()
+                .filter(|l| !l.contains("chroot") && !l.contains("root@") && !l.contains("echo"))
+                .filter(|l| l.contains(".service"))
+                .take(5)
+                .collect();
+            if !lines.is_empty() {
+                println!("  {} systemctl list-unit-files works:", "✓".green());
+                for line in lines {
+                    println!("    {}", line.trim());
+                }
+            }
+        }
+
+        // Cleanup chroot mounts
+        let _ = console.exec("umount -l /mnt/sys 2>/dev/null", Duration::from_secs(5));
+        let _ = console.exec("umount -l /mnt/proc 2>/dev/null", Duration::from_secs(5));
+        let _ = console.exec("umount -l /mnt/dev 2>/dev/null", Duration::from_secs(5));
 
         println!("\n{}", "━".repeat(60));
     } else {

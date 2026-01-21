@@ -14,6 +14,9 @@ pub struct InstallBootloader;
 impl Step for InstallBootloader {
     fn num(&self) -> usize { 16 }
     fn name(&self) -> &str { "Install Bootloader" }
+    fn ensures(&self) -> &str {
+        "System is bootable via systemd-boot with correct kernel and root"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -104,6 +107,9 @@ pub struct EnableServices;
 impl Step for EnableServices {
     fn num(&self) -> usize { 17 }
     fn name(&self) -> &str { "Enable Services" }
+    fn ensures(&self) -> &str {
+        "Essential services (networkd, sshd, getty) start automatically on boot"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();

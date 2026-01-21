@@ -13,6 +13,9 @@ pub struct VerifyUefi;
 impl Step for VerifyUefi {
     fn num(&self) -> usize { 1 }
     fn name(&self) -> &str { "Verify UEFI Boot Mode" }
+    fn ensures(&self) -> &str {
+        "System booted in UEFI mode required for GPT/ESP installation"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -51,6 +54,9 @@ pub struct SyncClock;
 impl Step for SyncClock {
     fn num(&self) -> usize { 2 }
     fn name(&self) -> &str { "Sync System Clock" }
+    fn ensures(&self) -> &str {
+        "System clock is synchronized for proper file timestamps and certificates"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();

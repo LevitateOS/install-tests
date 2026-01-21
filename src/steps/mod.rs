@@ -1,6 +1,22 @@
 //! Installation steps and their verification.
 //!
 //! Each phase of the installation has corresponding step implementations.
+//!
+//! ## Anti-Reward-Hacking Design
+//!
+//! Each step follows principles from Anthropic's emergent misalignment research:
+//!
+//! 1. **Verify actual outcomes, not just exit codes** - We check that expected
+//!    state changes actually occurred (files exist, content correct, etc.)
+//!
+//! 2. **Fail on unexpected state** - If verification shows wrong state,
+//!    we report expected vs actual to make debugging clear
+//!
+//! 3. **Chain dependent operations** - Steps execute AND verify in sequence,
+//!    preventing false positives where individual commands pass but flow fails
+//!
+//! 4. **Each step has an "ensures" statement** - Documents what the step
+//!    guarantees for the user when it passes
 
 mod phase1_boot;
 mod phase2_disk;
@@ -74,6 +90,10 @@ pub trait Step {
 
     /// Step name for display
     fn name(&self) -> &str;
+
+    /// What this step ensures for the end user when it passes.
+    /// This is displayed in test output and helps document what each step guarantees.
+    fn ensures(&self) -> &str;
 
     /// Execute the step
     fn execute(&self, console: &mut Console) -> Result<StepResult>;

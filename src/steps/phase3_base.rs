@@ -15,6 +15,9 @@ pub struct MountInstallMedia;
 impl Step for MountInstallMedia {
     fn num(&self) -> usize { 7 }
     fn name(&self) -> &str { "Mount Installation Media" }
+    fn ensures(&self) -> &str {
+        "Installation media (ISO) is mounted and tarball is accessible"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -94,6 +97,9 @@ pub struct ExtractTarball;
 impl Step for ExtractTarball {
     fn num(&self) -> usize { 8 }
     fn name(&self) -> &str { "Extract Stage3 Tarball" }
+    fn ensures(&self) -> &str {
+        "Base system is extracted with all essential directories present"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -190,6 +196,9 @@ pub struct GenerateFstab;
 impl Step for GenerateFstab {
     fn num(&self) -> usize { 9 }
     fn name(&self) -> &str { "Generate fstab" }
+    fn ensures(&self) -> &str {
+        "System has valid /etc/fstab with correct UUIDs for automatic mounting"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
@@ -288,6 +297,9 @@ pub struct SetupChroot;
 impl Step for SetupChroot {
     fn num(&self) -> usize { 10 }
     fn name(&self) -> &str { "Setup Chroot" }
+    fn ensures(&self) -> &str {
+        "Chroot environment is configured with necessary bind mounts"
+    }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
