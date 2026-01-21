@@ -240,6 +240,88 @@ fn run_tests(
 
     if all_passed {
         println!("{} All {} steps passed!", "✓".green().bold(), passed);
+        println!();
+
+        // Show verification of installed system
+        println!("{}", "Verification of Installed System".cyan().bold());
+        println!("{}", "━".repeat(60));
+
+        // Show disk layout
+        println!("\n{}", "Disk Layout (lsblk):".yellow());
+        if let Ok(r) = console.exec("lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT /dev/vda", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@")) {
+                println!("  {}", line);
+            }
+        }
+
+        // Show fstab
+        println!("\n{}", "/mnt/etc/fstab:".yellow());
+        if let Ok(r) = console.exec("cat /mnt/etc/fstab", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@") && !l.is_empty()) {
+                println!("  {}", line);
+            }
+        }
+
+        // Show hostname
+        println!("\n{}", "/mnt/etc/hostname:".yellow());
+        if let Ok(r) = console.exec("cat /mnt/etc/hostname", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@")) {
+                if !line.trim().is_empty() {
+                    println!("  {}", line.trim());
+                }
+            }
+        }
+
+        // Show users
+        println!("\n{}", "Users in /mnt/etc/passwd (uid >= 1000):".yellow());
+        if let Ok(r) = console.exec("grep -E ':[0-9]{4,}:' /mnt/etc/passwd", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@") && !l.contains("grep")) {
+                if !line.trim().is_empty() {
+                    println!("  {}", line.trim());
+                }
+            }
+        }
+
+        // Show root entry too
+        if let Ok(r) = console.exec("grep '^root:' /mnt/etc/passwd", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| l.starts_with("root:")) {
+                println!("  {}", line.trim());
+            }
+        }
+
+        // Show boot entry if it exists
+        println!("\n{}", "Boot loader entry (/mnt/boot/loader/entries/):".yellow());
+        if let Ok(r) = console.exec("cat /mnt/boot/loader/entries/*.conf 2>/dev/null || echo 'No entries (bootloader not fully installed)'", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@")) {
+                if !line.trim().is_empty() {
+                    println!("  {}", line.trim());
+                }
+            }
+        }
+
+        // Show installed system size
+        println!("\n{}", "Installed system size:".yellow());
+        if let Ok(r) = console.exec("du -sh /mnt", Duration::from_secs(30)) {
+            // Look for lines with size format (e.g., "1.2G" or "500M")
+            for line in r.output.lines() {
+                let trimmed = line.trim();
+                if (trimmed.contains("G\t") || trimmed.contains("M\t") || trimmed.contains("K\t")) && trimmed.contains("/mnt") {
+                    println!("  {}", trimmed);
+                }
+            }
+        }
+
+        // Show key directories exist
+        println!("\n{}", "Key directories in /mnt:".yellow());
+        if let Ok(r) = console.exec("ls -la /mnt/ | head -20", Duration::from_secs(5)) {
+            for line in r.output.lines().filter(|l| !l.contains("echo") && !l.contains("root@") && !l.contains("ls -la")) {
+                if !line.trim().is_empty() {
+                    println!("  {}", line);
+                }
+            }
+        }
+
+        println!("\n{}", "━".repeat(60));
     } else {
         println!("{} {}/{} steps passed", "✗".red().bold(), passed, total);
     }
