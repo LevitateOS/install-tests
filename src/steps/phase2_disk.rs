@@ -215,7 +215,7 @@ impl Step for MountPartitions {
     fn num(&self) -> usize { 6 }
     fn name(&self) -> &str { "Mount Partitions" }
     fn ensures(&self) -> &str {
-        "Root and boot partitions are mounted at /mnt and /mnt/boot"
+        "Root partition at /mnt, EFI partition at /mnt/boot/efi"
     }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -245,32 +245,34 @@ impl Step for MountPartitions {
             CheckResult::Pass("/dev/vda2 -> /mnt".to_string()),
         );
 
-        // Create and mount boot partition
-        console.exec("mkdir -p /mnt/boot", Duration::from_secs(5))?;
-        let mount_boot = console.exec("mount /dev/vda1 /mnt/boot", Duration::from_secs(10))?;
+        // Create and mount EFI partition
+        // Note: /mnt/boot is part of ext4 root (supports Unix ownership)
+        //       /mnt/boot/efi is FAT32 EFI partition (for bootloader only)
+        console.exec("mkdir -p /mnt/boot/efi", Duration::from_secs(5))?;
+        let mount_boot = console.exec("mount /dev/vda1 /mnt/boot/efi", Duration::from_secs(10))?;
 
-        // CHEAT GUARD: Boot partition MUST be mounted for bootloader
+        // CHEAT GUARD: EFI partition MUST be mounted for bootloader
         cheat_ensure!(
             mount_boot.success(),
-            protects = "Boot partition is mounted for kernel and initramfs",
+            protects = "EFI partition is mounted for bootloader",
             severity = "CRITICAL",
             cheats = [
-                "Skip boot mount",
+                "Skip EFI mount",
                 "Install bootloader to wrong location",
                 "Accept mount failure"
             ],
-            consequence = "Kernel/initramfs in wrong place, UEFI can't find bootloader",
-            "Failed to mount /dev/vda1 to /mnt/boot (exit {}): {}", mount_boot.exit_code, mount_boot.output
+            consequence = "EFI bootloader can't be installed, system won't boot",
+            "Failed to mount /dev/vda1 to /mnt/boot/efi (exit {}): {}", mount_boot.exit_code, mount_boot.output
         );
 
         result.add_check(
-            "Boot mounted",
-            CheckResult::Pass("/dev/vda1 -> /mnt/boot".to_string()),
+            "EFI mounted",
+            CheckResult::Pass("/dev/vda1 -> /mnt/boot/efi".to_string()),
         );
 
         // Verify mounts
         let mounts = console.exec("mount | grep /mnt", Duration::from_secs(5))?;
-        if mounts.output.contains("/mnt") && mounts.output.contains("/mnt/boot") {
+        if mounts.output.contains("/mnt") && mounts.output.contains("/mnt/boot/efi") {
             result.add_check(
                 "Mounts verified",
                 CheckResult::Pass("Both partitions mounted".to_string()),

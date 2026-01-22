@@ -69,6 +69,7 @@ dependencies = [
 [[package]]
 name = "cheat-test"
 version = "0.1.0"
+source = "git+https://github.com/LevitateOS/cheat-test.git?branch=master#22b05a55b6701369bfaa696118c13f5546eb304a"
 dependencies = [
  "proc-macro2",
  "quote",

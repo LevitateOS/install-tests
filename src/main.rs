@@ -169,8 +169,9 @@ fn run_tests(
 
     // Validate leviso directory
     let kernel_path = leviso_dir.join("downloads/iso-contents/images/pxeboot/vmlinuz");
-    // Full initramfs - boots to squashfs-based live system which has unsquashfs
-    let initramfs_path = leviso_dir.join("output/initramfs.cpio.gz");
+    // Tiny initramfs - mounts squashfs from ISO, creates overlay, switch_root
+    // The squashfs contains the full system including recstrap and unsquashfs
+    let initramfs_path = leviso_dir.join("output/initramfs-tiny.cpio.gz");
     let iso_path = iso_path.unwrap_or_else(|| leviso_dir.join("output/levitateos.iso"));
 
     if !kernel_path.exists() {
@@ -252,7 +253,7 @@ fn run_tests(
         println!();
 
         // Build QEMU command for live ISO boot
-        // Full initramfs boots to squashfs-based live system with unsquashfs
+        // Tiny initramfs mounts squashfs from ISO, creating a complete live system
         let mut cmd = QemuBuilder::new()
             .kernel(kernel_path.clone())
             .initrd(initramfs_path.clone())
@@ -269,9 +270,9 @@ fn run_tests(
         let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
         let mut console = qemu::Console::new(&mut child)?;
 
-        // Wait for boot
+        // Wait for boot (60s for UEFI + module loading)
         println!("{}", "Waiting for boot...".cyan());
-        console.wait_for_boot(Duration::from_secs(120))?;
+        console.wait_for_boot(Duration::from_secs(60))?;
         println!("{}", "Live ISO booted!".green());
         println!();
 

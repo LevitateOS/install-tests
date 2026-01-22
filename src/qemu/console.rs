@@ -95,26 +95,62 @@ impl Console {
     }
 
     /// Wait for the system to boot (detect "Startup finished")
+    /// FAIL FAST: Immediately bail on error patterns
     pub fn wait_for_boot(&mut self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
 
+        // Error patterns that mean boot failed - FAIL IMMEDIATELY
+        let error_patterns = [
+            "Kernel panic",
+            "emergency shell",
+            "Emergency shell",
+            "VFS: Cannot open root device",
+            "not syncing",
+            "Attempted to kill init",
+            "Boot device not found",
+            "ERROR:",
+            "FAILED:",
+        ];
+
         loop {
             if start.elapsed() > timeout {
-                bail!("Timeout waiting for boot ({}s)", timeout.as_secs());
+                // Dump last 20 lines for debugging
+                let last_lines: Vec<_> = self.output_buffer.iter().rev().take(20).collect();
+                let context = last_lines.into_iter().rev().cloned().collect::<Vec<_>>().join("\n");
+                bail!("Timeout waiting for boot ({}s)\n\nLast output:\n{}", timeout.as_secs(), context);
             }
 
             match self.rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => {
                     self.output_buffer.push(line.clone());
-                    if line.contains("Startup finished") {
-                        // Give shell time to be ready (2s to be safe)
+
+                    // FAIL FAST: Check for error patterns
+                    for pattern in &error_patterns {
+                        if line.contains(pattern) {
+                            // Dump context for debugging
+                            let last_lines: Vec<_> = self.output_buffer.iter().rev().take(30).collect();
+                            let context = last_lines.into_iter().rev().cloned().collect::<Vec<_>>().join("\n");
+                            bail!("Boot failed: {}\n\nContext:\n{}", pattern, context);
+                        }
+                    }
+
+                    // Success patterns - any of these mean boot completed
+                    // "Startup finished" = systemd boot message
+                    // "login:" = reached login prompt
+                    // "LevitateOS Live" = MOTD displayed (system is up)
+                    if line.contains("Startup finished")
+                        || line.contains("login:")
+                        || line.contains("LevitateOS Live")
+                    {
                         std::thread::sleep(Duration::from_secs(2));
                         return Ok(());
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    bail!("QEMU exited before boot completed");
+                    let last_lines: Vec<_> = self.output_buffer.iter().rev().take(20).collect();
+                    let context = last_lines.into_iter().rev().cloned().collect::<Vec<_>>().join("\n");
+                    bail!("QEMU exited before boot completed\n\nLast output:\n{}", context);
                 }
             }
         }

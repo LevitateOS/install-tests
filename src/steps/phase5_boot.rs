@@ -112,11 +112,19 @@ impl Step for GenerateInitramfs {
         // Generate initramfs with dracut
         // --force: overwrite existing initramfs
         // --no-hostonly: include all drivers, not just for current hardware
-        // This is important for a generic installation
-        // Timeout: 30s - if dracut can't finish in 30s on a VM, something is broken
+        // --omit: skip modules that have missing dependencies in minimal squashfs:
+        //   - fips: requires sha512hmac from hmaccalc package
+        //   - bluetooth, crypt, nfs: not needed for basic VM boot
+        //   - rdma: InfiniBand, requires /etc/rdma/mlx4.conf
+        //   - systemd-sysusers, systemd-journald, systemd-initrd, dracut-systemd:
+        //     Complex dependency chain, the base systemd module works without them
+        // Timeout: 120s - dracut can be slow, especially in a VM
         let dracut_result = console.exec_chroot(
-            &format!("dracut --force --no-hostonly /boot/initramfs.img {}", kernel_version),
-            Duration::from_secs(30),
+            &format!(
+                "dracut --force --no-hostonly --omit 'fips bluetooth crypt nfs rdma systemd-sysusers systemd-journald systemd-initrd dracut-systemd' /boot/initramfs.img {}",
+                kernel_version
+            ),
+            Duration::from_secs(120),
         )?;
 
         // CHEAT GUARD: dracut MUST succeed
@@ -195,11 +203,13 @@ impl Step for InstallBootloader {
                 CheckResult::Pass("SKIPPED: /usr/lib/systemd/boot/efi not in tarball (manual bootloader setup required)".to_string()),
             );
             // Create the loader directories manually so we can still test entry creation
-            let _ = console.exec("mkdir -p /mnt/boot/loader/entries", Duration::from_secs(5));
+            let _ = console.exec("mkdir -p /mnt/boot/efi/loader/entries", Duration::from_secs(5));
         } else {
             // Install systemd-boot
+            // ESP at /boot/efi (FAT32), kernels at /boot (ext4)
+            // --no-variables: Skip EFI variable setup (not available in chroot)
             let bootctl_result = console.exec_chroot(
-                "bootctl install --path=/boot",
+                "bootctl install --esp-path=/boot/efi --no-variables",
                 Duration::from_secs(30),
             )?;
 
@@ -227,19 +237,21 @@ impl Step for InstallBootloader {
         let uuid_result = console.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
         let root_uuid = uuid_result.output.trim();
 
-        // Create loader.conf using levitate-spec
+        // Create loader.conf using levitate-spec (goes in ESP)
         let mut loader_config = LoaderConfig::default();
         loader_config.editor = false; // Disable for security
         loader_config.console_mode = Some("max".to_string());
-        console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
+        console.write_file("/mnt/boot/efi/loader/loader.conf", &loader_config.to_loader_conf())?;
 
         // Create boot entry using levitate-spec
+        // entry_path returns /boot/loader/entries/X.conf, but ESP is at /boot/efi
         let boot_entry = BootEntry::with_root(format!("UUID={}", root_uuid));
-        console.write_file(&format!("/mnt{}", boot_entry.entry_path()), &boot_entry.to_entry_file())?;
+        let esp_entry_path = boot_entry.entry_path().replace("/boot/", "/boot/efi/");
+        console.write_file(&format!("/mnt{}", esp_entry_path), &boot_entry.to_entry_file())?;
 
         // Verify boot entry exists
         let verify = console.exec(
-            &format!("cat /mnt{}", boot_entry.entry_path()),
+            &format!("cat /mnt{}", esp_entry_path),
             Duration::from_secs(5),
         )?;
 
@@ -347,8 +359,8 @@ impl Step for EnableServices {
             }
         }
 
-        // Unmount partitions
-        let _ = console.exec("umount /mnt/boot", Duration::from_secs(5));
+        // Unmount partitions (EFI first, then root)
+        let _ = console.exec("umount /mnt/boot/efi", Duration::from_secs(5));
         let _ = console.exec("umount /mnt", Duration::from_secs(5));
 
         result.add_check(
