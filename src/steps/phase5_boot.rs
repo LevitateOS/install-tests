@@ -99,9 +99,10 @@ impl Step for GenerateInitramfs {
         // --force: overwrite existing initramfs
         // --no-hostonly: include all drivers, not just for current hardware
         // This is important for a generic installation
+        // Timeout: 30s - if dracut can't finish in 30s on a VM, something is broken
         let dracut_result = console.exec_chroot(
             &format!("dracut --force --no-hostonly /boot/initramfs.img {}", kernel_version),
-            Duration::from_secs(120), // Dracut can take a while
+            Duration::from_secs(30),
         )?;
 
         if dracut_result.success() {

@@ -28,13 +28,29 @@ pub struct CommandResult {
     pub exit_code: i32,
     /// Output from the command
     pub output: String,
+    /// Whether execution was aborted due to fatal error pattern
+    pub aborted_on_error: bool,
 }
 
 impl CommandResult {
     pub fn success(&self) -> bool {
-        self.completed && self.exit_code == 0
+        self.completed && self.exit_code == 0 && !self.aborted_on_error
     }
 }
+
+/// Fatal error patterns that should cause immediate failure
+/// When ANY of these appear in output, stop waiting and return failure
+const FATAL_ERROR_PATTERNS: &[&str] = &[
+    "dracut[F]:",                   // dracut fatal error
+    "dracut[E]: FAILED:",           // dracut install failed
+    "dracut-install: ERROR:",       // dracut-install binary failed
+    "FATAL:",                       // Generic fatal
+    "Kernel panic",                 // Kernel panic
+    "not syncing",                  // Kernel panic continuation
+    "Segmentation fault",           // Segfault
+    "core dumped",                  // Core dump
+    "systemd-coredump",             // Systemd detected crash
+];
 
 /// Console controller for QEMU serial I/O
 pub struct Console {
@@ -47,8 +63,6 @@ pub struct Console {
     /// Output buffer for all received lines
     output_buffer: Vec<String>,
 }
-
-const DONE_MARKER: &str = "___INSTALL_TEST_DONE___";
 
 impl Console {
     /// Create a new Console from a spawned QEMU process
@@ -108,24 +122,72 @@ impl Console {
 
     /// Execute a command and capture output + exit code
     pub fn exec(&mut self, command: &str, timeout: Duration) -> Result<CommandResult> {
-        // Build command with exit code capture
+        // First, send a sync command and wait for its completion
+        // This ensures all previous output has been flushed through the serial console
+        let sync_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let sync_marker = format!("___SYNC_{}___", sync_id);
+
+        // Send sync command
+        let sync_cmd = format!("echo '{}'\n", sync_marker);
+        self.stdin.write_all(sync_cmd.as_bytes())?;
+        self.stdin.flush()?;
+
+        // Wait for sync marker with short timeout, draining everything before it
+        let sync_start = Instant::now();
+        loop {
+            if sync_start.elapsed() > Duration::from_secs(5) {
+                // Sync timeout - continue anyway but log it
+                eprintln!("  WARN: Sync timeout, continuing anyway");
+                break;
+            }
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(line) => {
+                    self.output_buffer.push(line.clone());
+                    let clean = strip_ansi_codes(&line);
+                    if clean.contains(&sync_marker) {
+                        // Found sync marker - all previous output has been flushed
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        // Small additional delay for shell to be ready for next command
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Generate unique markers for this command
+        let cmd_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let start_marker = format!("___START_{}___", cmd_id);
+        let done_marker = format!("___DONE_{}___", cmd_id);
+
+        // Build command with unique start and end markers
         let full_cmd = format!(
-            "{}; echo '{}' $?\n",
-            command, DONE_MARKER
+            "echo '{}'; {}; echo '{}' $?\n",
+            start_marker, command, done_marker
         );
 
         self.stdin.write_all(full_cmd.as_bytes())?;
         self.stdin.flush()?;
 
-        let start = Instant::now();
+        let exec_start = Instant::now();
         let mut output = String::new();
+        let mut collecting = false;
 
         loop {
-            if start.elapsed() > timeout {
+            if exec_start.elapsed() > timeout {
                 return Ok(CommandResult {
                     completed: false,
                     exit_code: -1,
                     output,
+                    aborted_on_error: false,
                 });
             }
 
@@ -133,21 +195,65 @@ impl Console {
                 Ok(line) => {
                     self.output_buffer.push(line.clone());
 
-                    // Check for completion marker at the START of the trimmed line
-                    // This avoids matching the command echo which contains the marker in quotes
-                    let trimmed = line.trim();
-                    if let Some(rest) = trimmed.strip_prefix(DONE_MARKER) {
-                        let exit_code = rest.trim().parse().unwrap_or(-1);
-                        return Ok(CommandResult {
-                            completed: true,
-                            exit_code,
-                            output,
-                        });
+                    // Strip ANSI escape codes for cleaner matching
+                    let clean_line = strip_ansi_codes(&line);
+                    let trimmed = clean_line.trim();
+
+                    // FAIL FAST: Check for fatal error patterns IMMEDIATELY
+                    for pattern in FATAL_ERROR_PATTERNS {
+                        if trimmed.contains(pattern) {
+                            eprintln!("  FATAL ERROR DETECTED: {}", trimmed);
+                            output.push_str(&line);
+                            output.push('\n');
+                            return Ok(CommandResult {
+                                completed: false,
+                                exit_code: 1,
+                                output,
+                                aborted_on_error: true,
+                            });
+                        }
                     }
 
-                    // Don't add command echo lines to output (they contain the typed command)
-                    // These lines typically contain # or root@ prompt
-                    if !line.contains("root@") && !line.contains("# ") {
+                    // Wait for start marker before collecting output
+                    // Check if line contains our marker (not just ends with - may have terminal codes)
+                    if trimmed.contains(&start_marker) {
+                        collecting = true;
+                        continue;
+                    }
+
+                    // Check for completion marker (unique per command)
+                    // The done marker is followed by a space and exit code (number).
+                    // Using unique markers avoids matching output from previous commands.
+                    if let Some(pos) = trimmed.find(&done_marker) {
+                        let rest = &trimmed[pos + done_marker.len()..];
+                        let rest_trimmed = rest.trim();
+                        // Only match if the rest starts with a digit (the exit code)
+                        if rest_trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                            let exit_code = rest_trimmed.split_whitespace().next()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(-1);
+                            return Ok(CommandResult {
+                                completed: true,
+                                exit_code,
+                                output,
+                                aborted_on_error: false,
+                            });
+                        }
+                    }
+
+                    // Only collect output after we've seen the start marker
+                    if !collecting {
+                        continue;
+                    }
+
+                    // Filter out:
+                    // 1. Shell prompts (root@host:~#, [root@host ~]#, etc)
+                    // 2. Command echo lines (contain the done marker in quotes)
+                    // 3. Start marker lines
+                    let is_prompt = line.contains("root@") || line.contains("# ");
+                    let is_command_echo = line.contains(&done_marker) || line.contains(&start_marker);
+
+                    if !is_prompt && !is_command_echo {
                         output.push_str(&line);
                         output.push('\n');
                     }
@@ -158,6 +264,7 @@ impl Console {
                         completed: false,
                         exit_code: -1,
                         output,
+                        aborted_on_error: false,
                     });
                 }
             }
@@ -275,4 +382,29 @@ impl Console {
         self.exec_ok(&cmd, Duration::from_secs(10))?;
         Ok(())
     }
+}
+
+/// Strip ANSI escape codes from a string
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip escape sequence
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Skip until we find a letter (the command)
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
