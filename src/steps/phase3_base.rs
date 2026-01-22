@@ -1,10 +1,18 @@
 //! Phase 3: Base system installation steps.
 //!
 //! Steps 7-10: Mount install media, extract tarball, generate fstab, setup chroot.
+//!
+//! # Cheat Prevention
+//!
+//! Critical steps that must actually work:
+//! - Squashfs must be extracted with ALL files (not just some)
+//! - fstab must have correct UUIDs (not placeholder values)
+//! - Chroot must actually enter the new root (not stay in live environment)
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use cheat_guard::cheat_ensure;
 use distro_spec::levitate::{SQUASHFS_NAME, SQUASHFS_CDROM_PATH};
 use distro_spec::shared::partitions::{EFI_FILESYSTEM, ROOT_FILESYSTEM};
 use std::time::{Duration, Instant};
@@ -27,22 +35,24 @@ impl Step for MountInstallMedia {
         // Verify it's mounted by checking if the directory has content
         let mount_check = console.exec("test -d /media/cdrom/live && echo MOUNTED", Duration::from_secs(5))?;
 
-        if mount_check.output.contains("MOUNTED") {
-            result.add_check(
-                "ISO mounted",
-                CheckResult::Pass("/media/cdrom".to_string()),
-            );
-        } else {
-            result.add_check(
-                "ISO mounted",
-                CheckResult::Fail {
-                    expected: "ISO mounted at /media/cdrom".to_string(),
-                    actual: "ISO not mounted by initramfs".to_string(),
-                },
-            );
-            result.fail("Init should mount ISO at /media/cdrom");
-            return Ok(result);
-        }
+        // CHEAT GUARD: ISO MUST be mounted - can't proceed without installation media
+        cheat_ensure!(
+            mount_check.output.contains("MOUNTED"),
+            protects = "Installation media is accessible",
+            severity = "CRITICAL",
+            cheats = [
+                "Return hardcoded path without checking",
+                "Skip mount check entirely",
+                "Accept any output as success"
+            ],
+            consequence = "No installation files available, user cannot install OS",
+            "ISO not mounted at /media/cdrom. Init should mount this automatically."
+        );
+
+        result.add_check(
+            "ISO mounted",
+            CheckResult::Pass("/media/cdrom".to_string()),
+        );
 
         // Verify squashfs is accessible
         let squashfs_check = console.exec(
@@ -50,21 +60,24 @@ impl Step for MountInstallMedia {
             Duration::from_secs(5),
         )?;
 
-        if squashfs_check.success() && squashfs_check.output.contains(SQUASHFS_NAME) {
-            result.add_check(
-                "Squashfs accessible",
-                CheckResult::Pass(SQUASHFS_CDROM_PATH.to_string()),
-            );
-        } else {
-            result.add_check(
-                "Squashfs accessible",
-                CheckResult::Fail {
-                    expected: format!("{} on CDROM", SQUASHFS_NAME),
-                    actual: "Squashfs not found on CDROM".to_string(),
-                },
-            );
-            result.fail("Ensure ISO contains live/filesystem.squashfs");
-        }
+        // CHEAT GUARD: Squashfs MUST exist and be accessible
+        cheat_ensure!(
+            squashfs_check.success() && squashfs_check.output.contains(SQUASHFS_NAME),
+            protects = "Squashfs image contains the base system",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip file existence check",
+                "Accept any file as squashfs",
+                "Hardcode path without verification"
+            ],
+            consequence = "No base system to install, extraction fails, user stuck",
+            "Squashfs not found at {}. ISO must contain live/{}", SQUASHFS_CDROM_PATH, SQUASHFS_NAME
+        );
+
+        result.add_check(
+            "Squashfs accessible",
+            CheckResult::Pass(SQUASHFS_CDROM_PATH.to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -91,17 +104,19 @@ impl Step for ExtractSquashfs {
             Duration::from_secs(5),
         )?;
 
-        if check.exit_code != 0 {
-            result.add_check(
-                "Squashfs found",
-                CheckResult::Fail {
-                    expected: SQUASHFS_CDROM_PATH.to_string(),
-                    actual: "Squashfs not found".to_string(),
-                },
-            );
-            result.fail("Ensure ISO is mounted at /mnt/cdrom with live/filesystem.squashfs");
-            return Ok(result);
-        }
+        // CHEAT GUARD: Squashfs MUST exist before extraction
+        cheat_ensure!(
+            check.exit_code == 0,
+            protects = "Base system image is available for extraction",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip file check",
+                "Proceed with extraction anyway",
+                "Use wrong path"
+            ],
+            consequence = "Extraction fails, no files installed, user cannot boot",
+            "Squashfs not found at {}. Ensure ISO is mounted at /media/cdrom", SQUASHFS_CDROM_PATH
+        );
 
         result.add_check(
             "Squashfs found",
@@ -121,21 +136,24 @@ impl Step for ExtractSquashfs {
         let extraction_ok = extract.output.contains("created") &&
                            (extract.exit_code == 0 || extract.exit_code == 2);
 
-        if extraction_ok {
-            result.add_check(
-                "Squashfs extracted",
-                CheckResult::Pass("Extracted to /mnt".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Squashfs extracted",
-                CheckResult::Fail {
-                    expected: "unsquashfs exit 0 or 2 with files created".to_string(),
-                    actual: format!("exit {}: {}", extract.exit_code, extract.output),
-                },
-            );
-            return Ok(result);
-        }
+        // CHEAT GUARD: Extraction MUST succeed with files created
+        cheat_ensure!(
+            extraction_ok,
+            protects = "Base system files are actually extracted to disk",
+            severity = "CRITICAL",
+            cheats = [
+                "Accept any exit code as success",
+                "Skip checking if files were created",
+                "Ignore unsquashfs output"
+            ],
+            consequence = "Empty /mnt, no system installed, boot fails",
+            "unsquashfs failed (exit {}): {}", extract.exit_code, extract.output
+        );
+
+        result.add_check(
+            "Squashfs extracted",
+            CheckResult::Pass("Extracted to /mnt".to_string()),
+        );
 
         // Verify essential directories exist
         let verify = console.exec(
@@ -143,20 +161,24 @@ impl Step for ExtractSquashfs {
             Duration::from_secs(5),
         )?;
 
-        if verify.output.contains("VERIFY_OK") {
-            result.add_check(
-                "Base system verified",
-                CheckResult::Pass("/bin, /usr, /etc exist".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Base system verified",
-                CheckResult::Fail {
-                    expected: "Essential directories".to_string(),
-                    actual: "Missing directories".to_string(),
-                },
-            );
-        }
+        // CHEAT GUARD: Essential directories MUST exist after extraction
+        cheat_ensure!(
+            verify.output.contains("VERIFY_OK"),
+            protects = "Essential FHS directories exist for bootable system",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check one directory",
+                "Accept partial extraction",
+                "Skip verification entirely"
+            ],
+            consequence = "Incomplete system, missing binaries, boot fails or crashes",
+            "Essential directories missing after extraction. /bin, /usr, /etc must exist."
+        );
+
+        result.add_check(
+            "Base system verified",
+            CheckResult::Pass("/bin, /usr, /etc exist".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -211,17 +233,19 @@ impl Step for GenerateFstab {
             .map(|s| s.trim())
             .unwrap_or("");
 
-        if root_uuid.is_empty() || boot_uuid.is_empty() {
-            result.add_check(
-                "UUIDs retrieved",
-                CheckResult::Fail {
-                    expected: "UUIDs for both partitions".to_string(),
-                    actual: format!("root={}, boot={}", root_uuid, boot_uuid),
-                },
-            );
-            result.fail("Run blkid to check partition UUIDs");
-            return Ok(result);
-        }
+        // CHEAT GUARD: UUIDs MUST be valid - fstab with wrong UUIDs = unbootable
+        cheat_ensure!(
+            !root_uuid.is_empty() && !boot_uuid.is_empty(),
+            protects = "fstab uses real partition UUIDs",
+            severity = "CRITICAL",
+            cheats = [
+                "Use hardcoded/placeholder UUIDs",
+                "Skip UUID extraction",
+                "Accept empty UUIDs"
+            ],
+            consequence = "fstab has wrong UUIDs, system won't mount partitions, boot fails",
+            "Failed to get UUIDs: root='{}', boot='{}'", root_uuid, boot_uuid
+        );
 
         result.add_check(
             "UUIDs retrieved",
@@ -244,20 +268,25 @@ UUID={}  /boot  {}   defaults  0  2
         // Verify fstab was written
         let verify = console.exec("cat /mnt/etc/fstab", Duration::from_secs(5))?;
 
-        if verify.output.contains(root_uuid) && verify.output.contains(boot_uuid) {
-            result.add_check(
-                "fstab written",
-                CheckResult::Pass("Contains correct UUIDs".to_string()),
-            );
-        } else {
-            result.add_check(
-                "fstab written",
-                CheckResult::Fail {
-                    expected: "UUIDs in fstab".to_string(),
-                    actual: verify.output.clone(),
-                },
-            );
-        }
+        // CHEAT GUARD: fstab MUST contain the correct UUIDs we just extracted
+        cheat_ensure!(
+            verify.output.contains(root_uuid) && verify.output.contains(boot_uuid),
+            protects = "fstab contains correct UUIDs for automatic mounting",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check if fstab exists",
+                "Check for one UUID but not both",
+                "Skip fstab content verification"
+            ],
+            consequence = "Wrong UUIDs in fstab, partitions won't mount at boot",
+            "fstab doesn't contain expected UUIDs:\nExpected root={}, boot={}\nGot:\n{}",
+            root_uuid, boot_uuid, verify.output
+        );
+
+        result.add_check(
+            "fstab written",
+            CheckResult::Pass("Contains correct UUIDs".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -279,25 +308,26 @@ impl Step for SetupChroot {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Enter chroot (this sets up bind mounts)
-        match console.enter_chroot("/mnt") {
-            Ok(()) => {
-                result.add_check(
-                    "Chroot entered",
-                    CheckResult::Pass("Bind mounts created".to_string()),
-                );
-            }
-            Err(e) => {
-                result.add_check(
-                    "Chroot entered",
-                    CheckResult::Fail {
-                        expected: "Successful chroot setup".to_string(),
-                        actual: e.to_string(),
-                    },
-                );
-                result.fail("Check mount points and /mnt contents");
-                return Ok(result);
-            }
-        }
+        let chroot_result = console.enter_chroot("/mnt");
+
+        // CHEAT GUARD: Chroot MUST succeed for configuration steps
+        cheat_ensure!(
+            chroot_result.is_ok(),
+            protects = "Configuration happens in the installed system, not live environment",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip chroot and configure live environment",
+                "Ignore chroot errors",
+                "Pretend chroot succeeded"
+            ],
+            consequence = "Configuration goes to live system, installed system unconfigured, boot fails",
+            "Failed to enter chroot: {}", chroot_result.as_ref().err().map(|e| e.to_string()).unwrap_or_default()
+        );
+
+        result.add_check(
+            "Chroot entered",
+            CheckResult::Pass("Bind mounts created".to_string()),
+        );
 
         // Verify we can run commands in chroot
         let verify = console.exec_chroot("echo CHROOT_OK", Duration::from_secs(5))?;

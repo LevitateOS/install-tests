@@ -156,20 +156,24 @@ impl Step for FormatPartitions {
             Duration::from_secs(30),
         )?;
 
-        if fat_result.success() {
-            result.add_check(
-                "EFI partition formatted",
-                CheckResult::Pass("FAT32 on /dev/vda1".to_string()),
-            );
-        } else {
-            result.add_check(
-                "EFI partition formatted",
-                CheckResult::Fail {
-                    expected: "mkfs.fat exit 0".to_string(),
-                    actual: format!("exit {}", fat_result.exit_code),
-                },
-            );
-        }
+        // CHEAT GUARD: EFI partition MUST be formatted as FAT32
+        cheat_ensure!(
+            fat_result.success(),
+            protects = "EFI partition has FAT32 filesystem for UEFI boot",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip format step",
+                "Accept any exit code",
+                "Format wrong partition"
+            ],
+            consequence = "EFI partition unreadable by UEFI firmware, system won't boot",
+            "mkfs.fat failed (exit {}): {}", fat_result.exit_code, fat_result.output
+        );
+
+        result.add_check(
+            "EFI partition formatted",
+            CheckResult::Pass("FAT32 on /dev/vda1".to_string()),
+        );
 
         // Format root partition as ext4
         let ext4_result = console.exec(
@@ -177,20 +181,24 @@ impl Step for FormatPartitions {
             Duration::from_secs(60),
         )?;
 
-        if ext4_result.success() {
-            result.add_check(
-                "Root partition formatted",
-                CheckResult::Pass("ext4 on /dev/vda2".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Root partition formatted",
-                CheckResult::Fail {
-                    expected: "mkfs.ext4 exit 0".to_string(),
-                    actual: format!("exit {}", ext4_result.exit_code),
-                },
-            );
-        }
+        // CHEAT GUARD: Root partition MUST be formatted as ext4
+        cheat_ensure!(
+            ext4_result.success(),
+            protects = "Root partition has ext4 filesystem for system files",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip format step",
+                "Accept any exit code",
+                "Format wrong partition"
+            ],
+            consequence = "Root partition unreadable, system cannot mount rootfs, VFS panic",
+            "mkfs.ext4 failed (exit {}): {}", ext4_result.exit_code, ext4_result.output
+        );
+
+        result.add_check(
+            "Root partition formatted",
+            CheckResult::Pass("ext4 on /dev/vda2".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -215,40 +223,47 @@ impl Step for MountPartitions {
         console.exec("mkdir -p /mnt", Duration::from_secs(5))?;
         let mount_root = console.exec("mount /dev/vda2 /mnt", Duration::from_secs(10))?;
 
-        if mount_root.success() {
-            result.add_check(
-                "Root mounted",
-                CheckResult::Pass("/dev/vda2 -> /mnt".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Root mounted",
-                CheckResult::Fail {
-                    expected: "mount exit 0".to_string(),
-                    actual: format!("exit {}: {}", mount_root.exit_code, mount_root.output),
-                },
-            );
-            return Ok(result);
-        }
+        // CHEAT GUARD: Root partition MUST be mounted for installation
+        cheat_ensure!(
+            mount_root.success(),
+            protects = "Root partition is mounted for file extraction",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip mount",
+                "Extract to live filesystem instead",
+                "Accept mount failure"
+            ],
+            consequence = "Files extracted to wrong location, installed system empty",
+            "Failed to mount /dev/vda2 to /mnt (exit {}): {}", mount_root.exit_code, mount_root.output
+        );
+
+        result.add_check(
+            "Root mounted",
+            CheckResult::Pass("/dev/vda2 -> /mnt".to_string()),
+        );
 
         // Create and mount boot partition
         console.exec("mkdir -p /mnt/boot", Duration::from_secs(5))?;
         let mount_boot = console.exec("mount /dev/vda1 /mnt/boot", Duration::from_secs(10))?;
 
-        if mount_boot.success() {
-            result.add_check(
-                "Boot mounted",
-                CheckResult::Pass("/dev/vda1 -> /mnt/boot".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Boot mounted",
-                CheckResult::Fail {
-                    expected: "mount exit 0".to_string(),
-                    actual: format!("exit {}", mount_boot.exit_code),
-                },
-            );
-        }
+        // CHEAT GUARD: Boot partition MUST be mounted for bootloader
+        cheat_ensure!(
+            mount_boot.success(),
+            protects = "Boot partition is mounted for kernel and initramfs",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip boot mount",
+                "Install bootloader to wrong location",
+                "Accept mount failure"
+            ],
+            consequence = "Kernel/initramfs in wrong place, UEFI can't find bootloader",
+            "Failed to mount /dev/vda1 to /mnt/boot (exit {}): {}", mount_boot.exit_code, mount_boot.output
+        );
+
+        result.add_check(
+            "Boot mounted",
+            CheckResult::Pass("/dev/vda1 -> /mnt/boot".to_string()),
+        );
 
         // Verify mounts
         let mounts = console.exec("mount | grep /mnt", Duration::from_secs(5))?;

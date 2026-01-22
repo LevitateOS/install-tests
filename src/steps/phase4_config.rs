@@ -1,10 +1,16 @@
 //! Phase 4: System configuration steps.
 //!
 //! Steps 11-15: Timezone, locale, hostname, root password, user creation.
+//!
+//! # Cheat Prevention
+//!
+//! Configuration MUST happen in chroot, not live environment.
+//! User creation MUST include password - empty passwords = security hole.
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use cheat_guard::cheat_ensure;
 use distro_spec::levitate::{DEFAULT_HOSTNAME, default_user};
 use std::time::{Duration, Instant};
 
@@ -195,20 +201,24 @@ impl Step for SetRootPassword {
 
         let passwd_result = console.exec_chroot(password_cmd, Duration::from_secs(10))?;
 
-        if passwd_result.success() {
-            result.add_check(
-                "Root password set",
-                CheckResult::Pass("Password configured".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Root password set",
-                CheckResult::Fail {
-                    expected: "chpasswd exit 0".to_string(),
-                    actual: format!("exit {}: {}", passwd_result.exit_code, passwd_result.output),
-                },
-            );
-        }
+        // CHEAT GUARD: Root password MUST be set for emergency access
+        cheat_ensure!(
+            passwd_result.success(),
+            protects = "Root account has password for emergency recovery",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip password setting",
+                "Accept failure silently",
+                "Leave root with empty password"
+            ],
+            consequence = "No root password = locked out of system recovery, or security vulnerability",
+            "chpasswd failed (exit {}): {}", passwd_result.exit_code, passwd_result.output
+        );
+
+        result.add_check(
+            "Root password set",
+            CheckResult::Pass("Password configured".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -259,21 +269,24 @@ impl Step for CreateUser {
             Duration::from_secs(10),
         )?;
 
-        if useradd_result.success() {
-            result.add_check(
-                "User created",
-                CheckResult::Pass(format!("User '{}' created", username)),
-            );
-        } else {
-            result.add_check(
-                "User created",
-                CheckResult::Fail {
-                    expected: "useradd exit 0".to_string(),
-                    actual: format!("exit {}: {}", useradd_result.exit_code, useradd_result.output),
-                },
-            );
-            return Ok(result);
-        }
+        // CHEAT GUARD: User account MUST be created for daily use
+        cheat_ensure!(
+            useradd_result.success(),
+            protects = "Primary user account exists for daily operation",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip user creation",
+                "Ignore useradd errors",
+                "Only check if command was attempted"
+            ],
+            consequence = "No user account, must login as root (dangerous), or locked out entirely",
+            "useradd failed (exit {}): {}", useradd_result.exit_code, useradd_result.output
+        );
+
+        result.add_check(
+            "User created",
+            CheckResult::Pass(format!("User '{}' created", username)),
+        );
 
         // Set user password
         let passwd_result = console.exec_chroot(
@@ -281,20 +294,24 @@ impl Step for CreateUser {
             Duration::from_secs(10),
         )?;
 
-        if passwd_result.success() {
-            result.add_check(
-                "User password set",
-                CheckResult::Pass("Password configured".to_string()),
-            );
-        } else {
-            result.add_check(
-                "User password set",
-                CheckResult::Fail {
-                    expected: "chpasswd exit 0".to_string(),
-                    actual: format!("exit {}", passwd_result.exit_code),
-                },
-            );
-        }
+        // CHEAT GUARD: User password MUST be set
+        cheat_ensure!(
+            passwd_result.success(),
+            protects = "User account has password for authentication",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip password setting",
+                "Accept chpasswd failure",
+                "Leave user with empty password"
+            ],
+            consequence = "User cannot login, or security vulnerability with empty password",
+            "Failed to set password for '{}' (exit {})", username, passwd_result.exit_code
+        );
+
+        result.add_check(
+            "User password set",
+            CheckResult::Pass("Password configured".to_string()),
+        );
 
         // Verify user exists
         let verify = console.exec_chroot(

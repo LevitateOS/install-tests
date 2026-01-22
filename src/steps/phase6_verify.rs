@@ -7,10 +7,19 @@
 //! These steps run AFTER rebooting into the installed system.
 //! They prove the installation succeeded - without these, we only know
 //! files were copied to disk, not that the system is usable.
+//!
+//! # Cheat Prevention
+//!
+//! These are the ONLY steps that prove installation worked.
+//! Without verification, all prior steps are meaningless.
+//! - systemd running as PID 1 proves init works
+//! - User login proves authentication works
+//! - Essential commands prove base system is complete
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
 /// Step 19: Verify systemd started successfully
@@ -30,22 +39,24 @@ impl Step for VerifySystemdBoot {
         // Check systemd is running (PID 1)
         let pid1 = console.exec("cat /proc/1/comm", Duration::from_secs(5))?;
 
-        if pid1.output.contains("systemd") {
-            result.add_check(
-                "systemd is PID 1",
-                CheckResult::Pass("systemd running as init".to_string()),
-            );
-        } else {
-            result.add_check(
-                "systemd is PID 1",
-                CheckResult::Fail {
-                    expected: "systemd".to_string(),
-                    actual: pid1.output.trim().to_string(),
-                },
-            );
-            result.fail("System did not boot with systemd as init");
-            return Ok(result);
-        }
+        // CHEAT GUARD: systemd MUST be PID 1 for proper boot
+        cheat_ensure!(
+            pid1.output.contains("systemd"),
+            protects = "System booted with systemd as init",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip PID 1 check",
+                "Accept any init system",
+                "Assume systemd is running"
+            ],
+            consequence = "System didn't boot properly, may be in emergency shell or wrong init",
+            "PID 1 is '{}', expected 'systemd'", pid1.output.trim()
+        );
+
+        result.add_check(
+            "systemd is PID 1",
+            CheckResult::Pass("systemd running as init".to_string()),
+        );
 
         // Check we reached multi-user target
         let target = console.exec(
@@ -159,22 +170,24 @@ impl Step for VerifyUserLogin {
         // Check user exists
         let user_check = console.exec("id levitate", Duration::from_secs(5))?;
 
-        if user_check.success() {
-            result.add_check(
-                "User exists",
-                CheckResult::Pass("levitate user found".to_string()),
-            );
-        } else {
-            result.add_check(
-                "User exists",
-                CheckResult::Fail {
-                    expected: "user levitate".to_string(),
-                    actual: "User not found".to_string(),
-                },
-            );
-            result.fail("User was not created during installation");
-            return Ok(result);
-        }
+        // CHEAT GUARD: User account MUST exist after reboot
+        cheat_ensure!(
+            user_check.success(),
+            protects = "User account persisted across reboot",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip user verification",
+                "Only check during installation",
+                "Assume user exists"
+            ],
+            consequence = "User account lost after reboot, cannot login as non-root user",
+            "User 'levitate' not found after reboot - user creation may have failed"
+        );
+
+        result.add_check(
+            "User exists",
+            CheckResult::Pass("levitate user found".to_string()),
+        );
 
         // Check home directory exists and is accessible
         let home_check = console.exec(
@@ -320,17 +333,19 @@ impl Step for VerifySudo {
         // Check sudo is installed
         let sudo_check = console.exec("which sudo", Duration::from_secs(5))?;
 
-        if !sudo_check.success() {
-            result.add_check(
-                "sudo installed",
-                CheckResult::Fail {
-                    expected: "sudo binary".to_string(),
-                    actual: "sudo not found".to_string(),
-                },
-            );
-            result.fail("Install sudo package");
-            return Ok(result);
-        }
+        // CHEAT GUARD: sudo MUST be installed for privilege escalation
+        cheat_ensure!(
+            sudo_check.success(),
+            protects = "Users can elevate privileges for administration",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip sudo check",
+                "Accept su as alternative",
+                "Assume sudo exists"
+            ],
+            consequence = "No sudo = users must login as root or su, security and usability nightmare",
+            "sudo binary not found - base system missing sudo package"
+        );
 
         result.add_check(
             "sudo installed",

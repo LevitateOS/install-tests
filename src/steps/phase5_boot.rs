@@ -1,10 +1,18 @@
 //! Phase 5: Bootloader installation steps.
 //!
 //! Steps 16-18: Generate initramfs, install bootloader, enable services.
+//!
+//! # Cheat Prevention
+//!
+//! Boot-critical steps that MUST work:
+//! - initramfs MUST be generated (no initramfs = kernel panic)
+//! - boot entry MUST have correct root UUID (wrong UUID = VFS panic)
+//! - Essential services MUST be enabled (no getty = no login prompt)
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use cheat_guard::cheat_ensure;
 use distro_spec::levitate::{BootEntry, LoaderConfig, ENABLED_SERVICES};
 use std::time::{Duration, Instant};
 
@@ -31,17 +39,19 @@ impl Step for GenerateInitramfs {
             Duration::from_secs(5),
         )?;
 
-        if kernel_check.exit_code != 0 {
-            result.add_check(
-                "kernel present",
-                CheckResult::Fail {
-                    expected: "/boot/vmlinuz exists".to_string(),
-                    actual: "Kernel not found - tarball may be incomplete".to_string(),
-                },
-            );
-            result.fail("Install kernel to /boot/vmlinuz before generating initramfs");
-            return Ok(result);
-        }
+        // CHEAT GUARD: Kernel MUST exist before generating initramfs
+        cheat_ensure!(
+            kernel_check.exit_code == 0,
+            protects = "Kernel exists for initramfs generation",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip kernel check",
+                "Generate initramfs without kernel",
+                "Assume kernel exists"
+            ],
+            consequence = "No kernel to boot, system completely unbootable",
+            "Kernel not found at /boot/vmlinuz - tarball may be incomplete"
+        );
 
         result.add_check(
             "kernel present",
@@ -54,17 +64,19 @@ impl Step for GenerateInitramfs {
             Duration::from_secs(5),
         )?;
 
-        if dracut_check.exit_code != 0 {
-            result.add_check(
-                "dracut available",
-                CheckResult::Fail {
-                    expected: "dracut binary present".to_string(),
-                    actual: "dracut not found - install dracut package".to_string(),
-                },
-            );
-            result.fail("dracut is required to generate initramfs");
-            return Ok(result);
-        }
+        // CHEAT GUARD: dracut MUST be available
+        cheat_ensure!(
+            dracut_check.exit_code == 0,
+            protects = "initramfs generator is available",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip dracut check",
+                "Use pre-built initramfs",
+                "Assume dracut exists"
+            ],
+            consequence = "Cannot generate initramfs, system won't boot",
+            "dracut not found - tarball must include dracut package"
+        );
 
         result.add_check(
             "dracut available",
@@ -105,22 +117,24 @@ impl Step for GenerateInitramfs {
             Duration::from_secs(30),
         )?;
 
-        if dracut_result.success() {
-            result.add_check(
-                "initramfs generated",
-                CheckResult::Pass(format!("/boot/initramfs.img for kernel {}", kernel_version)),
-            );
-        } else {
-            result.add_check(
-                "initramfs generated",
-                CheckResult::Fail {
-                    expected: "dracut exit 0".to_string(),
-                    actual: format!("exit {}: {}", dracut_result.exit_code, dracut_result.output),
-                },
-            );
-            result.fail("dracut failed - check for missing dependencies");
-            return Ok(result);
-        }
+        // CHEAT GUARD: dracut MUST succeed
+        cheat_ensure!(
+            dracut_result.success(),
+            protects = "initramfs is generated with required drivers",
+            severity = "CRITICAL",
+            cheats = [
+                "Accept any dracut exit code",
+                "Skip initramfs generation",
+                "Ignore dracut errors"
+            ],
+            consequence = "No initramfs, kernel panic at boot (VFS: cannot open root device)",
+            "dracut failed (exit {}): {}", dracut_result.exit_code, dracut_result.output
+        );
+
+        result.add_check(
+            "initramfs generated",
+            CheckResult::Pass(format!("/boot/initramfs.img for kernel {}", kernel_version)),
+        );
 
         // Verify initramfs was created
         let verify = console.exec_chroot(
@@ -128,20 +142,24 @@ impl Step for GenerateInitramfs {
             Duration::from_secs(5),
         )?;
 
-        if verify.success() {
-            result.add_check(
-                "initramfs verified",
-                CheckResult::Pass(verify.output.trim().to_string()),
-            );
-        } else {
-            result.add_check(
-                "initramfs verified",
-                CheckResult::Fail {
-                    expected: "/boot/initramfs.img exists".to_string(),
-                    actual: "File not found after dracut".to_string(),
-                },
-            );
-        }
+        // CHEAT GUARD: initramfs MUST exist after dracut runs
+        cheat_ensure!(
+            verify.success(),
+            protects = "initramfs file was actually written to disk",
+            severity = "CRITICAL",
+            cheats = [
+                "Trust dracut exit code without file check",
+                "Skip verification",
+                "Accept any file at path"
+            ],
+            consequence = "dracut claims success but no file, kernel panic at boot",
+            "initramfs not found at /boot/initramfs.img after dracut"
+        );
+
+        result.add_check(
+            "initramfs verified",
+            CheckResult::Pass(verify.output.trim().to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -221,20 +239,24 @@ impl Step for InstallBootloader {
             Duration::from_secs(5),
         )?;
 
-        if verify.output.contains(root_uuid) {
-            result.add_check(
-                "Boot entry created",
-                CheckResult::Pass(format!("{} with correct UUID", boot_entry.filename)),
-            );
-        } else {
-            result.add_check(
-                "Boot entry created",
-                CheckResult::Fail {
-                    expected: format!("Entry with UUID {}", root_uuid),
-                    actual: "Entry missing or incorrect".to_string(),
-                },
-            );
-        }
+        // CHEAT GUARD: Boot entry MUST contain correct root UUID
+        cheat_ensure!(
+            verify.output.contains(root_uuid),
+            protects = "Boot entry points to correct root partition",
+            severity = "CRITICAL",
+            cheats = [
+                "Use hardcoded UUID",
+                "Skip UUID verification",
+                "Only check if entry file exists"
+            ],
+            consequence = "Wrong root UUID in boot entry, VFS panic (cannot mount root)",
+            "Boot entry missing or has wrong UUID. Expected {}, got:\n{}", root_uuid, verify.output
+        );
+
+        result.add_check(
+            "Boot entry created",
+            CheckResult::Pass(format!("{} with correct UUID", boot_entry.filename)),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
