@@ -5,7 +5,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
-use distro_spec::levitate::{TARBALL_NAME, paths::TARBALL_SEARCH_PATHS};
+use distro_spec::levitate::{SQUASHFS_NAME, SQUASHFS_CDROM_PATH};
 use distro_spec::shared::partitions::{EFI_FILESYSTEM, ROOT_FILESYSTEM};
 use std::time::{Duration, Instant};
 
@@ -16,74 +16,54 @@ impl Step for MountInstallMedia {
     fn num(&self) -> usize { 7 }
     fn name(&self) -> &str { "Mount Installation Media" }
     fn ensures(&self) -> &str {
-        "Installation media (ISO) is mounted and tarball is accessible"
+        "Installation media (ISO) is mounted and squashfs is accessible"
     }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Check for /dev/sr0 (CDROM device via virtio-scsi)
-        let lsblk = console.exec("lsblk -d -o NAME,TYPE | grep rom", Duration::from_secs(5))?;
+        // The init script mounts the ISO at /media/cdrom
+        // Verify it's mounted by checking if the directory has content
+        let mount_check = console.exec("test -d /media/cdrom/live && echo MOUNTED", Duration::from_secs(5))?;
 
-        if lsblk.output.contains("sr0") {
+        if mount_check.output.contains("MOUNTED") {
             result.add_check(
-                "CDROM device found",
-                CheckResult::Pass("/dev/sr0 detected".to_string()),
+                "ISO mounted",
+                CheckResult::Pass("/media/cdrom".to_string()),
             );
         } else {
             result.add_check(
-                "CDROM device found",
+                "ISO mounted",
                 CheckResult::Fail {
-                    expected: "/dev/sr0 (virtio-scsi CDROM)".to_string(),
-                    actual: format!("Found: {}", lsblk.output.trim()),
+                    expected: "ISO mounted at /media/cdrom".to_string(),
+                    actual: "ISO not mounted by initramfs".to_string(),
                 },
             );
-            result.fail("Ensure ISO is attached as virtio-scsi CDROM");
+            result.fail("Init should mount ISO at /media/cdrom");
             return Ok(result);
         }
 
-        // Create mount point and mount CDROM
-        console.exec("mkdir -p /mnt/cdrom", Duration::from_secs(5))?;
-        let mount_result = console.exec("mount /dev/sr0 /mnt/cdrom", Duration::from_secs(10))?;
-
-        if mount_result.success() {
-            result.add_check(
-                "CDROM mounted",
-                CheckResult::Pass("/dev/sr0 -> /mnt/cdrom".to_string()),
-            );
-        } else {
-            result.add_check(
-                "CDROM mounted",
-                CheckResult::Fail {
-                    expected: "mount exit 0".to_string(),
-                    actual: format!("exit {}: {}", mount_result.exit_code, mount_result.output),
-                },
-            );
-            result.fail("Check kernel modules: virtio_scsi, cdrom, sr_mod, isofs");
-            return Ok(result);
-        }
-
-        // Verify tarball is accessible
-        let tarball_check = console.exec(
-            &format!("ls -la /mnt/cdrom/{}", TARBALL_NAME),
+        // Verify squashfs is accessible
+        let squashfs_check = console.exec(
+            &format!("ls -la {}", SQUASHFS_CDROM_PATH),
             Duration::from_secs(5),
         )?;
 
-        if tarball_check.success() && tarball_check.output.contains(TARBALL_NAME) {
+        if squashfs_check.success() && squashfs_check.output.contains(SQUASHFS_NAME) {
             result.add_check(
-                "Tarball accessible",
-                CheckResult::Pass(format!("/mnt/cdrom/{}", TARBALL_NAME)),
+                "Squashfs accessible",
+                CheckResult::Pass(SQUASHFS_CDROM_PATH.to_string()),
             );
         } else {
             result.add_check(
-                "Tarball accessible",
+                "Squashfs accessible",
                 CheckResult::Fail {
-                    expected: format!("{} on CDROM", TARBALL_NAME),
-                    actual: "Tarball not found on CDROM".to_string(),
+                    expected: format!("{} on CDROM", SQUASHFS_NAME),
+                    actual: "Squashfs not found on CDROM".to_string(),
                 },
             );
-            result.fail("Ensure ISO contains the base tarball");
+            result.fail("Ensure ISO contains live/filesystem.squashfs");
         }
 
         result.duration = start.elapsed();
@@ -91,12 +71,12 @@ impl Step for MountInstallMedia {
     }
 }
 
-/// Step 8: Extract stage3 tarball
-pub struct ExtractTarball;
+/// Step 8: Extract squashfs image
+pub struct ExtractSquashfs;
 
-impl Step for ExtractTarball {
+impl Step for ExtractSquashfs {
     fn num(&self) -> usize { 8 }
-    fn name(&self) -> &str { "Extract Stage3 Tarball" }
+    fn name(&self) -> &str { "Extract Squashfs Image" }
     fn ensures(&self) -> &str {
         "Base system is extracted with all essential directories present"
     }
@@ -105,59 +85,52 @@ impl Step for ExtractTarball {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Find tarball by checking each path individually
-        // Use exit code (test -f returns 0 if file exists)
-        let mut tarball_path: Option<&str> = None;
-        for path in TARBALL_SEARCH_PATHS {
-            let check = console.exec(
-                &format!("test -f {}", path),
-                Duration::from_secs(5),
-            )?;
-            if check.exit_code == 0 {
-                tarball_path = Some(path);
-                break;
-            }
+        // Check squashfs exists
+        let check = console.exec(
+            &format!("test -f {}", SQUASHFS_CDROM_PATH),
+            Duration::from_secs(5),
+        )?;
+
+        if check.exit_code != 0 {
+            result.add_check(
+                "Squashfs found",
+                CheckResult::Fail {
+                    expected: SQUASHFS_CDROM_PATH.to_string(),
+                    actual: "Squashfs not found".to_string(),
+                },
+            );
+            result.fail("Ensure ISO is mounted at /mnt/cdrom with live/filesystem.squashfs");
+            return Ok(result);
         }
 
-        let tarball_path = match tarball_path {
-            Some(path) => path,
-            None => {
-                result.add_check(
-                    "Tarball found",
-                    CheckResult::Fail {
-                        expected: format!("{} in search paths", TARBALL_NAME),
-                        actual: "Tarball not found".to_string(),
-                    },
-                );
-                result.fail(&format!(
-                    "Ensure {} is included in the ISO or copied to the live system. Searched: {:?}",
-                    TARBALL_NAME, TARBALL_SEARCH_PATHS
-                ));
-                return Ok(result);
-            }
-        };
-
         result.add_check(
-            "Tarball found",
-            CheckResult::Pass(format!("Found at {}", tarball_path)),
+            "Squashfs found",
+            CheckResult::Pass(SQUASHFS_CDROM_PATH.to_string()),
         );
 
-        // Extract tarball (--no-same-owner to avoid ownership errors in live environment)
+        // Extract squashfs using unsquashfs (much faster than tar)
+        // -f = force overwrite, -d = destination
+        // Use full path since non-interactive bash doesn't source /etc/profile
         let extract = console.exec(
-            &format!("tar xpf {} --no-same-owner -C /mnt", tarball_path),
+            &format!("/usr/sbin/unsquashfs -f -d /mnt {}", SQUASHFS_CDROM_PATH),
             Duration::from_secs(300), // 5 minutes for extraction
         )?;
 
-        if extract.success() {
+        // unsquashfs returns exit 2 for permission errors (can't chown files)
+        // but extraction still succeeds. Check for "created" in output.
+        let extraction_ok = extract.output.contains("created") &&
+                           (extract.exit_code == 0 || extract.exit_code == 2);
+
+        if extraction_ok {
             result.add_check(
-                "Tarball extracted",
+                "Squashfs extracted",
                 CheckResult::Pass("Extracted to /mnt".to_string()),
             );
         } else {
             result.add_check(
-                "Tarball extracted",
+                "Squashfs extracted",
                 CheckResult::Fail {
-                    expected: "tar exit 0".to_string(),
+                    expected: "unsquashfs exit 0 or 2 with files created".to_string(),
                     actual: format!("exit {}: {}", extract.exit_code, extract.output),
                 },
             );

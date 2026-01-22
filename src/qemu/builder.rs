@@ -18,6 +18,7 @@ pub struct QemuBuilder {
     ovmf: Option<PathBuf>,
     nographic: bool,
     no_reboot: bool,
+    boot_cdrom_first: bool,
 }
 
 impl QemuBuilder {
@@ -85,6 +86,12 @@ impl QemuBuilder {
         self
     }
 
+    /// Boot from CDROM first (for live ISO boot)
+    pub fn boot_cdrom(mut self) -> Self {
+        self.boot_cdrom_first = true;
+        self
+    }
+
     /// Build the QEMU command (piped for console control)
     pub fn build_piped(self) -> Command {
         let mut cmd = self.build_base();
@@ -102,12 +109,16 @@ impl QemuBuilder {
     fn build_base(self) -> Command {
         let mut cmd = Command::new("qemu-system-x86_64");
 
+        // Start with no default devices to avoid conflicts with explicit drive definitions
+        // (QEMU 10+ has stricter drive index handling)
+        cmd.arg("-nodefaults");
+
         // CPU (default: Skylake-Client for x86-64-v3 support required by Rocky 10)
         let cpu = self.cpu.as_deref().unwrap_or("Skylake-Client");
         cmd.args(["-cpu", cpu]);
 
-        // Memory (default: 1G for installation)
-        let mem = self.memory.as_deref().unwrap_or("1G");
+        // Memory (default: 2G for installation - don't use toy values)
+        let mem = self.memory.as_deref().unwrap_or("2G");
         cmd.args(["-m", mem]);
 
         // Direct kernel boot
@@ -155,6 +166,11 @@ impl QemuBuilder {
         // Reboot behavior
         if self.no_reboot {
             cmd.arg("-no-reboot");
+        }
+
+        // Boot order (for UEFI, OVMF respects this hint)
+        if self.boot_cdrom_first {
+            cmd.args(["-boot", "d"]);
         }
 
         cmd

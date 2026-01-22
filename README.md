@@ -12,19 +12,20 @@ E2E test runner that boots LevitateOS in QEMU and verifies the complete installa
 ## Usage
 
 ```bash
-cargo run -- run              # Run all tests
-cargo run -- run --phase 2    # Run specific phase
+cargo run -- run              # Run all tests (phases 1-6)
+cargo run -- run --phase 2    # Run specific phase (1-6)
 cargo run -- run --step 5     # Run specific step
-cargo run -- list             # Show all steps
+cargo run -- list             # Show all steps by phase
 ```
 
 ## Test Phases
 
-1. **Boot** - Kernel boots, systemd starts
+1. **Boot** - Verify UEFI, sync clock
 2. **Disk** - Partition, format, mount
-3. **Base System** - Extract stage3 tarball
-4. **Configuration** - Users, network, bootloader
-5. **Final Boot** - Reboot into installed system
+3. **Base System** - Mount install media, extract tarball, generate fstab, setup chroot
+4. **Configuration** - Timezone, locale, hostname, root password, create user
+5. **Boot Setup** - Generate initramfs, install bootloader, enable services
+6. **Post-Reboot Verification** - Verify system boots from disk, user login, networking, sudo
 
 ## Options
 

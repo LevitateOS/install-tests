@@ -169,8 +169,9 @@ fn run_tests(
 
     // Validate leviso directory
     let kernel_path = leviso_dir.join("downloads/iso-contents/images/pxeboot/vmlinuz");
+    // Full initramfs - boots to squashfs-based live system which has unsquashfs
     let initramfs_path = leviso_dir.join("output/initramfs.cpio.gz");
-    let iso_path = iso_path.unwrap_or_else(|| leviso_dir.join("output/leviso.iso"));
+    let iso_path = iso_path.unwrap_or_else(|| leviso_dir.join("output/levitateos.iso"));
 
     if !kernel_path.exists() {
         bail!(
@@ -251,6 +252,7 @@ fn run_tests(
         println!();
 
         // Build QEMU command for live ISO boot
+        // Full initramfs boots to squashfs-based live system with unsquashfs
         let mut cmd = QemuBuilder::new()
             .kernel(kernel_path.clone())
             .initrd(initramfs_path.clone())

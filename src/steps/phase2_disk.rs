@@ -23,7 +23,8 @@ impl Step for IdentifyDisk {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check for /dev/vda (virtio disk)
-        let lsblk = console.exec("lsblk -d -o NAME,SIZE,TYPE | grep disk", Duration::from_secs(5))?;
+        // Use simpler command that outputs just the device names
+        let lsblk = console.exec("lsblk -dn -o NAME,TYPE | grep disk", Duration::from_secs(5))?;
 
         if lsblk.output.contains("vda") {
             result.add_check(
@@ -87,6 +88,11 @@ impl Step for PartitionDisk {
             result.fail("Check disk state with 'lsblk' and 'sfdisk -d /dev/vda'");
             return Ok(result);
         }
+
+        // Wait for kernel to create partition device nodes
+        // partprobe forces kernel to re-read partition table, udevadm settle waits for udev
+        let _ = console.exec("partprobe /dev/vda 2>/dev/null || true", Duration::from_secs(5))?;
+        let _ = console.exec("udevadm settle --timeout=5 2>/dev/null || sleep 2", Duration::from_secs(10))?;
 
         // Verify partitions exist
         let verify = console.exec("lsblk /dev/vda -o NAME,SIZE,TYPE", Duration::from_secs(5))?;

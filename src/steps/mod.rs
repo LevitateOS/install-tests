@@ -134,7 +134,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase2_disk::MountPartitions),
         // Phase 3: Base system
         Box::new(phase3_base::MountInstallMedia),
-        Box::new(phase3_base::ExtractTarball),
+        Box::new(phase3_base::ExtractSquashfs),
         Box::new(phase3_base::GenerateFstab),
         Box::new(phase3_base::SetupChroot),
         // Phase 4: Configuration
