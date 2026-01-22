@@ -359,6 +359,11 @@ fn run_tests(
         println!("{}", "Waiting for installed system to boot...".cyan());
         console.wait_for_installed_boot(Duration::from_secs(30))?;
         println!("{}", "Installed system booted!".green());
+
+        // Login or verify shell access (handles both autologin and manual login cases)
+        println!("{}", "Verifying shell access...".cyan());
+        console.login("root", "levitate", Duration::from_secs(15))?;
+        println!("{}", "Logged in!".green());
         println!();
 
         // Run post-reboot verification steps

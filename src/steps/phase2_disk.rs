@@ -31,12 +31,12 @@ impl Step for IdentifyDisk {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check for /dev/vda (virtio disk)
-        // Use simpler command that outputs just the device names
-        let lsblk = console.exec("lsblk -dn -o NAME,TYPE | grep disk", Duration::from_secs(5))?;
+        // First, list all block devices for diagnostics
+        let lsblk_all = console.exec("lsblk -dn -o NAME,TYPE,SIZE", Duration::from_secs(5))?;
 
         // CHEAT GUARD: Target disk MUST be detected
         cheat_ensure!(
-            lsblk.output.contains("vda"),
+            lsblk_all.output.contains("vda"),
             protects = "Target disk is detected for installation",
             severity = "CRITICAL",
             cheats = [
@@ -45,7 +45,7 @@ impl Step for IdentifyDisk {
                 "Accept any output"
             ],
             consequence = "No disk to install to, all subsequent steps fail",
-            "Target disk /dev/vda not found. Got: {}", lsblk.output.trim()
+            "Target disk /dev/vda not found. lsblk output: {}", lsblk_all.output.trim()
         );
 
         result.add_check(
@@ -209,13 +209,24 @@ impl Step for FormatPartitions {
 }
 
 /// Step 6: Mount partitions
+///
+/// IMPORTANT: ESP is mounted at /mnt/boot, NOT /mnt/boot/efi
+///
+/// Why? systemd-boot can ONLY read files from FAT-formatted partitions.
+/// If we mount ESP at /mnt/boot/efi, then kernel/initramfs end up on ext4
+/// at /mnt/boot, which systemd-boot cannot read.
+///
+/// By mounting ESP at /mnt/boot, the kernel and initramfs are stored on
+/// the FAT32 ESP partition, where systemd-boot can find them.
+///
+/// This matches Arch Linux's standard layout and distro-spec's ESP_MOUNT_POINT.
 pub struct MountPartitions;
 
 impl Step for MountPartitions {
     fn num(&self) -> usize { 6 }
     fn name(&self) -> &str { "Mount Partitions" }
     fn ensures(&self) -> &str {
-        "Root partition at /mnt, EFI partition at /mnt/boot/efi"
+        "Root partition at /mnt, EFI partition at /mnt/boot"
     }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
@@ -245,37 +256,37 @@ impl Step for MountPartitions {
             CheckResult::Pass("/dev/vda2 -> /mnt".to_string()),
         );
 
-        // Create and mount EFI partition
-        // Note: /mnt/boot is part of ext4 root (supports Unix ownership)
-        //       /mnt/boot/efi is FAT32 EFI partition (for bootloader only)
-        console.exec("mkdir -p /mnt/boot/efi", Duration::from_secs(5))?;
-        let mount_boot = console.exec("mount /dev/vda1 /mnt/boot/efi", Duration::from_secs(10))?;
+        // Create and mount EFI partition at /mnt/boot
+        // NOTE: ESP is at /boot, NOT /boot/efi
+        // systemd-boot can ONLY read from FAT partitions, so kernel must be on ESP
+        console.exec("mkdir -p /mnt/boot", Duration::from_secs(5))?;
+        let mount_boot = console.exec("mount /dev/vda1 /mnt/boot", Duration::from_secs(10))?;
 
         // CHEAT GUARD: EFI partition MUST be mounted for bootloader
         cheat_ensure!(
             mount_boot.success(),
-            protects = "EFI partition is mounted for bootloader",
+            protects = "EFI partition is mounted at /boot for bootloader and kernel",
             severity = "CRITICAL",
             cheats = [
                 "Skip EFI mount",
-                "Install bootloader to wrong location",
+                "Mount at wrong location (/boot/efi)",
                 "Accept mount failure"
             ],
-            consequence = "EFI bootloader can't be installed, system won't boot",
-            "Failed to mount /dev/vda1 to /mnt/boot/efi (exit {}): {}", mount_boot.exit_code, mount_boot.output
+            consequence = "Kernel not on FAT32, systemd-boot can't find it, system won't boot",
+            "Failed to mount /dev/vda1 to /mnt/boot (exit {}): {}", mount_boot.exit_code, mount_boot.output
         );
 
         result.add_check(
             "EFI mounted",
-            CheckResult::Pass("/dev/vda1 -> /mnt/boot/efi".to_string()),
+            CheckResult::Pass("/dev/vda1 -> /mnt/boot (ESP)".to_string()),
         );
 
         // Verify mounts
         let mounts = console.exec("mount | grep /mnt", Duration::from_secs(5))?;
-        if mounts.output.contains("/mnt") && mounts.output.contains("/mnt/boot/efi") {
+        if mounts.output.contains("/mnt ") && mounts.output.contains("/mnt/boot ") {
             result.add_check(
                 "Mounts verified",
-                CheckResult::Pass("Both partitions mounted".to_string()),
+                CheckResult::Pass("Root at /mnt, ESP at /mnt/boot".to_string()),
             );
         }
 

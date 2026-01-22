@@ -33,7 +33,35 @@ impl Step for GenerateInitramfs {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Check if kernel exists
+        // FIRST: Copy kernel from ISO to ESP
+        // The squashfs doesn't include the kernel (it's on the ISO for live boot).
+        // We need to copy it to the ESP where systemd-boot can find it.
+        // ISO is mounted at /media/cdrom, ESP is mounted at /mnt/boot
+        let kernel_copy = console.exec(
+            "cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz",
+            Duration::from_secs(10),
+        )?;
+
+        // CHEAT GUARD: Kernel copy MUST succeed
+        cheat_ensure!(
+            kernel_copy.success(),
+            protects = "Kernel is copied from ISO to ESP for boot",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip kernel copy",
+                "Assume kernel exists in squashfs",
+                "Accept copy failure"
+            ],
+            consequence = "No kernel on ESP, systemd-boot can't find it, system won't boot",
+            "Failed to copy kernel from ISO to ESP: {}", kernel_copy.output
+        );
+
+        result.add_check(
+            "kernel copied to ESP",
+            CheckResult::Pass("/media/cdrom/boot/vmlinuz -> /mnt/boot/vmlinuz".to_string()),
+        );
+
+        // Now verify kernel exists (this check runs in chroot, /boot = ESP)
         let kernel_check = console.exec_chroot(
             "test -f /boot/vmlinuz",
             Duration::from_secs(5),
@@ -42,7 +70,7 @@ impl Step for GenerateInitramfs {
         // CHEAT GUARD: Kernel MUST exist before generating initramfs
         cheat_ensure!(
             kernel_check.exit_code == 0,
-            protects = "Kernel exists for initramfs generation",
+            protects = "Kernel exists on ESP for initramfs generation",
             severity = "CRITICAL",
             cheats = [
                 "Skip kernel check",
@@ -50,12 +78,12 @@ impl Step for GenerateInitramfs {
                 "Assume kernel exists"
             ],
             consequence = "No kernel to boot, system completely unbootable",
-            "Kernel not found at /boot/vmlinuz - tarball may be incomplete"
+            "Kernel not found at /boot/vmlinuz on ESP after copy"
         );
 
         result.add_check(
-            "kernel present",
-            CheckResult::Pass("/boot/vmlinuz found".to_string()),
+            "kernel verified on ESP",
+            CheckResult::Pass("/boot/vmlinuz found on ESP".to_string()),
         );
 
         // Check if dracut is available
@@ -118,16 +146,36 @@ impl Step for GenerateInitramfs {
         //   - rdma: InfiniBand, requires /etc/rdma/mlx4.conf
         //   - systemd-sysusers, systemd-journald, systemd-initrd, dracut-systemd:
         //     Complex dependency chain, the base systemd module works without them
-        // Timeout: 120s - dracut can be slow, especially in a VM
-        let dracut_result = console.exec_chroot(
+        //
+        // Uses STREAMING with STALL DETECTION:
+        // - Fails immediately on dracut error patterns
+        // - No hard timeout - dracut can take 6+ minutes total
+        // - Only fails if dracut stalls (no output for 180s)
+        //   Dracut's final stages (cpio archive creation) can be silent for minutes
+        let dracut_error_patterns = &[
+            "dracut[F]:",  // Fatal errors
+            "FATAL:",
+        ];
+        let dracut_result = console.exec_chroot_streaming(
             &format!(
-                "dracut --force --no-hostonly --omit 'fips bluetooth crypt nfs rdma systemd-sysusers systemd-journald systemd-initrd dracut-systemd' /boot/initramfs.img {}",
+                "dracut --force --no-hostonly \
+                 --add-drivers 'ext4 vfat' \
+                 --omit 'fips bluetooth crypt nfs rdma systemd-sysusers systemd-journald systemd-initrd dracut-systemd' \
+                 /boot/initramfs.img {}",
                 kernel_version
             ),
-            Duration::from_secs(120),
+            Duration::from_secs(180),  // Stall timeout - dracut's cpio creation can be very quiet
+            dracut_error_patterns,
         )?;
 
         // CHEAT GUARD: dracut MUST succeed
+        let dracut_error_msg = if dracut_result.stalled {
+            format!("dracut STALLED (no output for 60s): {}", dracut_result.output)
+        } else if dracut_result.aborted_on_error {
+            format!("dracut FAILED on error pattern: {}", dracut_result.output)
+        } else {
+            format!("dracut failed (exit {}): {}", dracut_result.exit_code, dracut_result.output)
+        };
         cheat_ensure!(
             dracut_result.success(),
             protects = "initramfs is generated with required drivers",
@@ -138,7 +186,7 @@ impl Step for GenerateInitramfs {
                 "Ignore dracut errors"
             ],
             consequence = "No initramfs, kernel panic at boot (VFS: cannot open root device)",
-            "dracut failed (exit {}): {}", dracut_result.exit_code, dracut_result.output
+            "{}", dracut_error_msg
         );
 
         result.add_check(
@@ -203,13 +251,14 @@ impl Step for InstallBootloader {
                 CheckResult::Pass("SKIPPED: /usr/lib/systemd/boot/efi not in tarball (manual bootloader setup required)".to_string()),
             );
             // Create the loader directories manually so we can still test entry creation
-            let _ = console.exec("mkdir -p /mnt/boot/efi/loader/entries", Duration::from_secs(5));
+            let _ = console.exec("mkdir -p /mnt/boot/loader/entries", Duration::from_secs(5));
         } else {
             // Install systemd-boot
-            // ESP at /boot/efi (FAT32), kernels at /boot (ext4)
+            // ESP is at /boot (FAT32)
+            // --esp-path=/boot: REQUIRED in chroot - mount detection doesn't work
             // --no-variables: Skip EFI variable setup (not available in chroot)
             let bootctl_result = console.exec_chroot(
-                "bootctl install --esp-path=/boot/efi --no-variables",
+                "bootctl install --esp-path=/boot --no-variables",
                 Duration::from_secs(30),
             )?;
 
@@ -237,21 +286,26 @@ impl Step for InstallBootloader {
         let uuid_result = console.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
         let root_uuid = uuid_result.output.trim();
 
-        // Create loader.conf using levitate-spec (goes in ESP)
+        // Create loader.conf using levitate-spec (goes in ESP at /boot)
         let mut loader_config = LoaderConfig::default();
         loader_config.editor = false; // Disable for security
         loader_config.console_mode = Some("max".to_string());
-        console.write_file("/mnt/boot/efi/loader/loader.conf", &loader_config.to_loader_conf())?;
+        console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
 
-        // Create boot entry using levitate-spec
-        // entry_path returns /boot/loader/entries/X.conf, but ESP is at /boot/efi
-        let boot_entry = BootEntry::with_root(format!("UUID={}", root_uuid));
-        let esp_entry_path = boot_entry.entry_path().replace("/boot/", "/boot/efi/");
-        console.write_file(&format!("/mnt{}", esp_entry_path), &boot_entry.to_entry_file())?;
+        // Create boot entry with serial console output for testing
+        // Production installs would use BootEntry::with_root() without console settings
+        let mut boot_entry = BootEntry::with_root(format!("UUID={}", root_uuid));
+        // Add console settings for QEMU serial output (required for test automation)
+        boot_entry.options = format!(
+            "root=UUID={} rw console=tty0 console=ttyS0,115200n8",
+            root_uuid
+        );
+        let entry_path = boot_entry.entry_path(); // /boot/loader/entries/X.conf
+        console.write_file(&format!("/mnt{}", entry_path), &boot_entry.to_entry_file())?;
 
         // Verify boot entry exists
         let verify = console.exec(
-            &format!("cat /mnt{}", esp_entry_path),
+            &format!("cat /mnt{}", entry_path),
             Duration::from_secs(5),
         )?;
 
@@ -338,6 +392,28 @@ impl Step for EnableServices {
             }
         }
 
+        // Enable serial console getty for testing
+        // This is required for post-reboot verification via serial console
+        let serial_result = console.exec_chroot(
+            "systemctl enable serial-getty@ttyS0.service",
+            Duration::from_secs(10),
+        )?;
+
+        if serial_result.success() {
+            result.add_check(
+                "serial-getty@ttyS0 enabled",
+                CheckResult::Pass("Serial console login".to_string()),
+            );
+        } else {
+            result.add_check(
+                "serial-getty@ttyS0 enabled",
+                CheckResult::Fail {
+                    expected: "systemctl enable exit 0".to_string(),
+                    actual: format!("exit {}: {}", serial_result.exit_code, serial_result.output),
+                },
+            );
+        }
+
         // Exit chroot since we're done with installation
         if console.is_in_chroot() {
             match console.exit_chroot() {
@@ -360,7 +436,7 @@ impl Step for EnableServices {
         }
 
         // Unmount partitions (EFI first, then root)
-        let _ = console.exec("umount /mnt/boot/efi", Duration::from_secs(5));
+        let _ = console.exec("umount /mnt/boot", Duration::from_secs(5));
         let _ = console.exec("umount /mnt", Duration::from_secs(5));
 
         result.add_check(
