@@ -15,5 +15,5 @@
 mod builder;
 mod console;
 
-pub use builder::{QemuBuilder, find_ovmf, create_disk};
+pub use builder::{QemuBuilder, find_ovmf, find_ovmf_vars, create_disk, kill_stale_qemu_processes, acquire_test_lock};
 pub use console::{Console, CommandResult};

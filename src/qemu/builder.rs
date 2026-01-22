@@ -16,6 +16,7 @@ pub struct QemuBuilder {
     cdrom: Option<PathBuf>,
     disk: Option<PathBuf>,
     ovmf: Option<PathBuf>,
+    ovmf_vars: Option<PathBuf>,  // UEFI variable storage (writable)
     nographic: bool,
     no_reboot: bool,
     boot_cdrom_first: bool,
@@ -71,6 +72,12 @@ impl QemuBuilder {
     /// Enable UEFI boot with OVMF firmware
     pub fn uefi(mut self, ovmf_path: PathBuf) -> Self {
         self.ovmf = Some(ovmf_path);
+        self
+    }
+
+    /// Set UEFI variable storage (writable, for boot entries to persist)
+    pub fn uefi_vars(mut self, ovmf_vars_path: PathBuf) -> Self {
+        self.ovmf_vars = Some(ovmf_vars_path);
         self
     }
 
@@ -150,11 +157,17 @@ impl QemuBuilder {
             ]);
         }
 
-        // UEFI firmware
+        // UEFI firmware (CODE is read-only, VARS is writable for boot entries)
         if let Some(ovmf) = &self.ovmf {
             cmd.args([
                 "-drive",
                 &format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
+            ]);
+        }
+        if let Some(ovmf_vars) = &self.ovmf_vars {
+            cmd.args([
+                "-drive",
+                &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
             ]);
         }
 
@@ -202,6 +215,31 @@ pub fn find_ovmf() -> Option<PathBuf> {
     None
 }
 
+/// Find OVMF variable storage template
+pub fn find_ovmf_vars() -> Option<PathBuf> {
+    // Common OVMF_VARS locations across distros
+    let candidates = [
+        // Fedora/RHEL
+        "/usr/share/edk2/ovmf/OVMF_VARS.fd",
+        "/usr/share/OVMF/OVMF_VARS.fd",
+        // Debian/Ubuntu
+        "/usr/share/OVMF/OVMF_VARS_4M.fd",
+        "/usr/share/qemu/OVMF_VARS.fd",
+        // Arch
+        "/usr/share/edk2-ovmf/x64/OVMF_VARS.fd",
+        // NixOS
+        "/run/libvirt/nix-ovmf/OVMF_VARS.fd",
+    ];
+
+    for path in candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Create a fresh qcow2 disk image
 pub fn create_disk(path: &std::path::Path, size: &str) -> anyhow::Result<()> {
     let status = Command::new("qemu-img")
@@ -212,4 +250,71 @@ pub fn create_disk(path: &std::path::Path, size: &str) -> anyhow::Result<()> {
         anyhow::bail!("qemu-img create failed");
     }
     Ok(())
+}
+
+/// Kill any stale QEMU processes from previous test runs.
+///
+/// This prevents memory leaks from zombie QEMU instances that weren't properly cleaned up.
+/// Called before spawning new QEMU to ensure a clean state.
+pub fn kill_stale_qemu_processes() {
+    // Find QEMU processes that match our test patterns
+    let patterns = [
+        "leviso-install-test.qcow2",
+        "boot-hypothesis-test.qcow2",
+        "levitateos.iso",
+    ];
+
+    // Use pkill to kill matching processes
+    for pattern in patterns {
+        let _ = Command::new("pkill")
+            .args(["-9", "-f", &format!("qemu-system-x86_64.*{}", pattern)])
+            .status();
+    }
+
+    // Give processes time to die
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}
+
+/// Acquire an exclusive lock for QEMU tests.
+///
+/// Returns a file handle that must be kept alive for the duration of the test.
+/// When dropped, the lock is released.
+pub fn acquire_test_lock() -> anyhow::Result<std::fs::File> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let lock_path = std::path::Path::new("/tmp/leviso-install-test.lock");
+
+    #[cfg(unix)]
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .mode(0o644)
+        .open(lock_path)?;
+
+    #[cfg(not(unix))]
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(lock_path)?;
+
+    // Try to acquire exclusive lock (non-blocking)
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+
+        // LOCK_EX | LOCK_NB = exclusive, non-blocking
+        let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+
+        if result != 0 {
+            anyhow::bail!(
+                "Another install-test is already running. \
+                 Kill it with: pkill -9 -f 'qemu-system-x86_64.*leviso'"
+            );
+        }
+    }
+
+    Ok(file)
 }

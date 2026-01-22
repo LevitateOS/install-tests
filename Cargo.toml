@@ -5,6 +5,10 @@ edition = "2021"
 description = "E2E test runner for LevitateOS installation process"
 license = "MIT"
 
+[[bin]]
+name = "boot-test"
+path = "src/bin/boot-test.rs"
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
@@ -13,3 +17,4 @@ serde_json = "1.0"
 colored = "2.0"
 distro-spec = { path = "../distro-spec" }
 cheat-guard = { path = "../cheat-guard" }
+libc = "0.2"

@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use qemu::{find_ovmf, create_disk, QemuBuilder};
+use qemu::{find_ovmf, create_disk, QemuBuilder, kill_stale_qemu_processes, acquire_test_lock};
 use steps::{all_steps, steps_for_phase, Step, StepResult, CheckResult};
 
 #[derive(Parser)]
@@ -167,6 +167,14 @@ fn run_tests(
     println!("{}", "LevitateOS E2E Installation Tests".bold());
     println!();
 
+    // CRITICAL: Acquire exclusive lock and kill any stale QEMU processes
+    // This prevents memory leaks from zombie QEMU instances
+    println!("{}", "Acquiring test lock and cleaning up stale processes...".cyan());
+    kill_stale_qemu_processes();
+    let _lock = acquire_test_lock()?;
+    println!("{}", "Lock acquired, no other tests running.".green());
+    println!();
+
     // Validate leviso directory
     let kernel_path = leviso_dir.join("downloads/iso-contents/images/pxeboot/vmlinuz");
     // Tiny initramfs - mounts squashfs from ISO, creates overlay, switch_root
@@ -200,6 +208,16 @@ fn run_tests(
     // Find OVMF for UEFI boot
     let ovmf = find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
     println!("  OVMF:      {}", ovmf.display());
+
+    // Find OVMF_VARS template and copy to temp location (needs to be writable)
+    let ovmf_vars_template = qemu::find_ovmf_vars()
+        .context("OVMF_VARS not found - needed for EFI variable storage")?;
+    let ovmf_vars_path = std::env::temp_dir().join("leviso-install-test-vars.fd");
+    if ovmf_vars_path.exists() {
+        std::fs::remove_file(&ovmf_vars_path)?;
+    }
+    std::fs::copy(&ovmf_vars_template, &ovmf_vars_path)?;
+    println!("  OVMF_VARS: {} (copied from {})", ovmf_vars_path.display(), ovmf_vars_template.display());
 
     // Create test disk
     let disk_path = std::env::temp_dir().join("leviso-install-test.qcow2");
@@ -261,6 +279,7 @@ fn run_tests(
             .disk(disk_path.clone())
             .cdrom(iso_path.clone())
             .uefi(ovmf.clone())
+            .uefi_vars(ovmf_vars_path.clone())  // Writable for boot entries
             .nographic()
             .no_reboot()
             .build_piped();
@@ -270,9 +289,9 @@ fn run_tests(
         let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
         let mut console = qemu::Console::new(&mut child)?;
 
-        // Wait for boot (60s for UEFI + module loading)
+        // Wait for boot - fail-fast detection, timeout only if detection broken
         println!("{}", "Waiting for boot...".cyan());
-        console.wait_for_boot(Duration::from_secs(60))?;
+        console.wait_for_boot(Duration::from_secs(30))?;
         println!("{}", "Live ISO booted!".green());
         println!();
 
@@ -302,10 +321,12 @@ fn run_tests(
         println!("{}", "Installation complete, shutting down live ISO...".cyan());
         let _ = console.exec("poweroff -f", Duration::from_secs(5));
         drop(console);
+        // ALWAYS kill the child in case poweroff didn't work
+        let _ = child.kill();
         let _ = child.wait();
 
         // Give it a moment to fully terminate
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(1));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -320,9 +341,11 @@ fn run_tests(
 
         // Boot from disk (not ISO) - UEFI will boot from disk's EFI partition
         // We use a simpler QEMU command that boots directly from the disk
+        // Same OVMF_VARS file is used to preserve boot entries from installation
         let mut cmd = QemuBuilder::new()
             .disk(disk_path.clone())
             .uefi(ovmf.clone())
+            .uefi_vars(ovmf_vars_path.clone())
             .nographic()
             .no_reboot()
             .build_piped();
@@ -332,9 +355,9 @@ fn run_tests(
         let mut console = qemu::Console::new(&mut child)?;
 
         // Wait for the installed system to boot
-        // This uses the bootloader we installed, not direct kernel boot
+        // Uses fail-fast detection - timeout only triggers if detection is broken
         println!("{}", "Waiting for installed system to boot...".cyan());
-        console.wait_for_boot(Duration::from_secs(180))?; // Longer timeout for real boot
+        console.wait_for_installed_boot(Duration::from_secs(30))?;
         println!("{}", "Installed system booted!".green());
         println!();
 
@@ -467,8 +490,9 @@ fn run_tests(
         }
     }
 
-    // Remove test disk
+    // Cleanup temp files
     let _ = std::fs::remove_file(&disk_path);
+    let _ = std::fs::remove_file(&ovmf_vars_path);
 
     if all_passed {
         Ok(())
