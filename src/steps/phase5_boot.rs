@@ -156,10 +156,14 @@ impl Step for GenerateInitramfs {
             "dracut[F]:",  // Fatal errors
             "FATAL:",
         ];
+        // NOTE: --add-drivers is no longer needed here because the base system
+        // now includes /etc/dracut.conf.d/levitate.conf with:
+        //   add_drivers+=" ext4 vfat "
+        //   hostonly="no"
+        // This was moved to leviso (TEAM_088) so recstrap installs include it
         let dracut_result = console.exec_chroot_streaming(
             &format!(
-                "dracut --force --no-hostonly \
-                 --add-drivers 'ext4 vfat' \
+                "dracut --force \
                  --omit 'fips bluetooth crypt nfs rdma systemd-sysusers systemd-journald systemd-initrd dracut-systemd' \
                  /boot/initramfs.img {}",
                 kernel_version
