@@ -378,22 +378,24 @@ impl Step for VerifySudo {
             Duration::from_secs(15),
         )?;
 
-        if sudo_test.output.contains("root") {
-            result.add_check(
-                "sudo elevation works",
-                CheckResult::Pass("sudo whoami returns root".to_string()),
-            );
-        } else {
-            // sudo might not be configured for this user - note but continue
-            result.add_check(
-                "sudo elevation works",
-                CheckResult::Fail {
-                    expected: "root".to_string(),
-                    actual: format!("sudo test failed: {}", sudo_test.output.trim()),
-                },
-            );
-            result.fail("Configure sudo for levitate user (add to wheel group or sudoers)");
-        }
+        // CHEAT GUARD: sudo MUST work for the user
+        cheat_ensure!(
+            sudo_test.output.contains("root"),
+            protects = "User can elevate privileges with sudo",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check sudo binary exists",
+                "Skip actual elevation test",
+                "Accept any sudo output"
+            ],
+            consequence = "User cannot administer system, stuck without root access",
+            "sudo elevation failed: {}", sudo_test.output.trim()
+        );
+
+        result.add_check(
+            "sudo elevation works",
+            CheckResult::Pass("sudo whoami returns root".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -450,14 +452,24 @@ impl Step for VerifyEssentialCommands {
             }
         }
 
-        if failed == 0 {
-            result.add_check(
-                "All essential commands",
-                CheckResult::Pass(format!("{}/{} commands work", passed, passed)),
-            );
-        } else {
-            result.fail(&format!("{} essential commands missing", failed));
-        }
+        // CHEAT GUARD: ALL essential commands MUST work
+        cheat_ensure!(
+            failed == 0,
+            protects = "Core system utilities are functional",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check some commands",
+                "Accept partial success",
+                "Skip missing command verification"
+            ],
+            consequence = "Missing core utilities, system unusable for daily tasks",
+            "{} essential commands missing", failed
+        );
+
+        result.add_check(
+            "All essential commands",
+            CheckResult::Pass(format!("{}/{} commands work", passed, passed)),
+        );
 
         // Test file operations work
         let file_ops = console.exec(

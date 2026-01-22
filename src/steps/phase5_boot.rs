@@ -90,17 +90,19 @@ impl Step for GenerateInitramfs {
         )?;
         let kernel_version = kver_result.output.trim();
 
-        if kernel_version.is_empty() {
-            result.add_check(
-                "kernel modules present",
-                CheckResult::Fail {
-                    expected: "/usr/lib/modules/<version> directory".to_string(),
-                    actual: "No kernel modules found".to_string(),
-                },
-            );
-            result.fail("Kernel modules required for dracut");
-            return Ok(result);
-        }
+        // CHEAT GUARD: Kernel modules MUST exist for dracut
+        cheat_ensure!(
+            !kernel_version.is_empty(),
+            protects = "Kernel modules exist for initramfs generation",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip modules check",
+                "Accept empty modules directory",
+                "Use hardcoded kernel version"
+            ],
+            consequence = "dracut fails, no initramfs, system won't boot",
+            "No kernel modules found in /usr/lib/modules/"
+        );
 
         result.add_check(
             "kernel modules present",
@@ -201,22 +203,24 @@ impl Step for InstallBootloader {
                 Duration::from_secs(30),
             )?;
 
-            if bootctl_result.success() {
-                result.add_check(
-                    "systemd-boot installed",
-                    CheckResult::Pass("bootctl install succeeded".to_string()),
-                );
-            } else {
-                result.add_check(
-                    "systemd-boot installed",
-                    CheckResult::Fail {
-                        expected: "bootctl exit 0".to_string(),
-                        actual: format!("exit {}: {}", bootctl_result.exit_code, bootctl_result.output),
-                    },
-                );
-                result.fail("Ensure /boot is mounted and EFI variables are available");
-                return Ok(result);
-            }
+            // CHEAT GUARD: bootctl MUST succeed if EFI files exist
+            cheat_ensure!(
+                bootctl_result.success(),
+                protects = "systemd-boot bootloader is installed",
+                severity = "CRITICAL",
+                cheats = [
+                    "Accept any bootctl exit code",
+                    "Skip bootloader installation",
+                    "Ignore EFI setup errors"
+                ],
+                consequence = "No bootloader, UEFI can't find boot entry, system won't start",
+                "bootctl install failed (exit {}): {}", bootctl_result.exit_code, bootctl_result.output
+            );
+
+            result.add_check(
+                "systemd-boot installed",
+                CheckResult::Pass("bootctl install succeeded".to_string()),
+            );
         }
 
         // Get root partition UUID for boot entry

@@ -34,21 +34,24 @@ impl Step for IdentifyDisk {
         // Use simpler command that outputs just the device names
         let lsblk = console.exec("lsblk -dn -o NAME,TYPE | grep disk", Duration::from_secs(5))?;
 
-        if lsblk.output.contains("vda") {
-            result.add_check(
-                "Target disk found",
-                CheckResult::Pass("/dev/vda detected".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Target disk found",
-                CheckResult::Fail {
-                    expected: "/dev/vda (virtio disk)".to_string(),
-                    actual: format!("Found: {}", lsblk.output.trim()),
-                },
-            );
-            result.fail("Ensure QEMU is started with a virtio disk (-drive if=virtio)");
-        }
+        // CHEAT GUARD: Target disk MUST be detected
+        cheat_ensure!(
+            lsblk.output.contains("vda"),
+            protects = "Target disk is detected for installation",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip disk detection",
+                "Hardcode disk path",
+                "Accept any output"
+            ],
+            consequence = "No disk to install to, all subsequent steps fail",
+            "Target disk /dev/vda not found. Got: {}", lsblk.output.trim()
+        );
+
+        result.add_check(
+            "Target disk found",
+            CheckResult::Pass("/dev/vda detected".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
