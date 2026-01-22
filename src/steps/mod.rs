@@ -46,13 +46,37 @@ use std::time::Duration;
 /// Result of a verification check
 #[derive(Debug, Clone)]
 pub enum CheckResult {
+    /// Check passed - the feature works correctly
     Pass(String),
+    /// Check failed - the feature is broken
     Fail { expected: String, actual: String },
+    /// Check skipped - feature not available (e.g., missing from tarball)
+    /// This is NOT a pass - it means the feature wasn't tested
+    Skip(String),
+    /// Check warning - feature works but with concerns
+    /// This is NOT a pass - it indicates a potential issue
+    Warning(String),
 }
 
 impl CheckResult {
+    /// Returns true only for Pass - Skip and Warning are NOT passes
     pub fn passed(&self) -> bool {
         matches!(self, CheckResult::Pass(_))
+    }
+
+    /// Returns true for Fail
+    pub fn failed(&self) -> bool {
+        matches!(self, CheckResult::Fail { .. })
+    }
+
+    /// Returns true for Skip
+    pub fn skipped(&self) -> bool {
+        matches!(self, CheckResult::Skip(_))
+    }
+
+    /// Returns true for Warning
+    pub fn warned(&self) -> bool {
+        matches!(self, CheckResult::Warning(_))
     }
 }
 
@@ -61,7 +85,12 @@ impl CheckResult {
 pub struct StepResult {
     pub step_num: usize,
     pub name: String,
+    /// True only if all checks passed (no fails, skips don't count as pass)
     pub passed: bool,
+    /// True if any check was skipped (indicates incomplete testing)
+    pub has_skips: bool,
+    /// True if any check has warnings
+    pub has_warnings: bool,
     pub duration: Duration,
     pub checks: Vec<(String, CheckResult)>,
     pub fix_suggestion: Option<String>,
@@ -73,6 +102,8 @@ impl StepResult {
             step_num,
             name: name.to_string(),
             passed: true,
+            has_skips: false,
+            has_warnings: false,
             duration: Duration::ZERO,
             checks: Vec::new(),
             fix_suggestion: None,
@@ -80,8 +111,21 @@ impl StepResult {
     }
 
     pub fn add_check(&mut self, name: &str, result: CheckResult) {
-        if !result.passed() {
-            self.passed = false;
+        match &result {
+            CheckResult::Pass(_) => {
+                // Pass is good, no state change needed
+            }
+            CheckResult::Fail { .. } => {
+                self.passed = false;
+            }
+            CheckResult::Skip(_) => {
+                self.has_skips = true;
+                // Skip does NOT set passed=false, but it's tracked separately
+            }
+            CheckResult::Warning(_) => {
+                self.has_warnings = true;
+                // Warning does NOT set passed=false, but it's tracked separately
+            }
         }
         self.checks.push((name.to_string(), result));
     }
@@ -89,6 +133,26 @@ impl StepResult {
     pub fn fail(&mut self, suggestion: &str) {
         self.passed = false;
         self.fix_suggestion = Some(suggestion.to_string());
+    }
+
+    /// Count of passed checks
+    pub fn pass_count(&self) -> usize {
+        self.checks.iter().filter(|(_, r)| r.passed()).count()
+    }
+
+    /// Count of failed checks
+    pub fn fail_count(&self) -> usize {
+        self.checks.iter().filter(|(_, r)| r.failed()).count()
+    }
+
+    /// Count of skipped checks
+    pub fn skip_count(&self) -> usize {
+        self.checks.iter().filter(|(_, r)| r.skipped()).count()
+    }
+
+    /// Count of warning checks
+    pub fn warning_count(&self) -> usize {
+        self.checks.iter().filter(|(_, r)| r.warned()).count()
     }
 }
 

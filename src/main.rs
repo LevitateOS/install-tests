@@ -127,7 +127,34 @@ fn run_single_step(step: &Box<dyn Step>, console: &mut qemu::Console) -> Result<
         Ok(result) => {
             let duration = start.elapsed();
             if result.passed {
-                println!("{} ({:.1}s)", "PASS".green().bold(), duration.as_secs_f64());
+                // Show pass with any skip/warning counts
+                let mut status = "PASS".green().bold().to_string();
+                if result.has_skips || result.has_warnings {
+                    let mut notes = Vec::new();
+                    if result.has_skips {
+                        notes.push(format!("{} skipped", result.skip_count()));
+                    }
+                    if result.has_warnings {
+                        notes.push(format!("{} warnings", result.warning_count()));
+                    }
+                    status = format!("{} ({})", "PASS".green().bold(), notes.join(", ").yellow());
+                }
+                println!("{} ({:.1}s)", status, duration.as_secs_f64());
+
+                // Print skip details if any
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Skip(reason) = check_result {
+                        println!("    {} {} - {}", "⊘".yellow(), check_name, reason);
+                    }
+                }
+
+                // Print warning details if any
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Warning(reason) = check_result {
+                        println!("    {} {} - {}", "⚠".yellow(), check_name, reason);
+                    }
+                }
+
                 Ok((result, true))
             } else {
                 println!("{} ({:.1}s)", "FAIL".red().bold(), duration.as_secs_f64());
@@ -138,6 +165,18 @@ fn run_single_step(step: &Box<dyn Step>, console: &mut qemu::Console) -> Result<
                         println!("    {} {}", "✗".red(), check_name);
                         println!("      Expected: {}", expected);
                         println!("      Actual:   {}", actual);
+                    }
+                }
+
+                // Also show skips and warnings for context
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Skip(reason) = check_result {
+                        println!("    {} {} - {}", "⊘".yellow(), check_name, reason);
+                    }
+                }
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Warning(reason) = check_result {
+                        println!("    {} {} - {}", "⚠".yellow(), check_name, reason);
                     }
                 }
 
@@ -364,7 +403,41 @@ fn run_tests(
         println!("{}", "Verifying shell access...".cyan());
         console.login("root", "levitate", Duration::from_secs(15))?;
         println!("{}", "Logged in!".green());
-        println!();
+
+        // CRITICAL: Allow shell to fully stabilize after login
+        // The login function returns immediately after getting LOGIN_OK marker,
+        // but there's often additional output (prompts, motd, etc.) still arriving.
+        // On the installed system, bash initialization takes longer.
+        std::thread::sleep(Duration::from_millis(3000));
+
+        // Run multiple warmup commands to ensure the shell is fully ready
+        // The first few might fail while bash finishes initializing
+        let mut warmup_ok = false;
+        for attempt in 1..=5 {
+            let warmup = console.exec("echo SHELL_READY_CHECK", Duration::from_secs(5))?;
+            if warmup.output.contains("SHELL_READY_CHECK") {
+                warmup_ok = true;
+                break;
+            }
+            eprintln!("  {} Shell warmup attempt {} didn't return expected output", "WARN:".yellow(), attempt);
+            eprintln!("  Got: {:?}", warmup.output.trim());
+            std::thread::sleep(Duration::from_millis(1000));
+        }
+
+        if !warmup_ok {
+            // Shell is broken - don't proceed with useless tests
+            // This is a real failure, not something to silently ignore
+            drop(console);
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&disk_path);
+            let _ = std::fs::remove_file(&ovmf_vars_path);
+            bail!(
+                "Shell warmup failed after 5 attempts. The installed system booted but \
+                 the shell is not responding correctly. This indicates a broken installation."
+            );
+        }
+        println!("{}", "Shell ready!".green());
 
         // Run post-reboot verification steps
         let steps: Vec<Box<dyn Step>> = all_steps()
@@ -398,6 +471,8 @@ fn run_tests(
 
     let passed = results.iter().filter(|r| r.passed).count();
     let failed = results.iter().filter(|r| !r.passed).count();
+    let total_skips: usize = results.iter().map(|r| r.skip_count()).sum();
+    let total_warnings: usize = results.iter().map(|r| r.warning_count()).sum();
     let total = results.len();
 
     // Show results by phase
@@ -437,9 +512,15 @@ fn run_tests(
             .collect();
 
         let phase_passed = phase_results.iter().filter(|r| r.passed).count();
+        let phase_skips: usize = phase_results.iter().map(|r| r.skip_count()).sum();
+        let phase_warnings: usize = phase_results.iter().map(|r| r.warning_count()).sum();
         let phase_total = phase_results.len();
         let phase_status = if phase_passed == phase_total {
-            "✓".green()
+            if phase_warnings > 0 {
+                "⚠".yellow()  // Pass but with warnings
+            } else {
+                "✓".green()
+            }
         } else {
             "✗".red()
         };
@@ -454,28 +535,67 @@ fn run_tests(
             _ => "Unknown",
         };
 
-        println!("  {} Phase {}: {} ({}/{})", phase_status, phase, phase_name, phase_passed, phase_total);
+        let mut notes = Vec::new();
+        if phase_skips > 0 {
+            notes.push(format!("{} skipped", phase_skips));
+        }
+        if phase_warnings > 0 {
+            notes.push(format!("{} warnings", phase_warnings));
+        }
+        let note_str = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", notes.join(", "))
+        };
+
+        println!("  {} Phase {}: {} ({}/{}){}",
+            phase_status, phase, phase_name, phase_passed, phase_total, note_str.yellow());
     }
 
     println!();
 
     if all_passed {
         println!("{}", "═".repeat(60));
-        println!("{} All {} steps passed!", "✓".green().bold(), passed);
+        if total_warnings > 0 || total_skips > 0 {
+            // Pass but with caveats - be honest
+            println!("{} {}/{} steps passed", "✓".green().bold(), passed, total);
+            if total_skips > 0 {
+                println!("  {} {} checks skipped (not tested)", "⊘".yellow(), total_skips);
+            }
+            if total_warnings > 0 {
+                println!("  {} {} warnings (potential issues)", "⚠".yellow(), total_warnings);
+            }
+        } else {
+            println!("{} All {} steps passed!", "✓".green().bold(), passed);
+        }
         println!("{}", "═".repeat(60));
         println!();
         println!("The installed system:");
         println!("  • Boots with systemd as init");
         println!("  • Reaches multi-user.target");
         println!("  • Has working user accounts");
-        println!("  • Has functional networking");
+        if total_skips > 0 || total_warnings > 0 {
+            println!("  • {} Some features were not tested or have warnings", "⚠".yellow());
+        } else {
+            println!("  • Has functional networking");
+        }
         println!("  • Has working sudo");
         println!("  • Has all essential commands");
         println!();
-        println!("{}", "This rootfs is ready for daily driver use.".green().bold());
+        if total_skips > 0 || total_warnings > 0 {
+            println!("{}", "This rootfs passed but has gaps. Review skips/warnings above.".yellow().bold());
+        } else {
+            println!("{}", "This rootfs is ready for daily driver use.".green().bold());
+        }
     } else {
         println!("{}", "═".repeat(60));
         println!("{} {}/{} steps passed ({} failed)", "✗".red().bold(), passed, total, failed);
+        if total_skips > 0 {
+            println!("  {} {} checks skipped", "⊘".yellow(), total_skips);
+        }
+        if total_warnings > 0 {
+            println!("  {} {} warnings", "⚠".yellow(), total_warnings);
+        }
         println!("{}", "═".repeat(60));
         println!();
 
@@ -489,6 +609,19 @@ fn run_tests(
                         println!("      {} {}", "✗".red(), check_name);
                         println!("        Expected: {}", expected);
                         println!("        Actual:   {}", actual);
+                    }
+                }
+            }
+        }
+
+        // Also show warnings if any (they may be related to failures)
+        if total_warnings > 0 {
+            println!();
+            println!("{}", "Warnings:".yellow());
+            for result in &results {
+                for (check_name, check_result) in &result.checks {
+                    if let CheckResult::Warning(reason) = check_result {
+                        println!("  • {}: {}", check_name, reason);
                     }
                 }
             }

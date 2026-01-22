@@ -286,10 +286,10 @@ impl Step for VerifyNetworking {
                 CheckResult::Pass(ip_check.output.trim().to_string()),
             );
         } else {
-            // In QEMU without network, this might fail - note but don't fail hard
+            // In QEMU without network, this is a SKIP - not tested, not a pass
             result.add_check(
                 "IP address assigned",
-                CheckResult::Pass("SKIPPED: No IP (QEMU may not have network)".to_string()),
+                CheckResult::Skip("No IP address - QEMU may not have network configured".to_string()),
             );
         }
 
@@ -367,10 +367,10 @@ impl Step for VerifySudo {
                 CheckResult::Pass("levitate is in wheel group".to_string()),
             );
         } else {
-            // User might not be in wheel, which is OK if sudoers is configured differently
+            // User not in wheel - may use different sudoers config, but note it
             result.add_check(
                 "User in wheel group",
-                CheckResult::Pass("SKIPPED: User not in wheel (may use different sudoers config)".to_string()),
+                CheckResult::Skip("User not in wheel group (may use different sudoers config)".to_string()),
             );
         }
 

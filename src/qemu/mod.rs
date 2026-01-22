@@ -12,8 +12,17 @@
 //!
 //! Read `console.rs` and `builder.rs` before adding anything.
 
+mod ansi;
+mod boot;
 mod builder;
+mod chroot;
 mod console;
+mod exec;
+mod patterns;
+mod utils;
 
-pub use builder::{QemuBuilder, find_ovmf, find_ovmf_vars, create_disk, kill_stale_qemu_processes, acquire_test_lock};
-pub use console::{Console, CommandResult};
+pub use builder::{
+    acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes,
+    QemuBuilder,
+};
+pub use console::{CommandResult, Console};

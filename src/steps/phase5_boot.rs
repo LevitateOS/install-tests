@@ -249,13 +249,17 @@ impl Step for InstallBootloader {
         )?;
 
         if efi_check.exit_code != 0 {
-            // EFI files not present - this is a tarball issue, not a test failure
+            // EFI files not present = TARBALL IS BROKEN
+            // A daily driver OS MUST be able to boot. No "manual bootloader setup" escape hatch.
             result.add_check(
                 "systemd-boot files present",
-                CheckResult::Pass("SKIPPED: /usr/lib/systemd/boot/efi not in tarball (manual bootloader setup required)".to_string()),
+                CheckResult::Fail {
+                    expected: "/usr/lib/systemd/boot/efi exists".to_string(),
+                    actual: "systemd-boot EFI files missing from tarball".to_string(),
+                },
             );
-            // Create the loader directories manually so we can still test entry creation
-            let _ = console.exec("mkdir -p /mnt/boot/loader/entries", Duration::from_secs(5));
+            result.duration = start.elapsed();
+            return Ok(result);
         } else {
             // Install systemd-boot
             // ESP is at /boot (FAT32)
@@ -361,10 +365,14 @@ impl Step for EnableServices {
             )?;
 
             if unit_check.exit_code != 0 {
-                // Service not present in tarball
+                // Service not present in tarball = TARBALL IS BROKEN
+                // If it's in ENABLED_SERVICES, it MUST be in the tarball. No exceptions.
                 result.add_check(
                     &format!("{} enabled", service.name),
-                    CheckResult::Pass(format!("SKIPPED: service not in tarball")),
+                    CheckResult::Fail {
+                        expected: format!("{}.service exists in tarball", service.name),
+                        actual: "Service unit file not found".to_string(),
+                    },
                 );
                 continue;
             }
@@ -379,19 +387,15 @@ impl Step for EnableServices {
                     &format!("{} enabled", service.name),
                     CheckResult::Pass(service.description.to_string()),
                 );
-            } else if service.required {
+            } else {
+                // Service failed to enable = INSTALLATION IS BROKEN
+                // If it's in ENABLED_SERVICES, it MUST enable successfully. No exceptions.
                 result.add_check(
                     &format!("{} enabled", service.name),
                     CheckResult::Fail {
                         expected: "systemctl enable exit 0".to_string(),
-                        actual: format!("exit {}", enable_result.exit_code),
+                        actual: format!("exit {}: {}", enable_result.exit_code, enable_result.output.trim()),
                     },
-                );
-            } else {
-                // Optional service failed, just note it
-                result.add_check(
-                    &format!("{} enable attempted", service.name),
-                    CheckResult::Pass(format!("Optional, exit {}", enable_result.exit_code)),
                 );
             }
         }

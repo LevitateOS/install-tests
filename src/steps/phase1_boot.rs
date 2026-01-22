@@ -35,11 +35,11 @@ impl Step for VerifyUefi {
                 CheckResult::Pass("/sys/firmware/efi/efivars exists".to_string()),
             );
         } else {
-            // Direct kernel boot bypasses UEFI - acceptable for testing
-            // The actual installation still uses UEFI partition layout
+            // Direct kernel boot bypasses UEFI - this is a SKIP, not a pass
+            // We're not actually testing UEFI boot, just using GPT+ESP layout
             result.add_check(
                 "UEFI mode detected",
-                CheckResult::Pass("Direct kernel boot (UEFI check skipped, using GPT+ESP layout)".to_string()),
+                CheckResult::Skip("Direct kernel boot - UEFI not tested (using GPT+ESP layout)".to_string()),
             );
         }
 
@@ -80,10 +80,11 @@ impl Step for SyncClock {
                 CheckResult::Pass("timedatectl NTP=yes".to_string()),
             );
         } else {
-            // NTP might not work in QEMU, that's OK for testing
+            // NTP not working - this is a SKIP, not a pass
+            // We didn't test NTP functionality
             result.add_check(
                 "NTP enabled",
-                CheckResult::Pass("NTP may not work in QEMU (acceptable)".to_string()),
+                CheckResult::Skip("NTP not available in QEMU test environment".to_string()),
             );
         }
 
@@ -99,10 +100,11 @@ impl Step for SyncClock {
                 CheckResult::Pass(format!("Year is {}", year)),
             );
         } else {
-            // Don't fail - QEMU RTC may not be set correctly
+            // Wrong year - this is a WARNING, not a pass
+            // System time is wrong but installation can proceed
             result.add_check(
-                "System time",
-                CheckResult::Pass(format!("Year is {} (QEMU RTC not set, acceptable for testing)", year)),
+                "System time reasonable",
+                CheckResult::Warning(format!("Year is {} - RTC not set correctly", year)),
             );
         }
 
