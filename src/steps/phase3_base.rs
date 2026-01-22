@@ -1,11 +1,14 @@
 //! Phase 3: Base system installation steps.
 //!
-//! Steps 7-10: Mount install media, extract tarball, generate fstab, setup chroot.
+//! Steps 7-10: Mount install media, run recstrap, generate fstab, setup chroot.
+//!
+//! Uses recstrap (like pacstrap for Arch) to extract the base system.
+//! User does partitioning/formatting/mounting manually before this phase.
 //!
 //! # Cheat Prevention
 //!
 //! Critical steps that must actually work:
-//! - Squashfs must be extracted with ALL files (not just some)
+//! - recstrap must extract ALL files (not just some)
 //! - fstab must have correct UUIDs (not placeholder values)
 //! - Chroot must actually enter the new root (not stay in live environment)
 
@@ -84,12 +87,15 @@ impl Step for MountInstallMedia {
     }
 }
 
-/// Step 8: Extract squashfs image
+/// Step 8: Extract base system using recstrap
+///
+/// recstrap is like pacstrap for Arch - extracts the squashfs to target.
+/// User does partitioning/formatting/mounting manually before this step.
 pub struct ExtractSquashfs;
 
 impl Step for ExtractSquashfs {
     fn num(&self) -> usize { 8 }
-    fn name(&self) -> &str { "Extract Squashfs Image" }
+    fn name(&self) -> &str { "Extract Base System (recstrap)" }
     fn ensures(&self) -> &str {
         "Base system is extracted with all essential directories present"
     }
@@ -98,60 +104,54 @@ impl Step for ExtractSquashfs {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Check squashfs exists
-        let check = console.exec(
-            &format!("test -f {}", SQUASHFS_CDROM_PATH),
+        // Check recstrap is available
+        let recstrap_check = console.exec(
+            "which recstrap",
             Duration::from_secs(5),
         )?;
 
-        // CHEAT GUARD: Squashfs MUST exist before extraction
+        // CHEAT GUARD: recstrap MUST be available
         cheat_ensure!(
-            check.exit_code == 0,
-            protects = "Base system image is available for extraction",
+            recstrap_check.success(),
+            protects = "recstrap installer is available in live ISO",
             severity = "CRITICAL",
             cheats = [
-                "Skip file check",
-                "Proceed with extraction anyway",
-                "Use wrong path"
+                "Skip recstrap check",
+                "Use unsquashfs directly",
+                "Hardcode extraction command"
             ],
-            consequence = "Extraction fails, no files installed, user cannot boot",
-            "Squashfs not found at {}. Ensure ISO is mounted at /media/cdrom", SQUASHFS_CDROM_PATH
+            consequence = "No installer available, cannot extract system",
+            "recstrap not found. ISO may be incomplete."
         );
 
         result.add_check(
-            "Squashfs found",
-            CheckResult::Pass(SQUASHFS_CDROM_PATH.to_string()),
+            "recstrap available",
+            CheckResult::Pass("recstrap found".to_string()),
         );
 
-        // Extract squashfs using unsquashfs (much faster than tar)
-        // -f = force overwrite, -d = destination
-        // Use full path since non-interactive bash doesn't source /etc/profile
+        // Run recstrap to extract base system
+        // recstrap handles squashfs location automatically (/media/cdrom/live/filesystem.squashfs)
         let extract = console.exec(
-            &format!("/usr/sbin/unsquashfs -f -d /mnt {}", SQUASHFS_CDROM_PATH),
+            "recstrap /mnt",
             Duration::from_secs(300), // 5 minutes for extraction
         )?;
 
-        // unsquashfs returns exit 2 for permission errors (can't chown files)
-        // but extraction still succeeds. Check for "created" in output.
-        let extraction_ok = extract.output.contains("created") &&
-                           (extract.exit_code == 0 || extract.exit_code == 2);
-
-        // CHEAT GUARD: Extraction MUST succeed with files created
+        // CHEAT GUARD: recstrap MUST succeed
         cheat_ensure!(
-            extraction_ok,
+            extract.success(),
             protects = "Base system files are actually extracted to disk",
             severity = "CRITICAL",
             cheats = [
                 "Accept any exit code as success",
-                "Skip checking if files were created",
-                "Ignore unsquashfs output"
+                "Skip checking recstrap output",
+                "Ignore extraction errors"
             ],
             consequence = "Empty /mnt, no system installed, boot fails",
-            "unsquashfs failed (exit {}): {}", extract.exit_code, extract.output
+            "recstrap failed (exit {}): {}", extract.exit_code, extract.output
         );
 
         result.add_check(
-            "Squashfs extracted",
+            "recstrap completed",
             CheckResult::Pass("Extracted to /mnt".to_string()),
         );
 
@@ -172,7 +172,7 @@ impl Step for ExtractSquashfs {
                 "Skip verification entirely"
             ],
             consequence = "Incomplete system, missing binaries, boot fails or crashes",
-            "Essential directories missing after extraction. /bin, /usr, /etc must exist."
+            "Essential directories missing after recstrap. /bin, /usr, /etc must exist."
         );
 
         result.add_check(
