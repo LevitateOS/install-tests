@@ -30,6 +30,10 @@ impl Step for IdentifyDisk {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
+        // Flush any pending output with a simple command
+        // This ensures previous steps' async output is cleared
+        let _ = console.exec("true", Duration::from_secs(2))?;
+
         // Check for /dev/vda (virtio disk)
         // First, list all block devices for diagnostics
         let lsblk_all = console.exec("lsblk -dn -o NAME,TYPE,SIZE", Duration::from_secs(5))?;

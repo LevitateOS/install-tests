@@ -106,6 +106,10 @@ impl Step for SyncClock {
             );
         }
 
+        // Add a small delay to let any timedatectl async output settle
+        // This prevents cross-contamination with the next step
+        let _ = console.exec("sleep 0.5", Duration::from_secs(2))?;
+
         result.duration = start.elapsed();
         Ok(result)
     }

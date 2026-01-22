@@ -164,8 +164,8 @@ impl Console {
         self.wait_for_boot_with_patterns(
             stall_timeout,
             // Success patterns for installed system
-            // Must include "serial-console.service" since that's what provides the shell on ttyS0
-            &["Startup finished", "login:", "serial-console.service"],
+            // Installed systems use serial-getty@ttyS0.service (not serial-console.service which is live-only)
+            &["Startup finished", "login:", "serial-getty@ttyS0", "getty.target"],
             // Error patterns (shared)
             &BOOT_ERROR_PATTERNS,
         )
@@ -277,14 +277,42 @@ impl Console {
         let mut sync_found = false;
         loop {
             if sync_start.elapsed() > Duration::from_secs(5) {
-                // Sync timeout - drain all immediately available output before continuing
-                eprintln!("  WARN: Sync timeout, draining buffer...");
+                // Sync timeout - send a second sync to force shell ready state
+                eprintln!("  WARN: Sync timeout, sending secondary sync...");
+
+                // Drain any pending output
                 loop {
                     match self.rx.try_recv() {
+                        Ok(line) => self.output_buffer.push(line),
+                        Err(_) => break,
+                    }
+                }
+
+                // Send a secondary sync with a different marker
+                let sync2_marker = format!("___SYNC2_{}___", sync_id);
+                let _ = self.stdin.write_all(format!("echo '{}'\n", sync2_marker).as_bytes());
+                let _ = self.stdin.flush();
+
+                // Wait for secondary sync marker (shorter timeout)
+                let sync2_start = Instant::now();
+                while sync2_start.elapsed() < Duration::from_secs(3) {
+                    match self.rx.recv_timeout(Duration::from_millis(100)) {
                         Ok(line) => {
-                            self.output_buffer.push(line);
+                            self.output_buffer.push(line.clone());
+                            if strip_ansi_codes(&line).contains(&sync2_marker) {
+                                break;
+                            }
                         }
-                        Err(_) => break,  // Buffer is empty
+                        Err(_) => continue,
+                    }
+                }
+
+                // Final drain
+                std::thread::sleep(Duration::from_millis(100));
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(line) => self.output_buffer.push(line),
+                        Err(_) => break,
                     }
                 }
                 break;
@@ -304,9 +332,8 @@ impl Console {
             }
         }
 
-        // Additional delay for shell to be ready for next command
-        // Longer delay if sync failed to ensure buffer is clear
-        std::thread::sleep(Duration::from_millis(if sync_found { 50 } else { 200 }));
+        // Small delay for shell to be ready for next command
+        std::thread::sleep(Duration::from_millis(50));
 
         // Generate unique markers for this command
         let cmd_id = std::time::SystemTime::now()

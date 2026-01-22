@@ -36,6 +36,9 @@ impl Step for VerifySystemdBoot {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
+        // Flush any pending output from login
+        let _ = console.exec("true", Duration::from_secs(2))?;
+
         // Check systemd is running (PID 1)
         let pid1 = console.exec("cat /proc/1/comm", Duration::from_secs(5))?;
 
