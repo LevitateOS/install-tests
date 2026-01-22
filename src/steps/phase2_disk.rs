@@ -1,10 +1,18 @@
 //! Phase 2: Disk setup steps.
 //!
 //! Steps 3-6: Identify, partition, format, and mount the target disk.
+//!
+//! # Cheat Prevention
+//!
+//! Each step documents its cheat vectors. Common cheats for disk steps:
+//! - Accepting exit code 0 without verifying actual state
+//! - Skipping partition/format verification
+//! - Not waiting for kernel to create device nodes
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use cheat_guard::cheat_ensure;
 use distro_spec::PartitionLayout;
 use std::time::{Duration, Instant};
 
@@ -48,6 +56,15 @@ impl Step for IdentifyDisk {
 }
 
 /// Step 4: Partition the disk with GPT layout
+///
+/// # Cheat Vectors
+/// - EASY: Accept sfdisk exit 0 without verifying partitions actually exist
+/// - EASY: Skip waiting for kernel to create device nodes
+/// - MEDIUM: Don't verify partition sizes/types match expected layout
+///
+/// # User Consequence if Cheated
+/// Installation fails at format step ("device not found") or boot fails
+/// because EFI partition is wrong size/type.
 pub struct PartitionDisk;
 
 impl Step for PartitionDisk {
@@ -72,45 +89,47 @@ impl Step for PartitionDisk {
             Duration::from_secs(30),
         )?;
 
-        if sfdisk_result.success() {
-            result.add_check(
-                "GPT partition table created",
-                CheckResult::Pass("sfdisk completed successfully".to_string()),
-            );
-        } else {
-            result.add_check(
-                "GPT partition table created",
-                CheckResult::Fail {
-                    expected: "sfdisk exit 0".to_string(),
-                    actual: format!("exit {}: {}", sfdisk_result.exit_code, sfdisk_result.output),
-                },
-            );
-            result.fail("Check disk state with 'lsblk' and 'sfdisk -d /dev/vda'");
-            return Ok(result);
-        }
+        // CHEAT GUARD: Don't just check exit code - verify actual state
+        cheat_ensure!(
+            sfdisk_result.success(),
+            protects = "Disk partitioning actually works",
+            severity = "CRITICAL",
+            cheats = ["Ignore exit code", "Catch and suppress errors"],
+            consequence = "No partitions created, format step fails, user stuck",
+            "sfdisk failed with exit {}: {}", sfdisk_result.exit_code, sfdisk_result.output
+        );
+
+        result.add_check(
+            "GPT partition table created",
+            CheckResult::Pass("sfdisk completed successfully".to_string()),
+        );
 
         // Wait for kernel to create partition device nodes
         // partprobe forces kernel to re-read partition table, udevadm settle waits for udev
         let _ = console.exec("partprobe /dev/vda 2>/dev/null || true", Duration::from_secs(5))?;
         let _ = console.exec("udevadm settle --timeout=5 2>/dev/null || sleep 2", Duration::from_secs(10))?;
 
-        // Verify partitions exist
+        // CRITICAL: Verify partitions actually exist - don't trust sfdisk exit code alone
         let verify = console.exec("lsblk /dev/vda -o NAME,SIZE,TYPE", Duration::from_secs(5))?;
 
-        if verify.output.contains("vda1") && verify.output.contains("vda2") {
-            result.add_check(
-                "Partitions created",
-                CheckResult::Pass("vda1 (EFI) and vda2 (root) exist".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Partitions created",
-                CheckResult::Fail {
-                    expected: "vda1 and vda2".to_string(),
-                    actual: verify.output.clone(),
-                },
-            );
-        }
+        // CHEAT GUARD: Must verify BOTH partitions exist
+        cheat_ensure!(
+            verify.output.contains("vda1") && verify.output.contains("vda2"),
+            protects = "Both partitions were actually created",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check exit code",
+                "Check for vda1 OR vda2 instead of AND",
+                "Skip this verification entirely"
+            ],
+            consequence = "Missing partition causes format/mount failure, user cannot install",
+            "Partitions not found. Expected vda1 AND vda2, got:\n{}", verify.output
+        );
+
+        result.add_check(
+            "Partitions created",
+            CheckResult::Pass("vda1 (EFI) and vda2 (root) exist".to_string()),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
