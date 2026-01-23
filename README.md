@@ -4,6 +4,40 @@
 
 E2E test runner that boots LevitateOS in QEMU and verifies the complete installation process.
 
+## Status
+
+| Metric | Value |
+|--------|-------|
+| Stage | Alpha |
+| Target | x86_64 Linux (QEMU + OVMF) |
+| Last verified | 2026-01-23 |
+
+### Works
+
+- 6-phase installation test sequence
+- QEMU boot with UEFI firmware
+- Phase/step selection for debugging
+
+### Incomplete / Stubbed
+
+- Post-reboot verification (Phase 6)
+
+### Known Issues
+
+- See parent repo issues
+
+---
+
+## Author
+
+<!-- HUMAN WRITTEN - DO NOT MODIFY -->
+
+[Waiting for human input]
+
+<!-- END HUMAN WRITTEN -->
+
+---
+
 ## Prerequisites
 
 - QEMU with OVMF (UEFI firmware)
