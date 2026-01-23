@@ -1,79 +1,66 @@
 # install-tests
 
-> **STOP. READ. THEN ACT.** This is the CORRECT location for E2E installation tests. Not `leviso/tests/`. Read this crate's source before writing anything.
+E2E test runner. Boots LevitateOS ISO in QEMU, runs installation steps, verifies results.
 
-E2E test runner that boots LevitateOS in QEMU and verifies the complete installation process.
+**This is where installation tests go.** Not `leviso/tests/`.
 
 ## Status
 
-| Metric | Value |
-|--------|-------|
-| Stage | Alpha |
-| Target | x86_64 Linux (QEMU + OVMF) |
-| Last verified | 2026-01-23 |
+**Alpha.** Phases 1-5 work. Phase 6 (post-reboot verification) incomplete.
 
-### Works
-
-- 6-phase installation test sequence
-- QEMU boot with UEFI firmware
-- Phase/step selection for debugging
-
-### Incomplete / Stubbed
-
-- Post-reboot verification (Phase 6)
-
-### Known Issues
-
-- See parent repo issues
-
----
-
-## Author
-
-<!-- HUMAN WRITTEN - DO NOT MODIFY -->
-
-[Waiting for human input]
-
-<!-- END HUMAN WRITTEN -->
-
----
-
-## Prerequisites
-
-- QEMU with OVMF (UEFI firmware)
-- Built leviso (kernel + initramfs)
+| Phase | Status |
+|-------|--------|
+| 1. Boot | Works |
+| 2. Disk (partition, format, mount) | Works |
+| 3. Base System (extract, fstab, chroot) | Works |
+| 4. Configuration (timezone, users) | Works |
+| 5. Boot Setup (initramfs, bootloader) | Works |
+| 6. Post-Reboot Verification | **Incomplete** |
 
 ## Usage
 
 ```bash
-cargo run -- run              # Run all tests (phases 1-6)
-cargo run -- run --phase 2    # Run specific phase (1-6)
+cargo run -- run              # Run phases 1-5
+cargo run -- run --phase 2    # Run specific phase
 cargo run -- run --step 5     # Run specific step
-cargo run -- list             # Show all steps by phase
+cargo run -- list             # Show all steps
+```
+
+## Requirements
+
+- QEMU with KVM support
+- OVMF (UEFI firmware)
+- Built LevitateOS ISO (`leviso/output/levitateos.iso`)
+
+## Options
+
+```
+--disk-size 16G    # Virtual disk size (default: 8G)
+--keep-vm          # Don't kill VM after tests
+--phase N          # Run only phase N
+--step N           # Run only step N
 ```
 
 ## Test Phases
 
-1. **Boot** - Verify UEFI, sync clock
-2. **Disk** - Partition, format, mount
-3. **Base System** - Mount install media, extract tarball, generate fstab, setup chroot
-4. **Configuration** - Timezone, locale, hostname, root password, create user
-5. **Boot Setup** - Generate initramfs, install bootloader, enable services
-6. **Post-Reboot Verification** - Verify system boots from disk, user login, networking, sudo
+1. **Boot** - QEMU starts, UEFI loads, reaches shell
+2. **Disk** - `fdisk`, `mkfs.fat`, `mkfs.ext4`, `mount`
+3. **Base System** - `recstrap`, `recfstab`, `recchroot` setup
+4. **Configuration** - timezone, locale, hostname, root password, user
+5. **Boot Setup** - dracut initramfs, bootctl install, systemctl enable
+6. **Post-Reboot** - (incomplete) reboot to installed system, verify login
 
-## Options
+## Known Limitations
+
+- Phase 6 not implemented - doesn't verify installed system boots
+- Runs in QEMU only - no bare metal testing
+- Single-threaded execution
+
+## Building
 
 ```bash
---disk-size 16G    # Custom disk size
---keep-vm          # Keep VM running for debugging
-```
-
-## Development
-
-```bash
-cargo build        # Build
-cargo test         # Run unit tests
-cargo clippy       # Lint
+cargo build
+cargo test    # Unit tests only, not E2E
 ```
 
 ## License
