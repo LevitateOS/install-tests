@@ -13,7 +13,8 @@ use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
-use distro_spec::levitate::{BootEntry, LoaderConfig, ENABLED_SERVICES};
+use distro_spec::levitate::{ENABLED_SERVICES, default_boot_entry, default_loader_config};
+use distro_spec::ServiceManager;
 use std::time::{Duration, Instant};
 
 /// Step 16: Generate initramfs with dracut
@@ -281,16 +282,15 @@ impl Step for InstallBootloader {
         let root_uuid = uuid_result.output.trim();
 
         // Create loader.conf using levitate-spec (goes in ESP at /boot)
-        let loader_config = LoaderConfig {
-            editor: false, // Disable for security
-            console_mode: Some("max".to_string()),
-            ..Default::default()
-        };
+        let loader_config = default_loader_config()
+            .disable_editor()  // Disable for security
+            .with_console_mode("max");
         console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
 
         // Create boot entry with serial console output for testing
-        // Production installs would use BootEntry::with_root() without console settings
-        let mut boot_entry = BootEntry::with_root(format!("UUID={}", root_uuid));
+        // Production installs would use default_boot_entry().set_root() without console settings
+        let mut boot_entry = default_boot_entry()
+            .set_root(format!("UUID={}", root_uuid));
         // Add console settings for QEMU serial output (required for test automation)
         boot_entry.options = format!(
             "root=UUID={} rw console=tty0 console=ttyS0,115200n8",
