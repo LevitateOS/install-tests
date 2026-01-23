@@ -30,10 +30,7 @@ impl Step for VerifyUefi {
         )?;
 
         if cmd_result.output.contains("UEFI_OK") {
-            result.add_check(
-                "UEFI mode detected",
-                CheckResult::Pass("/sys/firmware/efi/efivars exists".to_string()),
-            );
+            result.add_check("UEFI mode detected", CheckResult::Pass);
         } else {
             // Direct kernel boot bypasses UEFI - this is a SKIP, not a pass
             // We're not actually testing UEFI boot, just using GPT+ESP layout
@@ -63,7 +60,7 @@ impl Step for SyncClock {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Try to enable NTP sync (may not work in all environments)
-        let ntp_result = console.exec(
+        let _ntp_result = console.exec(
             "timedatectl set-ntp true 2>&1",
             Duration::from_secs(5),
         )?;
@@ -75,10 +72,7 @@ impl Step for SyncClock {
         )?;
 
         if status.output.contains("NTP=yes") {
-            result.add_check(
-                "NTP enabled",
-                CheckResult::Pass("timedatectl NTP=yes".to_string()),
-            );
+            result.add_check("NTP enabled", CheckResult::Pass);
         } else {
             // NTP not working - this is a SKIP, not a pass
             // We didn't test NTP functionality
@@ -95,10 +89,7 @@ impl Step for SyncClock {
         let year: i32 = date_result.output.trim().parse().unwrap_or(0);
 
         if year >= 2024 {
-            result.add_check(
-                "System time reasonable",
-                CheckResult::Pass(format!("Year is {}", year)),
-            );
+            result.add_check("System time reasonable", CheckResult::Pass);
         } else {
             // Wrong year - this is a WARNING, not a pass
             // System time is wrong but installation can proceed

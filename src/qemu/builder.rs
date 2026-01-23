@@ -8,35 +8,20 @@ use std::process::{Command, Stdio};
 /// Builder for QEMU commands - consolidates common configuration patterns.
 #[derive(Default)]
 pub struct QemuBuilder {
-    cpu: Option<String>,
-    memory: Option<String>,
     kernel: Option<PathBuf>,
     initrd: Option<PathBuf>,
     append: Option<String>,
     cdrom: Option<PathBuf>,
     disk: Option<PathBuf>,
     ovmf: Option<PathBuf>,
-    ovmf_vars: Option<PathBuf>,  // UEFI variable storage (writable)
+    ovmf_vars: Option<PathBuf>, // UEFI variable storage (writable)
     nographic: bool,
     no_reboot: bool,
-    boot_cdrom_first: bool,
 }
 
 impl QemuBuilder {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Set CPU type (default: Skylake-Client for x86-64-v3 support)
-    pub fn cpu(mut self, cpu: &str) -> Self {
-        self.cpu = Some(cpu.to_string());
-        self
-    }
-
-    /// Set memory size (e.g., "512M", "1G")
-    pub fn memory(mut self, mem: &str) -> Self {
-        self.memory = Some(mem.to_string());
-        self
     }
 
     /// Set kernel for direct boot
@@ -93,12 +78,6 @@ impl QemuBuilder {
         self
     }
 
-    /// Boot from CDROM first (for live ISO boot)
-    pub fn boot_cdrom(mut self) -> Self {
-        self.boot_cdrom_first = true;
-        self
-    }
-
     /// Build the QEMU command (piped for console control)
     pub fn build_piped(self) -> Command {
         let mut cmd = self.build_base();
@@ -108,11 +87,6 @@ impl QemuBuilder {
         cmd
     }
 
-    /// Build the QEMU command (interactive)
-    pub fn build(self) -> Command {
-        self.build_base()
-    }
-
     fn build_base(self) -> Command {
         let mut cmd = Command::new("qemu-system-x86_64");
 
@@ -120,13 +94,11 @@ impl QemuBuilder {
         // (QEMU 10+ has stricter drive index handling)
         cmd.arg("-nodefaults");
 
-        // CPU (default: Skylake-Client for x86-64-v3 support required by Rocky 10)
-        let cpu = self.cpu.as_deref().unwrap_or("Skylake-Client");
-        cmd.args(["-cpu", cpu]);
+        // CPU: Skylake-Client for x86-64-v3 support required by Rocky 10
+        cmd.args(["-cpu", "Skylake-Client"]);
 
-        // Memory (default: 2G for installation - don't use toy values)
-        let mem = self.memory.as_deref().unwrap_or("2G");
-        cmd.args(["-m", mem]);
+        // Memory: 2G for installation - don't use toy values
+        cmd.args(["-m", "2G"]);
 
         // Direct kernel boot
         if let Some(kernel) = &self.kernel {
@@ -179,11 +151,6 @@ impl QemuBuilder {
         // Reboot behavior
         if self.no_reboot {
             cmd.arg("-no-reboot");
-        }
-
-        // Boot order (for UEFI, OVMF respects this hint)
-        if self.boot_cdrom_first {
-            cmd.args(["-boot", "d"]);
         }
 
         cmd
@@ -289,6 +256,7 @@ pub fn acquire_test_lock() -> anyhow::Result<std::fs::File> {
     #[cfg(unix)]
     let file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .mode(0o644)
         .open(lock_path)?;
@@ -296,6 +264,7 @@ pub fn acquire_test_lock() -> anyhow::Result<std::fs::File> {
     #[cfg(not(unix))]
     let file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(lock_path)?;
 

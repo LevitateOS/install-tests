@@ -59,24 +59,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
-name = "cheat-guard"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cheat-test",
-]
-
-[[package]]
-name = "cheat-test"
-version = "0.1.0"
-source = "git+https://github.com/LevitateOS/cheat-test.git?branch=master#22b05a55b6701369bfaa696118c13f5546eb304a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "clap"
 version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -147,10 +129,10 @@ name = "install-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cheat-guard",
  "clap",
  "colored",
  "distro-spec",
+ "leviso-cheat-guard",
  "libc",
  "serde",
  "serde_json",
@@ -173,6 +155,27 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "leviso-cheat-guard"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68d2f8d94cd8d81fdb4a0ff74c5d9dc01e3ebe735b7b46487f576c1bc5c0b486"
+dependencies = [
+ "anyhow",
+ "leviso-cheat-test",
+]
+
+[[package]]
+name = "leviso-cheat-test"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d574f717a896639b5956a16d9f9636c9700be97f77b583a7cc5df83673847f5f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "libc"

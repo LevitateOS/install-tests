@@ -1,6 +1,6 @@
 //! Utility functions for QEMU console.
 //!
-//! Provides write_file(), login(), and get_all_output().
+//! Provides write_file() and login().
 
 use anyhow::{bail, Result};
 use std::io::Write;
@@ -11,11 +11,6 @@ use super::ansi::strip_ansi_codes;
 use super::console::Console;
 
 impl Console {
-    /// Get all captured output.
-    pub fn get_all_output(&self) -> &[String] {
-        &self.output_buffer
-    }
-
     /// Write a file directly (useful for configs).
     pub fn write_file(&mut self, path: &str, content: &str) -> Result<()> {
         // Use printf with escaped content (heredocs don't work well with serial console)

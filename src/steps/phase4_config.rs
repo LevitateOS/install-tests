@@ -10,7 +10,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
-use cheat_guard::cheat_ensure;
+use leviso_cheat_guard::cheat_ensure;
 use distro_spec::levitate::{DEFAULT_HOSTNAME, default_user};
 use std::time::{Duration, Instant};
 
@@ -37,13 +37,10 @@ impl Step for SetTimezone {
             timezone
         );
 
-        let tz_result = console.exec_chroot(&cmd, Duration::from_secs(5))?;
+        let tz_result = console.exec_chroot("/mnt", &cmd, Duration::from_secs(5))?;
 
         if tz_result.success() {
-            result.add_check(
-                "Timezone symlink created",
-                CheckResult::Pass(format!("Set to {}", timezone)),
-            );
+            result.add_check("Timezone symlink created", CheckResult::Pass);
         } else {
             result.add_check(
                 "Timezone symlink created",
@@ -56,15 +53,13 @@ impl Step for SetTimezone {
 
         // Verify
         let verify = console.exec_chroot(
+            "/mnt",
             "ls -la /etc/localtime",
             Duration::from_secs(5),
         )?;
 
         if verify.output.contains(timezone) {
-            result.add_check(
-                "Timezone verified",
-                CheckResult::Pass(verify.output.trim().to_string()),
-            );
+            result.add_check("Timezone verified", CheckResult::Pass);
         }
 
         result.duration = start.elapsed();
@@ -96,10 +91,7 @@ impl Step for ConfigureLocale {
         let verify = console.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
 
         if verify.output.contains(locale) {
-            result.add_check(
-                "locale.conf written",
-                CheckResult::Pass(format!("LANG={}", locale)),
-            );
+            result.add_check("locale.conf written", CheckResult::Pass);
         } else {
             result.add_check(
                 "locale.conf written",
@@ -155,10 +147,7 @@ impl Step for SetHostname {
             .any(|line| line.trim() == hostname);
 
         if hostname_found {
-            result.add_check(
-                "Hostname set",
-                CheckResult::Pass(hostname.to_string()),
-            );
+            result.add_check("Hostname set", CheckResult::Pass);
         } else {
             result.add_check(
                 "Hostname set",
@@ -170,10 +159,7 @@ impl Step for SetHostname {
         }
 
         if verify_hosts.output.contains(hostname) {
-            result.add_check(
-                "Hosts file updated",
-                CheckResult::Pass("Contains hostname".to_string()),
-            );
+            result.add_check("Hosts file updated", CheckResult::Pass);
         }
 
         result.duration = start.elapsed();
@@ -199,7 +185,7 @@ impl Step for SetRootPassword {
         // For testing, use a simple password (in production, this would be parameterized)
         let password_cmd = "echo 'root:levitate' | chpasswd";
 
-        let passwd_result = console.exec_chroot(password_cmd, Duration::from_secs(10))?;
+        let passwd_result = console.exec_chroot("/mnt", password_cmd, Duration::from_secs(10))?;
 
         // CHEAT GUARD: Root password MUST be set for emergency access
         cheat_ensure!(
@@ -215,10 +201,7 @@ impl Step for SetRootPassword {
             "chpasswd failed (exit {}): {}", passwd_result.exit_code, passwd_result.output
         );
 
-        result.add_check(
-            "Root password set",
-            CheckResult::Pass("Password configured".to_string()),
-        );
+        result.add_check("Root password set", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -247,6 +230,7 @@ impl Step for CreateUser {
         let mut available_groups = Vec::new();
         for group in user.groups.iter() {
             let check = console.exec_chroot(
+                "/mnt",
                 &format!("getent group {}", group),
                 Duration::from_secs(5),
             )?;
@@ -265,6 +249,7 @@ impl Step for CreateUser {
 
         // Create user with home directory
         let useradd_result = console.exec_chroot(
+            "/mnt",
             &useradd_cmd,
             Duration::from_secs(10),
         )?;
@@ -283,13 +268,11 @@ impl Step for CreateUser {
             "useradd failed (exit {}): {}", useradd_result.exit_code, useradd_result.output
         );
 
-        result.add_check(
-            "User created",
-            CheckResult::Pass(format!("User '{}' created", username)),
-        );
+        result.add_check("User created", CheckResult::Pass);
 
         // Set user password
         let passwd_result = console.exec_chroot(
+            "/mnt",
             &format!("echo '{}:levitate' | chpasswd", username),
             Duration::from_secs(10),
         )?;
@@ -308,22 +291,17 @@ impl Step for CreateUser {
             "Failed to set password for '{}' (exit {})", username, passwd_result.exit_code
         );
 
-        result.add_check(
-            "User password set",
-            CheckResult::Pass("Password configured".to_string()),
-        );
+        result.add_check("User password set", CheckResult::Pass);
 
         // Verify user exists
         let verify = console.exec_chroot(
+            "/mnt",
             &format!("id {}", username),
             Duration::from_secs(5),
         )?;
 
         if verify.success() && verify.output.contains(username) {
-            result.add_check(
-                "User verified",
-                CheckResult::Pass(verify.output.trim().to_string()),
-            );
+            result.add_check("User verified", CheckResult::Pass);
         }
 
         result.duration = start.elapsed();

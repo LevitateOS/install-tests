@@ -19,7 +19,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
-use cheat_guard::cheat_ensure;
+use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
 /// Step 19: Verify systemd started successfully
@@ -56,10 +56,7 @@ impl Step for VerifySystemdBoot {
             "PID 1 is '{}', expected 'systemd'", pid1.output.trim()
         );
 
-        result.add_check(
-            "systemd is PID 1",
-            CheckResult::Pass("systemd running as init".to_string()),
-        );
+        result.add_check("systemd is PID 1", CheckResult::Pass);
 
         // Check we reached multi-user target
         let target = console.exec(
@@ -68,10 +65,7 @@ impl Step for VerifySystemdBoot {
         )?;
 
         if target.output.contains("active") {
-            result.add_check(
-                "multi-user.target reached",
-                CheckResult::Pass("System fully booted".to_string()),
-            );
+            result.add_check("multi-user.target reached", CheckResult::Pass);
         } else {
             result.add_check(
                 "multi-user.target reached",
@@ -95,10 +89,7 @@ impl Step for VerifySystemdBoot {
             .unwrap_or(0);
 
         if failed_count == 0 {
-            result.add_check(
-                "No failed units",
-                CheckResult::Pass("All services started successfully".to_string()),
-            );
+            result.add_check("No failed units", CheckResult::Pass);
         } else {
             // Get the list of failed units
             let failed_list = console.exec(
@@ -137,10 +128,7 @@ impl Step for VerifyHostname {
 
         // Should be the hostname we set during installation
         if hostname.output.contains("levitate") {
-            result.add_check(
-                "Hostname correct",
-                CheckResult::Pass(hostname.output.trim().to_string()),
-            );
+            result.add_check("Hostname correct", CheckResult::Pass);
         } else {
             result.add_check(
                 "Hostname correct",
@@ -187,10 +175,7 @@ impl Step for VerifyUserLogin {
             "User 'levitate' not found after reboot - user creation may have failed"
         );
 
-        result.add_check(
-            "User exists",
-            CheckResult::Pass("levitate user found".to_string()),
-        );
+        result.add_check("User exists", CheckResult::Pass);
 
         // Check home directory exists and is accessible
         let home_check = console.exec(
@@ -199,10 +184,7 @@ impl Step for VerifyUserLogin {
         )?;
 
         if home_check.output.contains("HOME_OK") {
-            result.add_check(
-                "Home directory accessible",
-                CheckResult::Pass("/home/levitate exists".to_string()),
-            );
+            result.add_check("Home directory accessible", CheckResult::Pass);
         } else {
             result.add_check(
                 "Home directory accessible",
@@ -220,10 +202,7 @@ impl Step for VerifyUserLogin {
         )?;
 
         if write_check.output.contains("WRITE_OK") {
-            result.add_check(
-                "User can write to home",
-                CheckResult::Pass("Write test passed".to_string()),
-            );
+            result.add_check("User can write to home", CheckResult::Pass);
         } else {
             result.add_check(
                 "User can write to home",
@@ -260,10 +239,7 @@ impl Step for VerifyNetworking {
         )?;
 
         if networkd.output.contains("active") {
-            result.add_check(
-                "Network service running",
-                CheckResult::Pass("networkd or NetworkManager active".to_string()),
-            );
+            result.add_check("Network service running", CheckResult::Pass);
         } else {
             result.add_check(
                 "Network service running",
@@ -281,10 +257,7 @@ impl Step for VerifyNetworking {
         )?;
 
         if ip_check.output.contains("inet ") {
-            result.add_check(
-                "IP address assigned",
-                CheckResult::Pass(ip_check.output.trim().to_string()),
-            );
+            result.add_check("IP address assigned", CheckResult::Pass);
         } else {
             // In QEMU without network, this is a SKIP - not tested, not a pass
             result.add_check(
@@ -300,10 +273,7 @@ impl Step for VerifyNetworking {
         )?;
 
         if dns_check.success() {
-            result.add_check(
-                "DNS resolution works",
-                CheckResult::Pass("localhost resolves".to_string()),
-            );
+            result.add_check("DNS resolution works", CheckResult::Pass);
         } else {
             result.add_check(
                 "DNS resolution works",
@@ -350,10 +320,7 @@ impl Step for VerifySudo {
             "sudo binary not found - base system missing sudo package"
         );
 
-        result.add_check(
-            "sudo installed",
-            CheckResult::Pass("sudo found".to_string()),
-        );
+        result.add_check("sudo installed", CheckResult::Pass);
 
         // Check if wheel group exists and user is in it
         let wheel_check = console.exec(
@@ -362,10 +329,7 @@ impl Step for VerifySudo {
         )?;
 
         if wheel_check.output.contains("WHEEL_OK") {
-            result.add_check(
-                "User in wheel group",
-                CheckResult::Pass("levitate is in wheel group".to_string()),
-            );
+            result.add_check("User in wheel group", CheckResult::Pass);
         } else {
             // User not in wheel - may use different sudoers config, but note it
             result.add_check(
@@ -395,10 +359,7 @@ impl Step for VerifySudo {
             "sudo elevation failed: {}", sudo_test.output.trim()
         );
 
-        result.add_check(
-            "sudo elevation works",
-            CheckResult::Pass("sudo whoami returns root".to_string()),
-        );
+        result.add_check("sudo elevation works", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -432,7 +393,6 @@ impl Step for VerifyEssentialCommands {
             ("bash --version", "bash"),
         ];
 
-        let mut passed = 0;
         let mut failed = 0;
 
         for (cmd, package) in essential_commands {
@@ -441,9 +401,7 @@ impl Step for VerifyEssentialCommands {
                 Duration::from_secs(5),
             )?;
 
-            if check.success() {
-                passed += 1;
-            } else {
+            if !check.success() {
                 failed += 1;
                 result.add_check(
                     &format!("{} works", package),
@@ -469,10 +427,7 @@ impl Step for VerifyEssentialCommands {
             "{} essential commands missing", failed
         );
 
-        result.add_check(
-            "All essential commands",
-            CheckResult::Pass(format!("{}/{} commands work", passed, passed)),
-        );
+        result.add_check("All essential commands", CheckResult::Pass);
 
         // Test file operations work
         let file_ops = console.exec(
@@ -481,10 +436,7 @@ impl Step for VerifyEssentialCommands {
         )?;
 
         if file_ops.output.contains("FILE_OPS_OK") {
-            result.add_check(
-                "File operations work",
-                CheckResult::Pass("create/read/delete works".to_string()),
-            );
+            result.add_check("File operations work", CheckResult::Pass);
         } else {
             result.add_check(
                 "File operations work",
@@ -502,10 +454,7 @@ impl Step for VerifyEssentialCommands {
         )?;
 
         if journal_check.success() && !journal_check.output.is_empty() {
-            result.add_check(
-                "Journal logging works",
-                CheckResult::Pass("Boot logs available".to_string()),
-            );
+            result.add_check("Journal logging works", CheckResult::Pass);
         } else {
             result.add_check(
                 "Journal logging works",

@@ -32,13 +32,6 @@ mod phase4_config;
 mod phase5_boot;
 mod phase6_verify;
 
-pub use phase1_boot::*;
-pub use phase2_disk::*;
-pub use phase3_base::*;
-pub use phase4_config::*;
-pub use phase5_boot::*;
-pub use phase6_verify::*;
-
 use crate::qemu::Console;
 use anyhow::Result;
 use std::time::Duration;
@@ -47,7 +40,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub enum CheckResult {
     /// Check passed - the feature works correctly
-    Pass(String),
+    Pass,
     /// Check failed - the feature is broken
     Fail { expected: String, actual: String },
     /// Check skipped - feature not available (e.g., missing from tarball)
@@ -59,16 +52,6 @@ pub enum CheckResult {
 }
 
 impl CheckResult {
-    /// Returns true only for Pass - Skip and Warning are NOT passes
-    pub fn passed(&self) -> bool {
-        matches!(self, CheckResult::Pass(_))
-    }
-
-    /// Returns true for Fail
-    pub fn failed(&self) -> bool {
-        matches!(self, CheckResult::Fail { .. })
-    }
-
     /// Returns true for Skip
     pub fn skipped(&self) -> bool {
         matches!(self, CheckResult::Skip(_))
@@ -112,7 +95,7 @@ impl StepResult {
 
     pub fn add_check(&mut self, name: &str, result: CheckResult) {
         match &result {
-            CheckResult::Pass(_) => {
+            CheckResult::Pass => {
                 // Pass is good, no state change needed
             }
             CheckResult::Fail { .. } => {
@@ -128,21 +111,6 @@ impl StepResult {
             }
         }
         self.checks.push((name.to_string(), result));
-    }
-
-    pub fn fail(&mut self, suggestion: &str) {
-        self.passed = false;
-        self.fix_suggestion = Some(suggestion.to_string());
-    }
-
-    /// Count of passed checks
-    pub fn pass_count(&self) -> usize {
-        self.checks.iter().filter(|(_, r)| r.passed()).count()
-    }
-
-    /// Count of failed checks
-    pub fn fail_count(&self) -> usize {
-        self.checks.iter().filter(|(_, r)| r.failed()).count()
     }
 
     /// Count of skipped checks
@@ -200,7 +168,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase3_base::MountInstallMedia),
         Box::new(phase3_base::ExtractSquashfs),
         Box::new(phase3_base::GenerateFstab),
-        Box::new(phase3_base::SetupChroot),
+        Box::new(phase3_base::VerifyChroot),
         // Phase 4: Configuration
         Box::new(phase4_config::SetTimezone),
         Box::new(phase4_config::ConfigureLocale),

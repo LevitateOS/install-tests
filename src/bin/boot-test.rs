@@ -326,7 +326,7 @@ impl Console {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if tx.send(line).is_err() {
                     break;
                 }
@@ -385,7 +385,7 @@ impl Console {
                         let exit_code: i32 = line
                             .split(&done_marker)
                             .nth(1)
-                            .and_then(|s| s.trim().split_whitespace().next())
+                            .and_then(|s| s.split_whitespace().next())
                             .and_then(|s| s.parse().ok())
                             .unwrap_or(-1);
                         return Ok((exit_code == 0, output));

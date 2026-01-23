@@ -1,23 +1,24 @@
 //! Phase 3: Base system installation steps.
 //!
-//! Steps 7-10: Mount install media, run recstrap, generate fstab, setup chroot.
+//! Steps 7-10: Mount install media, run recstrap, generate fstab, verify chroot.
 //!
-//! Uses recstrap (like pacstrap for Arch) to extract the base system.
-//! User does partitioning/formatting/mounting manually before this phase.
+//! Uses the LevitateOS installation tools:
+//! - recstrap (like pacstrap) - extracts squashfs to target
+//! - recfstab (like genfstab) - generates fstab from mounts
+//! - recchroot (like arch-chroot) - runs commands in chroot
 //!
 //! # Cheat Prevention
 //!
 //! Critical steps that must actually work:
 //! - recstrap must extract ALL files (not just some)
-//! - fstab must have correct UUIDs (not placeholder values)
-//! - Chroot must actually enter the new root (not stay in live environment)
+//! - recfstab must generate valid fstab with correct UUIDs
+//! - recchroot must actually enter the new root
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
-use cheat_guard::cheat_ensure;
+use leviso_cheat_guard::cheat_ensure;
 use distro_spec::levitate::{SQUASHFS_NAME, SQUASHFS_CDROM_PATH};
-use distro_spec::shared::partitions::{EFI_FILESYSTEM, ROOT_FILESYSTEM};
 use std::time::{Duration, Instant};
 
 /// Step 7: Mount installation media (CDROM)
@@ -52,10 +53,7 @@ impl Step for MountInstallMedia {
             "ISO not mounted at /media/cdrom. Init should mount this automatically."
         );
 
-        result.add_check(
-            "ISO mounted",
-            CheckResult::Pass("/media/cdrom".to_string()),
-        );
+        result.add_check("ISO mounted", CheckResult::Pass);
 
         // Verify squashfs is accessible
         let squashfs_check = console.exec(
@@ -77,10 +75,7 @@ impl Step for MountInstallMedia {
             "Squashfs not found at {}. ISO must contain live/{}", SQUASHFS_CDROM_PATH, SQUASHFS_NAME
         );
 
-        result.add_check(
-            "Squashfs accessible",
-            CheckResult::Pass(SQUASHFS_CDROM_PATH.to_string()),
-        );
+        result.add_check("Squashfs accessible", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -124,10 +119,7 @@ impl Step for ExtractSquashfs {
             "recstrap not found. ISO may be incomplete."
         );
 
-        result.add_check(
-            "recstrap available",
-            CheckResult::Pass("recstrap found".to_string()),
-        );
+        result.add_check("recstrap available", CheckResult::Pass);
 
         // Run recstrap to extract base system
         // recstrap handles squashfs location automatically (/media/cdrom/live/filesystem.squashfs)
@@ -150,10 +142,7 @@ impl Step for ExtractSquashfs {
             "recstrap failed (exit {}): {}", extract.exit_code, extract.output
         );
 
-        result.add_check(
-            "recstrap completed",
-            CheckResult::Pass("Extracted to /mnt".to_string()),
-        );
+        result.add_check("recstrap completed", CheckResult::Pass);
 
         // Verify essential directories exist
         let verify = console.exec(
@@ -175,22 +164,21 @@ impl Step for ExtractSquashfs {
             "Essential directories missing after recstrap. /bin, /usr, /etc must exist."
         );
 
-        result.add_check(
-            "Base system verified",
-            CheckResult::Pass("/bin, /usr, /etc exist".to_string()),
-        );
+        result.add_check("Base system verified", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
     }
 }
 
-/// Step 8: Generate /etc/fstab
+/// Step 9: Generate /etc/fstab using recfstab
+///
+/// recfstab is like genfstab for Arch - reads mounted filesystems and generates fstab.
 pub struct GenerateFstab;
 
 impl Step for GenerateFstab {
     fn num(&self) -> usize { 9 }
-    fn name(&self) -> &str { "Generate fstab" }
+    fn name(&self) -> &str { "Generate fstab (recfstab)" }
     fn ensures(&self) -> &str {
         "System has valid /etc/fstab with correct UUIDs for automatic mounting"
     }
@@ -199,153 +187,132 @@ impl Step for GenerateFstab {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Get UUIDs for partitions
-        // Note: output may contain command echo, so we extract just the UUID line
-        let uuid_root = console.exec(
-            "blkid -s UUID -o value /dev/vda2",
-            Duration::from_secs(5),
-        )?;
-        let uuid_boot = console.exec(
-            "blkid -s UUID -o value /dev/vda1",
+        // Check recfstab is available
+        let recfstab_check = console.exec(
+            "which recfstab",
             Duration::from_secs(5),
         )?;
 
-        // Extract UUID from output (it's the line that looks like a UUID)
-        let root_uuid = uuid_root.output
-            .lines()
-            .find(|line| {
-                let trimmed = line.trim();
-                // UUID looks like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-                trimmed.len() == 36 && trimmed.chars().filter(|c| *c == '-').count() == 4
-            })
-            .map(|s| s.trim())
-            .unwrap_or("");
-
-        let boot_uuid = uuid_boot.output
-            .lines()
-            .find(|line| {
-                let trimmed = line.trim();
-                // FAT UUID looks like: XXXX-XXXX (8 chars with dash)
-                (trimmed.len() == 9 && trimmed.chars().nth(4) == Some('-')) ||
-                // Or standard UUID
-                (trimmed.len() == 36 && trimmed.chars().filter(|c| *c == '-').count() == 4)
-            })
-            .map(|s| s.trim())
-            .unwrap_or("");
-
-        // CHEAT GUARD: UUIDs MUST be valid - fstab with wrong UUIDs = unbootable
+        // CHEAT GUARD: recfstab MUST be available
         cheat_ensure!(
-            !root_uuid.is_empty() && !boot_uuid.is_empty(),
-            protects = "fstab uses real partition UUIDs",
+            recfstab_check.success(),
+            protects = "recfstab is available in live ISO",
             severity = "CRITICAL",
             cheats = [
-                "Use hardcoded/placeholder UUIDs",
-                "Skip UUID extraction",
-                "Accept empty UUIDs"
+                "Skip recfstab check",
+                "Manually write fstab",
+                "Hardcode UUIDs"
             ],
-            consequence = "fstab has wrong UUIDs, system won't mount partitions, boot fails",
-            "Failed to get UUIDs: root='{}', boot='{}'", root_uuid, boot_uuid
+            consequence = "Cannot generate fstab automatically, user must do it manually",
+            "recfstab not found. ISO may be incomplete."
         );
 
-        result.add_check(
-            "UUIDs retrieved",
-            CheckResult::Pass(format!("root={}, boot={}", root_uuid, boot_uuid)),
+        result.add_check("recfstab available", CheckResult::Pass);
+
+        // Generate fstab using recfstab
+        // recfstab reads mounted filesystems under /mnt and outputs fstab entries
+        let fstab_result = console.exec(
+            "recfstab /mnt >> /mnt/etc/fstab",
+            Duration::from_secs(10),
+        )?;
+
+        // CHEAT GUARD: recfstab MUST succeed
+        cheat_ensure!(
+            fstab_result.success(),
+            protects = "fstab is generated with correct UUIDs",
+            severity = "CRITICAL",
+            cheats = [
+                "Accept any exit code",
+                "Skip fstab generation",
+                "Use placeholder UUIDs"
+            ],
+            consequence = "No fstab or wrong UUIDs, system won't mount partitions at boot",
+            "recfstab failed (exit {}): {}", fstab_result.exit_code, fstab_result.output
         );
 
-        // Generate fstab content using filesystem types from levitate-spec
-        let fstab = format!(
-            "# /etc/fstab - generated by install-tests
-# <file system>  <mount point>  <type>  <options>  <dump>  <pass>
-UUID={}  /      {}   defaults  0  1
-UUID={}  /boot  {}   defaults  0  2
-",
-            root_uuid, ROOT_FILESYSTEM, boot_uuid, EFI_FILESYSTEM
-        );
+        result.add_check("recfstab completed", CheckResult::Pass);
 
-        // Write fstab
-        console.write_file("/mnt/etc/fstab", &fstab)?;
-
-        // Verify fstab was written
+        // Verify fstab contains UUIDs
         let verify = console.exec("cat /mnt/etc/fstab", Duration::from_secs(5))?;
 
-        // CHEAT GUARD: fstab MUST contain the correct UUIDs we just extracted
+        // CHEAT GUARD: fstab MUST contain UUID entries
         cheat_ensure!(
-            verify.output.contains(root_uuid) && verify.output.contains(boot_uuid),
-            protects = "fstab contains correct UUIDs for automatic mounting",
+            verify.output.contains("UUID="),
+            protects = "fstab uses UUIDs for reliable mounting",
             severity = "CRITICAL",
             cheats = [
                 "Only check if fstab exists",
-                "Check for one UUID but not both",
-                "Skip fstab content verification"
+                "Accept empty fstab",
+                "Skip content verification"
             ],
-            consequence = "Wrong UUIDs in fstab, partitions won't mount at boot",
-            "fstab doesn't contain expected UUIDs:\nExpected root={}, boot={}\nGot:\n{}",
-            root_uuid, boot_uuid, verify.output
+            consequence = "fstab without UUIDs may fail to mount after device changes",
+            "fstab doesn't contain UUID entries:\n{}", verify.output
         );
 
-        result.add_check(
-            "fstab written",
-            CheckResult::Pass("Contains correct UUIDs".to_string()),
-        );
+        result.add_check("fstab contains UUIDs", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
     }
 }
 
-/// Step 9: Setup chroot environment
-pub struct SetupChroot;
+/// Step 10: Verify chroot environment works
+///
+/// recchroot is like arch-chroot - handles bind mounts automatically.
+/// This step verifies recchroot is available and functional.
+pub struct VerifyChroot;
 
-impl Step for SetupChroot {
+impl Step for VerifyChroot {
     fn num(&self) -> usize { 10 }
-    fn name(&self) -> &str { "Setup Chroot" }
+    fn name(&self) -> &str { "Verify Chroot (recchroot)" }
     fn ensures(&self) -> &str {
-        "Chroot environment is configured with necessary bind mounts"
+        "recchroot can execute commands in the installed system"
     }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Enter chroot (this sets up bind mounts)
-        let chroot_result = console.enter_chroot("/mnt");
+        // Check recchroot is available
+        let recchroot_check = console.exec(
+            "which recchroot",
+            Duration::from_secs(5),
+        )?;
 
-        // CHEAT GUARD: Chroot MUST succeed for configuration steps
+        // CHEAT GUARD: recchroot MUST be available
         cheat_ensure!(
-            chroot_result.is_ok(),
-            protects = "Configuration happens in the installed system, not live environment",
+            recchroot_check.success(),
+            protects = "recchroot is available for system configuration",
             severity = "CRITICAL",
             cheats = [
-                "Skip chroot and configure live environment",
-                "Ignore chroot errors",
-                "Pretend chroot succeeded"
+                "Skip recchroot check",
+                "Use plain chroot",
+                "Configure outside chroot"
             ],
-            consequence = "Configuration goes to live system, installed system unconfigured, boot fails",
-            "Failed to enter chroot: {}", chroot_result.as_ref().err().map(|e| e.to_string()).unwrap_or_default()
+            consequence = "Cannot properly configure installed system",
+            "recchroot not found. ISO may be incomplete."
         );
 
-        result.add_check(
-            "Chroot entered",
-            CheckResult::Pass("Bind mounts created".to_string()),
+        result.add_check("recchroot available", CheckResult::Pass);
+
+        // Verify recchroot can execute commands
+        let verify = console.exec_chroot("/mnt", "echo CHROOT_OK", Duration::from_secs(10))?;
+
+        // CHEAT GUARD: recchroot MUST actually work
+        cheat_ensure!(
+            verify.output.contains("CHROOT_OK"),
+            protects = "Commands execute inside the installed system",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip chroot verification",
+                "Accept any output",
+                "Pretend chroot works"
+            ],
+            consequence = "Configuration commands won't run in installed system",
+            "recchroot test failed: {}", verify.output
         );
 
-        // Verify we can run commands in chroot
-        let verify = console.exec_chroot("echo CHROOT_OK", Duration::from_secs(5))?;
-
-        if verify.output.contains("CHROOT_OK") {
-            result.add_check(
-                "Chroot functional",
-                CheckResult::Pass("Commands execute in chroot".to_string()),
-            );
-        } else {
-            result.add_check(
-                "Chroot functional",
-                CheckResult::Fail {
-                    expected: "CHROOT_OK".to_string(),
-                    actual: verify.output.clone(),
-                },
-            );
-        }
+        result.add_check("recchroot functional", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)

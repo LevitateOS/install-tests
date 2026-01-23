@@ -12,7 +12,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
-use cheat_guard::cheat_ensure;
+use leviso_cheat_guard::cheat_ensure;
 use distro_spec::levitate::{BootEntry, LoaderConfig, ENABLED_SERVICES};
 use std::time::{Duration, Instant};
 
@@ -56,13 +56,11 @@ impl Step for GenerateInitramfs {
             "Failed to copy kernel from ISO to ESP: {}", kernel_copy.output
         );
 
-        result.add_check(
-            "kernel copied to ESP",
-            CheckResult::Pass("/media/cdrom/boot/vmlinuz -> /mnt/boot/vmlinuz".to_string()),
-        );
+        result.add_check("kernel copied to ESP", CheckResult::Pass);
 
         // Now verify kernel exists (this check runs in chroot, /boot = ESP)
         let kernel_check = console.exec_chroot(
+            "/mnt",
             "test -f /boot/vmlinuz",
             Duration::from_secs(5),
         )?;
@@ -81,13 +79,11 @@ impl Step for GenerateInitramfs {
             "Kernel not found at /boot/vmlinuz on ESP after copy"
         );
 
-        result.add_check(
-            "kernel verified on ESP",
-            CheckResult::Pass("/boot/vmlinuz found on ESP".to_string()),
-        );
+        result.add_check("kernel verified on ESP", CheckResult::Pass);
 
         // Check if dracut is available
         let dracut_check = console.exec_chroot(
+            "/mnt",
             "which dracut",
             Duration::from_secs(5),
         )?;
@@ -106,13 +102,11 @@ impl Step for GenerateInitramfs {
             "dracut not found - tarball must include dracut package"
         );
 
-        result.add_check(
-            "dracut available",
-            CheckResult::Pass("dracut found".to_string()),
-        );
+        result.add_check("dracut available", CheckResult::Pass);
 
         // Get kernel version
         let kver_result = console.exec_chroot(
+            "/mnt",
             "ls /usr/lib/modules/ | head -1",
             Duration::from_secs(5),
         )?;
@@ -132,10 +126,7 @@ impl Step for GenerateInitramfs {
             "No kernel modules found in /usr/lib/modules/"
         );
 
-        result.add_check(
-            "kernel modules present",
-            CheckResult::Pass(format!("modules for kernel {}", kernel_version)),
-        );
+        result.add_check("kernel modules present", CheckResult::Pass);
 
         // Generate initramfs with dracut
         // --force: overwrite existing initramfs
@@ -162,6 +153,7 @@ impl Step for GenerateInitramfs {
         //   hostonly="no"
         // This was moved to leviso (TEAM_088) so recstrap installs include it
         let dracut_result = console.exec_chroot_streaming(
+            "/mnt",
             &format!(
                 "dracut --force \
                  --omit 'fips bluetooth crypt nfs rdma systemd-sysusers systemd-journald systemd-initrd dracut-systemd' \
@@ -193,13 +185,11 @@ impl Step for GenerateInitramfs {
             "{}", dracut_error_msg
         );
 
-        result.add_check(
-            "initramfs generated",
-            CheckResult::Pass(format!("/boot/initramfs.img for kernel {}", kernel_version)),
-        );
+        result.add_check("initramfs generated", CheckResult::Pass);
 
         // Verify initramfs was created
         let verify = console.exec_chroot(
+            "/mnt",
             "test -f /boot/initramfs.img && ls -lh /boot/initramfs.img",
             Duration::from_secs(5),
         )?;
@@ -218,10 +208,7 @@ impl Step for GenerateInitramfs {
             "initramfs not found at /boot/initramfs.img after dracut"
         );
 
-        result.add_check(
-            "initramfs verified",
-            CheckResult::Pass(verify.output.trim().to_string()),
-        );
+        result.add_check("initramfs verified", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -244,6 +231,7 @@ impl Step for InstallBootloader {
 
         // Check if systemd-boot EFI files exist in the tarball
         let efi_check = console.exec_chroot(
+            "/mnt",
             "test -d /usr/lib/systemd/boot/efi",
             Duration::from_secs(5),
         )?;
@@ -266,6 +254,7 @@ impl Step for InstallBootloader {
             // --esp-path=/boot: REQUIRED in chroot - mount detection doesn't work
             // --no-variables: Skip EFI variable setup (not available in chroot)
             let bootctl_result = console.exec_chroot(
+                "/mnt",
                 "bootctl install --esp-path=/boot --no-variables",
                 Duration::from_secs(30),
             )?;
@@ -284,10 +273,7 @@ impl Step for InstallBootloader {
                 "bootctl install failed (exit {}): {}", bootctl_result.exit_code, bootctl_result.output
             );
 
-            result.add_check(
-                "systemd-boot installed",
-                CheckResult::Pass("bootctl install succeeded".to_string()),
-            );
+            result.add_check("systemd-boot installed", CheckResult::Pass);
         }
 
         // Get root partition UUID for boot entry
@@ -295,9 +281,11 @@ impl Step for InstallBootloader {
         let root_uuid = uuid_result.output.trim();
 
         // Create loader.conf using levitate-spec (goes in ESP at /boot)
-        let mut loader_config = LoaderConfig::default();
-        loader_config.editor = false; // Disable for security
-        loader_config.console_mode = Some("max".to_string());
+        let loader_config = LoaderConfig {
+            editor: false, // Disable for security
+            console_mode: Some("max".to_string()),
+            ..Default::default()
+        };
         console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
 
         // Create boot entry with serial console output for testing
@@ -331,10 +319,7 @@ impl Step for InstallBootloader {
             "Boot entry missing or has wrong UUID. Expected {}, got:\n{}", root_uuid, verify.output
         );
 
-        result.add_check(
-            "Boot entry created",
-            CheckResult::Pass(format!("{} with correct UUID", boot_entry.filename)),
-        );
+        result.add_check("Boot entry created", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -360,6 +345,7 @@ impl Step for EnableServices {
         for service in ENABLED_SERVICES {
             // Check if service unit file exists
             let unit_check = console.exec_chroot(
+                "/mnt",
                 &format!("test -f /usr/lib/systemd/system/{}.service || test -f /lib/systemd/system/{}.service", service.name, service.name),
                 Duration::from_secs(5),
             )?;
@@ -378,15 +364,13 @@ impl Step for EnableServices {
             }
 
             let enable_result = console.exec_chroot(
+                "/mnt",
                 &service.enable_command(),
                 Duration::from_secs(10),
             )?;
 
             if enable_result.success() {
-                result.add_check(
-                    &format!("{} enabled", service.name),
-                    CheckResult::Pass(service.description.to_string()),
-                );
+                result.add_check(&format!("{} enabled", service.name), CheckResult::Pass);
             } else {
                 // Service failed to enable = INSTALLATION IS BROKEN
                 // If it's in ENABLED_SERVICES, it MUST enable successfully. No exceptions.
@@ -403,15 +387,13 @@ impl Step for EnableServices {
         // Enable serial console getty for testing
         // This is required for post-reboot verification via serial console
         let serial_result = console.exec_chroot(
+            "/mnt",
             "systemctl enable serial-getty@ttyS0.service",
             Duration::from_secs(10),
         )?;
 
         if serial_result.success() {
-            result.add_check(
-                "serial-getty@ttyS0 enabled",
-                CheckResult::Pass("Serial console login".to_string()),
-            );
+            result.add_check("serial-getty@ttyS0 enabled", CheckResult::Pass);
         } else {
             result.add_check(
                 "serial-getty@ttyS0 enabled",
@@ -422,35 +404,11 @@ impl Step for EnableServices {
             );
         }
 
-        // Exit chroot since we're done with installation
-        if console.is_in_chroot() {
-            match console.exit_chroot() {
-                Ok(()) => {
-                    result.add_check(
-                        "Chroot exited",
-                        CheckResult::Pass("Unmounted bind mounts".to_string()),
-                    );
-                }
-                Err(e) => {
-                    result.add_check(
-                        "Chroot exited",
-                        CheckResult::Fail {
-                            expected: "Clean exit".to_string(),
-                            actual: e.to_string(),
-                        },
-                    );
-                }
-            }
-        }
-
         // Unmount partitions (EFI first, then root)
         let _ = console.exec("umount /mnt/boot", Duration::from_secs(5));
         let _ = console.exec("umount /mnt", Duration::from_secs(5));
 
-        result.add_check(
-            "Partitions unmounted",
-            CheckResult::Pass("Ready for reboot".to_string()),
-        );
+        result.add_check("Partitions unmounted", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)

@@ -19,10 +19,11 @@ mod chroot;
 mod console;
 mod exec;
 mod patterns;
+mod sync;
 mod utils;
 
 pub use builder::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes,
     QemuBuilder,
 };
-pub use console::{CommandResult, Console};
+pub use console::Console;

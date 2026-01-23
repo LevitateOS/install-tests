@@ -12,7 +12,7 @@
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
-use cheat_guard::cheat_ensure;
+use leviso_cheat_guard::cheat_ensure;
 use distro_spec::PartitionLayout;
 use std::time::{Duration, Instant};
 
@@ -52,10 +52,7 @@ impl Step for IdentifyDisk {
             "Target disk /dev/vda not found. lsblk output: {}", lsblk_all.output.trim()
         );
 
-        result.add_check(
-            "Target disk found",
-            CheckResult::Pass("/dev/vda detected".to_string()),
-        );
+        result.add_check("Target disk found", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -106,10 +103,7 @@ impl Step for PartitionDisk {
             "sfdisk failed with exit {}: {}", sfdisk_result.exit_code, sfdisk_result.output
         );
 
-        result.add_check(
-            "GPT partition table created",
-            CheckResult::Pass("sfdisk completed successfully".to_string()),
-        );
+        result.add_check("GPT partition table created", CheckResult::Pass);
 
         // Wait for kernel to create partition device nodes
         // partprobe forces kernel to re-read partition table, udevadm settle waits for udev
@@ -133,10 +127,7 @@ impl Step for PartitionDisk {
             "Partitions not found. Expected vda1 AND vda2, got:\n{}", verify.output
         );
 
-        result.add_check(
-            "Partitions created",
-            CheckResult::Pass("vda1 (EFI) and vda2 (root) exist".to_string()),
-        );
+        result.add_check("Partitions created", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -177,10 +168,7 @@ impl Step for FormatPartitions {
             "mkfs.fat failed (exit {}): {}", fat_result.exit_code, fat_result.output
         );
 
-        result.add_check(
-            "EFI partition formatted",
-            CheckResult::Pass("FAT32 on /dev/vda1".to_string()),
-        );
+        result.add_check("EFI partition formatted", CheckResult::Pass);
 
         // Format root partition as ext4
         let ext4_result = console.exec(
@@ -202,10 +190,7 @@ impl Step for FormatPartitions {
             "mkfs.ext4 failed (exit {}): {}", ext4_result.exit_code, ext4_result.output
         );
 
-        result.add_check(
-            "Root partition formatted",
-            CheckResult::Pass("ext4 on /dev/vda2".to_string()),
-        );
+        result.add_check("Root partition formatted", CheckResult::Pass);
 
         result.duration = start.elapsed();
         Ok(result)
@@ -255,10 +240,7 @@ impl Step for MountPartitions {
             "Failed to mount /dev/vda2 to /mnt (exit {}): {}", mount_root.exit_code, mount_root.output
         );
 
-        result.add_check(
-            "Root mounted",
-            CheckResult::Pass("/dev/vda2 -> /mnt".to_string()),
-        );
+        result.add_check("Root mounted", CheckResult::Pass);
 
         // Create and mount EFI partition at /mnt/boot
         // NOTE: ESP is at /boot, NOT /boot/efi
@@ -280,18 +262,12 @@ impl Step for MountPartitions {
             "Failed to mount /dev/vda1 to /mnt/boot (exit {}): {}", mount_boot.exit_code, mount_boot.output
         );
 
-        result.add_check(
-            "EFI mounted",
-            CheckResult::Pass("/dev/vda1 -> /mnt/boot (ESP)".to_string()),
-        );
+        result.add_check("EFI mounted", CheckResult::Pass);
 
         // Verify mounts
         let mounts = console.exec("mount | grep /mnt", Duration::from_secs(5))?;
         if mounts.output.contains("/mnt ") && mounts.output.contains("/mnt/boot ") {
-            result.add_check(
-                "Mounts verified",
-                CheckResult::Pass("Root at /mnt, ESP at /mnt/boot".to_string()),
-            );
+            result.add_check("Mounts verified", CheckResult::Pass);
         }
 
         result.duration = start.elapsed();

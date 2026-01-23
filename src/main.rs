@@ -115,7 +115,7 @@ fn list_steps() {
 }
 
 /// Run a single step and print result
-fn run_single_step(step: &Box<dyn Step>, console: &mut qemu::Console) -> Result<(StepResult, bool)> {
+fn run_single_step(step: &dyn Step, console: &mut qemu::Console) -> Result<(StepResult, bool)> {
     print!("{} Step {:2}: {}... ",
         "▶".cyan(),
         step.num(),
@@ -198,7 +198,7 @@ fn run_single_step(step: &Box<dyn Step>, console: &mut qemu::Console) -> Result<
 fn run_tests(
     step_num: Option<usize>,
     phase_num: Option<usize>,
-    leviso_dir: &PathBuf,
+    leviso_dir: &std::path::Path,
     iso_path: Option<PathBuf>,
     disk_size: &str,
     _keep_vm: bool,
@@ -341,9 +341,8 @@ fn run_tests(
             .collect();
 
         for step in steps {
-            let (result, passed) = run_single_step(&step, &mut console)?;
+            let (result, passed) = run_single_step(step.as_ref(), &mut console)?;
             if !passed {
-                all_passed = false;
                 results.push(result);
                 // Stop on first failure
                 drop(console);
@@ -446,7 +445,7 @@ fn run_tests(
             .collect();
 
         for step in steps {
-            let (result, passed) = run_single_step(&step, &mut console)?;
+            let (result, passed) = run_single_step(step.as_ref(), &mut console)?;
             if !passed {
                 all_passed = false;
             }

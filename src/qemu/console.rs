@@ -1,13 +1,13 @@
 //! Console control for QEMU serial I/O.
 //!
-//! Handles command execution with exit code capture and chroot state tracking.
+//! Handles command execution with exit code capture.
 //!
 //! # STOP. READ. THEN ACT.
 //!
 //! This module already has:
 //! - `exec()` / `exec_ok()` - Run commands with exit code capture
+//! - `exec_chroot()` - Run commands in chroot via recchroot
 //! - `wait_for_boot()` - Wait for systemd startup
-//! - `enter_chroot()` / `exit_chroot()` - Chroot management with bind mounts
 //! - `write_file()` - Write files via serial console
 //!
 //! Read all methods before adding new ones. Don't duplicate functionality.
@@ -17,7 +17,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
 
 /// Result of executing a command in QEMU.
 #[derive(Debug)]
@@ -45,10 +44,6 @@ impl CommandResult {
 pub struct Console {
     pub(super) stdin: ChildStdin,
     pub(super) rx: Receiver<String>,
-    /// Track whether we're in a chroot.
-    pub(super) in_chroot: bool,
-    /// Path to chroot (if any).
-    pub(super) chroot_path: Option<String>,
     /// Output buffer for all received lines.
     pub(super) output_buffer: Vec<String>,
 }
@@ -68,8 +63,6 @@ impl Console {
         Ok(Self {
             stdin,
             rx,
-            in_chroot: false,
-            chroot_path: None,
             output_buffer: Vec::new(),
         })
     }
@@ -80,24 +73,6 @@ impl Console {
             if tx.send(line).is_err() {
                 break;
             }
-        }
-    }
-
-    /// Drain all pending output from the channel.
-    ///
-    /// Simple two-pass approach: drain, wait briefly, drain again.
-    pub(super) fn drain_output(&mut self, wait_duration: Duration) {
-        // First pass: drain everything currently available
-        while let Ok(line) = self.rx.try_recv() {
-            self.output_buffer.push(line);
-        }
-
-        // Brief wait for any in-flight output
-        std::thread::sleep(wait_duration);
-
-        // Second pass: drain anything that arrived
-        while let Ok(line) = self.rx.try_recv() {
-            self.output_buffer.push(line);
         }
     }
 }

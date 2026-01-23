@@ -11,90 +11,17 @@ use std::time::{Duration, Instant};
 use super::ansi::strip_ansi_codes;
 use super::console::{CommandResult, Console};
 use super::patterns::FATAL_ERROR_PATTERNS;
-
-/// Get a timestamp in microseconds for unique marker generation.
-/// Falls back to 0 if system time is unavailable (Bug #5 fix).
-fn timestamp_micros() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros())
-        .unwrap_or(0)
-}
+use super::sync::{self, generate_command_markers, is_marker_line, SyncConfig};
 
 impl Console {
     /// Execute a command and capture output + exit code.
     pub fn exec(&mut self, command: &str, timeout: Duration) -> Result<CommandResult> {
-        // First, aggressively drain any pending output
-        // This handles cases where previous commands left output in the buffer
-        self.drain_output(Duration::from_millis(200));
-
-        // Send a sync command and wait for its completion
-        // This ensures the shell is ready for our command
-        let sync_id = timestamp_micros();
-        let sync_marker = format!("___SYNC_{}___", sync_id);
-
-        // Send sync command
-        let sync_cmd = format!("echo '{}'\n", sync_marker);
-        self.stdin.write_all(sync_cmd.as_bytes())?;
-        self.stdin.flush()?;
-
-        // Wait for sync marker with short timeout, draining everything before it
-        let sync_start = Instant::now();
-        // Bug #3 fix: removed unused _sync_found variable
-        loop {
-            if sync_start.elapsed() > Duration::from_secs(5) {
-                // Sync timeout - send a second sync to force shell ready state
-                eprintln!("  WARN: Sync timeout, sending secondary sync...");
-
-                // Aggressive drain - multiple passes
-                self.drain_output(Duration::from_millis(500));
-
-                // Send a secondary sync with a different marker
-                let sync2_marker = format!("___SYNC2_{}___", sync_id);
-                let _ = self
-                    .stdin
-                    .write_all(format!("echo '{}'\n", sync2_marker).as_bytes());
-                let _ = self.stdin.flush();
-
-                // Wait for secondary sync marker (shorter timeout)
-                let sync2_start = Instant::now();
-                while sync2_start.elapsed() < Duration::from_secs(3) {
-                    match self.rx.recv_timeout(Duration::from_millis(100)) {
-                        Ok(line) => {
-                            self.output_buffer.push(line.clone());
-                            if strip_ansi_codes(&line).contains(&sync2_marker) {
-                                break;
-                            }
-                        }
-                        Err(_) => continue,
-                    }
-                }
-
-                // Final aggressive drain
-                self.drain_output(Duration::from_millis(300));
-                break;
-            }
-            match self.rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(line) => {
-                    self.output_buffer.push(line.clone());
-                    let clean = strip_ansi_codes(&line);
-                    if clean.contains(&sync_marker) {
-                        // Found sync marker - all previous output has been flushed
-                        break;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-
-        // Extra drain after sync to catch any trailing output
-        self.drain_output(Duration::from_millis(100));
+        // Synchronize with the shell before sending command
+        let sync_config = SyncConfig::default();
+        sync::sync_shell(&mut self.stdin, &self.rx, &mut self.output_buffer, &sync_config)?;
 
         // Generate unique markers for this command
-        let cmd_id = timestamp_micros();
-        let start_marker = format!("___START_{}___", cmd_id);
-        let done_marker = format!("___DONE_{}___", cmd_id);
+        let (start_marker, done_marker) = generate_command_markers();
 
         // Build command with unique start and end markers
         let full_cmd = format!(
@@ -145,15 +72,12 @@ impl Console {
                     }
 
                     // Wait for start marker before collecting output
-                    // Check if line contains our marker (not just ends with - may have terminal codes)
                     if trimmed.contains(&start_marker) {
                         collecting = true;
                         continue;
                     }
 
                     // Check for completion marker (unique per command)
-                    // The done marker is followed by a space and exit code (number).
-                    // Using unique markers avoids matching output from previous commands.
                     if let Some(pos) = trimmed.find(&done_marker) {
                         let rest = &trimmed[pos + done_marker.len()..];
                         let rest_trimmed = rest.trim();
@@ -161,8 +85,7 @@ impl Console {
                         if rest_trimmed
                             .chars()
                             .next()
-                            .map(|c| c.is_ascii_digit())
-                            .unwrap_or(false)
+                            .is_some_and(|c| c.is_ascii_digit())
                         {
                             let exit_code = rest_trimmed
                                 .split_whitespace()
@@ -184,16 +107,9 @@ impl Console {
                         continue;
                     }
 
-                    // Filter out:
-                    // 1. Shell prompts (root@host:~#, [root@host ~]#, etc)
-                    // 2. ANY marker lines (___START___, ___DONE___, ___SYNC___)
-                    //    This includes markers from previous commands that arrive late
+                    // Filter out shell prompts and marker lines
                     let is_prompt = line.contains("root@") || line.contains("# ");
-                    let is_any_marker = trimmed.contains("___START_")
-                        || trimmed.contains("___DONE_")
-                        || trimmed.contains("___SYNC_");
-
-                    if !is_prompt && !is_any_marker {
+                    if !is_prompt && !is_marker_line(trimmed) {
                         output.push_str(&line);
                         output.push('\n');
                     }
@@ -243,9 +159,7 @@ impl Console {
         error_patterns: &[&str],
     ) -> Result<CommandResult> {
         // Generate unique markers
-        let cmd_id = timestamp_micros();
-        let start_marker = format!("___START_{}___", cmd_id);
-        let done_marker = format!("___DONE_{}___", cmd_id);
+        let (start_marker, done_marker) = generate_command_markers();
 
         // Build command with markers
         let full_cmd = format!(
@@ -324,8 +238,7 @@ impl Console {
                         if rest_trimmed
                             .chars()
                             .next()
-                            .map(|c| c.is_ascii_digit())
-                            .unwrap_or(false)
+                            .is_some_and(|c| c.is_ascii_digit())
                         {
                             let exit_code = rest_trimmed
                                 .split_whitespace()
