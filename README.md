@@ -6,16 +6,16 @@ E2E test runner. Boots LevitateOS ISO in QEMU, runs installation steps, verifies
 
 ## Status
 
-**Alpha.** All 6 phases implemented. 24 test steps.
+**Alpha.** Phases 1-5 work. Phase 6 exists but is buggy.
 
-| Phase | Steps | Description |
-|-------|-------|-------------|
-| 1. Boot | 1-2 | UEFI verification, clock sync |
-| 2. Disk | 3-6 | Partition, format, mount |
-| 3. Base System | 7-10 | recstrap extract, fstab, chroot |
-| 4. Configuration | 11-15 | Timezone, locale, hostname, passwords, user |
-| 5. Bootloader | 16-18 | Initramfs, systemd-boot, services |
-| 6. Post-Reboot | 19-24 | Boots installed system, verifies login/network/sudo |
+| Phase | Steps | Status |
+|-------|-------|--------|
+| 1. Boot | 1-2 | Works |
+| 2. Disk | 3-6 | Works |
+| 3. Base System | 7-10 | Works |
+| 4. Configuration | 11-15 | Works |
+| 5. Bootloader | 16-18 | Works |
+| 6. Post-Reboot | 19-24 | **Buggy** - code exists, needs debugging |
 
 ## Binaries
 
@@ -92,6 +92,7 @@ src/
 
 ## Known Limitations
 
+- **Phase 6 buggy** - Post-reboot verification steps exist but fail; fixing this is the current goal
 - Runs in QEMU only - no bare metal testing
 - Single-threaded execution
 - Requires exclusive lock (one test at a time)
