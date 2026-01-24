@@ -7,7 +7,14 @@ on:
     branches: [master, main]
 
 jobs:
+  changes:
+    uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@master
+    with:
+      type: rust
+
   ci:
+    needs: changes
+    if: needs.changes.outputs.has_changes == 'true'
     uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@master
     with:
       msrv: '1.93'
