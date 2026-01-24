@@ -1,11 +1,11 @@
 //! Phase 5: Bootloader installation steps.
 //!
-//! Steps 16-18: Generate initramfs, install bootloader, enable services.
+//! Steps 16-18: Copy/install initramfs, install bootloader, enable services.
 //!
 //! # Cheat Prevention
 //!
 //! Boot-critical steps that MUST work:
-//! - initramfs MUST be generated (no initramfs = kernel panic)
+//! - initramfs MUST be copied from ISO (no initramfs = kernel panic)
 //! - boot entry MUST have correct root UUID (wrong UUID = VFS panic)
 //! - Essential services MUST be enabled (no getty = no login prompt)
 
@@ -14,204 +14,100 @@ use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
 use distro_spec::levitate::{ENABLED_SERVICES, default_boot_entry, default_loader_config};
-use distro_spec::ServiceManager;
 use std::time::{Duration, Instant};
 
-/// Step 16: Generate initramfs with dracut
+/// Step 16: Copy/install initramfs from ISO
 ///
-/// Dracut detects installed kernel and hardware, then generates an initramfs
-/// containing drivers needed to boot the system.
+/// Copies the pre-built initramfs from the ISO to the ESP.
+/// The initramfs was generated during ISO build with generic drivers.
 pub struct GenerateInitramfs;
 
 impl Step for GenerateInitramfs {
     fn num(&self) -> usize { 16 }
-    fn name(&self) -> &str { "Generate Initramfs" }
+    fn name(&self) -> &str { "Copy/Install Initramfs" }
     fn ensures(&self) -> &str {
         "Initramfs exists at /boot/initramfs.img with drivers for installed hardware"
     }
 
     fn execute(&self, console: &mut Console) -> Result<StepResult> {
-        let start = Instant::now();
+        let step_start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // FIRST: Copy kernel from ISO to ESP
+        // ═══════════════════════════════════════════════════════════════════════
+        // KERNEL COPY: ISO → ESP
+        // ═══════════════════════════════════════════════════════════════════════
         // The squashfs doesn't include the kernel (it's on the ISO for live boot).
         // We need to copy it to the ESP where systemd-boot can find it.
-        // ISO is mounted at /media/cdrom, ESP is mounted at /mnt/boot
-        let kernel_copy = console.exec(
-            "cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz",
-            Duration::from_secs(10),
-        )?;
+        let kernel_cmd = "cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz";
+        let cmd_start = Instant::now();
+        let kernel_copy = console.exec(kernel_cmd, Duration::from_secs(10))?;
+        result.log_command(kernel_cmd, kernel_copy.exit_code, &kernel_copy.output, cmd_start.elapsed());
 
-        // CHEAT GUARD: Kernel copy MUST succeed
         cheat_ensure!(
             kernel_copy.success(),
             protects = "Kernel is copied from ISO to ESP for boot",
             severity = "CRITICAL",
-            cheats = [
-                "Skip kernel copy",
-                "Assume kernel exists in squashfs",
-                "Accept copy failure"
-            ],
+            cheats = ["Skip kernel copy", "Assume kernel exists in squashfs", "Accept copy failure"],
             consequence = "No kernel on ESP, systemd-boot can't find it, system won't boot",
             "Failed to copy kernel from ISO to ESP: {}", kernel_copy.output
         );
 
-        result.add_check("kernel copied to ESP", CheckResult::Pass);
+        // Get kernel size as evidence - skeptics want to see actual bytes
+        let cmd_start = Instant::now();
+        let kernel_size = console.exec("stat -c '%s' /mnt/boot/vmlinuz", Duration::from_secs(5))?;
+        result.log_command("stat -c '%s' /mnt/boot/vmlinuz", kernel_size.exit_code, &kernel_size.output, cmd_start.elapsed());
 
-        // Now verify kernel exists (this check runs in chroot, /boot = ESP)
-        let kernel_check = console.exec_chroot(
-            "/mnt",
-            "test -f /boot/vmlinuz",
-            Duration::from_secs(5),
-        )?;
+        let kernel_bytes: u64 = kernel_size.output.trim().parse().unwrap_or(0);
+        let kernel_mb = kernel_bytes as f64 / 1024.0 / 1024.0;
 
-        // CHEAT GUARD: Kernel MUST exist before generating initramfs
-        cheat_ensure!(
-            kernel_check.exit_code == 0,
-            protects = "Kernel exists on ESP for initramfs generation",
-            severity = "CRITICAL",
-            cheats = [
-                "Skip kernel check",
-                "Generate initramfs without kernel",
-                "Assume kernel exists"
-            ],
-            consequence = "No kernel to boot, system completely unbootable",
-            "Kernel not found at /boot/vmlinuz on ESP after copy"
-        );
-
-        result.add_check("kernel verified on ESP", CheckResult::Pass);
-
-        // Check if dracut is available
-        let dracut_check = console.exec_chroot(
-            "/mnt",
-            "which dracut",
-            Duration::from_secs(5),
-        )?;
-
-        // CHEAT GUARD: dracut MUST be available
-        cheat_ensure!(
-            dracut_check.exit_code == 0,
-            protects = "initramfs generator is available",
-            severity = "CRITICAL",
-            cheats = [
-                "Skip dracut check",
-                "Use pre-built initramfs",
-                "Assume dracut exists"
-            ],
-            consequence = "Cannot generate initramfs, system won't boot",
-            "dracut not found - tarball must include dracut package"
-        );
-
-        result.add_check("dracut available", CheckResult::Pass);
-
-        // Get kernel version
-        let kver_result = console.exec_chroot(
-            "/mnt",
-            "ls /usr/lib/modules/ | head -1",
-            Duration::from_secs(5),
-        )?;
-        let kernel_version = kver_result.output.trim();
-
-        // CHEAT GUARD: Kernel modules MUST exist for dracut
-        cheat_ensure!(
-            !kernel_version.is_empty(),
-            protects = "Kernel modules exist for initramfs generation",
-            severity = "CRITICAL",
-            cheats = [
-                "Skip modules check",
-                "Accept empty modules directory",
-                "Use hardcoded kernel version"
-            ],
-            consequence = "dracut fails, no initramfs, system won't boot",
-            "No kernel modules found in /usr/lib/modules/"
-        );
-
-        result.add_check("kernel modules present", CheckResult::Pass);
-
-        // Generate initramfs with dracut
-        // --force: overwrite existing initramfs
-        // --no-hostonly: include all drivers, not just for current hardware
-        // --omit: skip modules that have missing dependencies in minimal squashfs:
-        //   - fips: requires sha512hmac from hmaccalc package
-        //   - bluetooth, crypt, nfs: not needed for basic VM boot
-        //   - rdma: InfiniBand, requires /etc/rdma/mlx4.conf
-        //   - systemd-sysusers, systemd-journald, systemd-initrd, dracut-systemd:
-        //     Complex dependency chain, the base systemd module works without them
-        //
-        // Uses STREAMING with STALL DETECTION:
-        // - Fails immediately on dracut error patterns
-        // - No hard timeout - dracut can take 6+ minutes total
-        // - Only fails if dracut stalls (no output for 180s)
-        //   Dracut's final stages (cpio archive creation) can be silent for minutes
-        let dracut_error_patterns = &[
-            "dracut[F]:",  // Fatal errors
-            "FATAL:",
-        ];
-        // NOTE: --add-drivers is no longer needed here because the base system
-        // now includes /etc/dracut.conf.d/levitate.conf with:
-        //   add_drivers+=" ext4 vfat "
-        //   hostonly="no"
-        // This was moved to leviso (TEAM_088) so recstrap installs include it
-        let dracut_result = console.exec_chroot_streaming(
-            "/mnt",
-            &format!(
-                "dracut --force \
-                 --omit 'fips bluetooth crypt nfs rdma systemd-sysusers systemd-journald systemd-initrd dracut-systemd' \
-                 /boot/initramfs.img {}",
-                kernel_version
-            ),
-            Duration::from_secs(180),  // Stall timeout - dracut's cpio creation can be very quiet
-            dracut_error_patterns,
-        )?;
-
-        // CHEAT GUARD: dracut MUST succeed
-        let dracut_error_msg = if dracut_result.stalled {
-            format!("dracut STALLED (no output for 60s): {}", dracut_result.output)
-        } else if dracut_result.aborted_on_error {
-            format!("dracut FAILED on error pattern: {}", dracut_result.output)
+        // SKEPTIC-PROOF: Show actual size, not just "exists"
+        if kernel_bytes > 1_000_000 {
+            result.pass("kernel on ESP", format!("{:.1}MB at /mnt/boot/vmlinuz", kernel_mb));
         } else {
-            format!("dracut failed (exit {}): {}", dracut_result.exit_code, dracut_result.output)
-        };
+            result.fail(
+                "kernel on ESP",
+                "kernel > 1MB",
+                format!("kernel is only {} bytes (corrupt or empty?)", kernel_bytes),
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // INITRAMFS COPY: ISO → ESP
+        // ═══════════════════════════════════════════════════════════════════════
+        let copy_cmd = "cp /media/cdrom/boot/initramfs-installed.img /mnt/boot/initramfs.img";
+        let cmd_start = Instant::now();
+        let copy_result = console.exec(copy_cmd, Duration::from_secs(30))?;
+        result.log_command(copy_cmd, copy_result.exit_code, &copy_result.output, cmd_start.elapsed());
+
         cheat_ensure!(
-            dracut_result.success(),
-            protects = "initramfs is generated with required drivers",
+            copy_result.success(),
+            protects = "initramfs is copied from ISO to ESP",
             severity = "CRITICAL",
-            cheats = [
-                "Accept any dracut exit code",
-                "Skip initramfs generation",
-                "Ignore dracut errors"
-            ],
-            consequence = "No initramfs, kernel panic at boot (VFS: cannot open root device)",
-            "{}", dracut_error_msg
+            cheats = ["Skip initramfs copy", "Fall back to dracut", "Accept missing initramfs on ISO"],
+            consequence = "No initramfs, system won't boot. Rebuild ISO with 'leviso build'",
+            "Failed to copy initramfs from ISO: {}", copy_result.output
         );
 
-        result.add_check("initramfs generated", CheckResult::Pass);
+        // Get initramfs size as evidence
+        let cmd_start = Instant::now();
+        let initramfs_size = console.exec("stat -c '%s' /mnt/boot/initramfs.img", Duration::from_secs(5))?;
+        result.log_command("stat -c '%s' /mnt/boot/initramfs.img", initramfs_size.exit_code, &initramfs_size.output, cmd_start.elapsed());
 
-        // Verify initramfs was created
-        let verify = console.exec_chroot(
-            "/mnt",
-            "test -f /boot/initramfs.img && ls -lh /boot/initramfs.img",
-            Duration::from_secs(5),
-        )?;
+        let initramfs_bytes: u64 = initramfs_size.output.trim().parse().unwrap_or(0);
+        let initramfs_mb = initramfs_bytes as f64 / 1024.0 / 1024.0;
 
-        // CHEAT GUARD: initramfs MUST exist after dracut runs
-        cheat_ensure!(
-            verify.success(),
-            protects = "initramfs file was actually written to disk",
-            severity = "CRITICAL",
-            cheats = [
-                "Trust dracut exit code without file check",
-                "Skip verification",
-                "Accept any file at path"
-            ],
-            consequence = "dracut claims success but no file, kernel panic at boot",
-            "initramfs not found at /boot/initramfs.img after dracut"
-        );
+        // SKEPTIC-PROOF: An initramfs under 10MB is suspiciously small
+        if initramfs_bytes > 10_000_000 {
+            result.pass("initramfs on ESP", format!("{:.1}MB at /mnt/boot/initramfs.img", initramfs_mb));
+        } else {
+            result.fail(
+                "initramfs on ESP",
+                "initramfs > 10MB (typical: 30-60MB)",
+                format!("initramfs is only {:.1}MB (missing drivers?)", initramfs_mb),
+            );
+        }
 
-        result.add_check("initramfs verified", CheckResult::Pass);
-
-        result.duration = start.elapsed();
+        result.duration = step_start.elapsed();
         Ok(result)
     }
 }
@@ -274,7 +170,32 @@ impl Step for InstallBootloader {
                 "bootctl install failed (exit {}): {}", bootctl_result.exit_code, bootctl_result.output
             );
 
-            result.add_check("systemd-boot installed", CheckResult::Pass);
+            result.add_check("systemd-boot installed", CheckResult::pass("bootctl install exit 0"));
+
+            // Create EFI boot entry using efibootmgr
+            // Run from live environment (not chroot) since efibootmgr needs /sys/firmware/efi/efivars
+            // This creates a real UEFI boot entry instead of relying on fallback boot path
+            let efi_entry = console.exec(
+                "efibootmgr --create --disk /dev/vda --part 1 --label 'LevitateOS' --loader '\\EFI\\systemd\\systemd-bootx64.efi' 2>&1",
+                Duration::from_secs(10),
+            )?;
+
+            // ANTI-CHEAT: EFI boot entry MUST be created for proper UEFI boot
+            // Now that we boot through real UEFI, this should always work
+            cheat_ensure!(
+                efi_entry.output.contains("BootOrder") || efi_entry.output.contains("Boot0"),
+                protects = "EFI boot entry created for installed system",
+                severity = "CRITICAL",
+                cheats = [
+                    "Rely on fallback path only",
+                    "Use --no-variables",
+                    "Skip efibootmgr entirely"
+                ],
+                consequence = "No EFI entry = depends on fallback = may not boot on real hardware",
+                "efibootmgr failed: {}", efi_entry.output.trim()
+            );
+
+            result.add_check("EFI boot entry created", CheckResult::pass("efibootmgr created LevitateOS entry"));
         }
 
         // Get root partition UUID for boot entry
@@ -299,13 +220,41 @@ impl Step for InstallBootloader {
         let entry_path = boot_entry.entry_path(); // /boot/loader/entries/X.conf
         console.write_file(&format!("/mnt{}", entry_path), &boot_entry.to_entry_file())?;
 
-        // Verify boot entry exists
+        // Verify boot entry exists and has correct content
         let verify = console.exec(
             &format!("cat /mnt{}", entry_path),
             Duration::from_secs(5),
         )?;
 
-        // CHEAT GUARD: Boot entry MUST contain correct root UUID
+        // CHEAT GUARD: Boot entry MUST have all required fields
+        // Check for linux (kernel path)
+        cheat_ensure!(
+            verify.output.contains("linux") && verify.output.contains("/vmlinuz"),
+            protects = "Boot entry has correct kernel path",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check file exists",
+                "Skip content validation",
+                "Accept any linux line"
+            ],
+            consequence = "Wrong kernel path = kernel not found = won't boot",
+            "Boot entry missing kernel path:\n{}", verify.output
+        );
+
+        // Check for initrd (initramfs path)
+        cheat_ensure!(
+            verify.output.contains("initrd") && verify.output.contains("/initramfs"),
+            protects = "Boot entry has correct initramfs path",
+            severity = "CRITICAL",
+            cheats = [
+                "Only check file exists",
+                "Skip initramfs line check"
+            ],
+            consequence = "Wrong initramfs path = no initramfs = kernel panic at mount",
+            "Boot entry missing initramfs path:\n{}", verify.output
+        );
+
+        // Check for root UUID in options
         cheat_ensure!(
             verify.output.contains(root_uuid),
             protects = "Boot entry points to correct root partition",
@@ -319,7 +268,9 @@ impl Step for InstallBootloader {
             "Boot entry missing or has wrong UUID. Expected {}, got:\n{}", root_uuid, verify.output
         );
 
-        result.add_check("Boot entry created", CheckResult::Pass);
+        result.add_check("Boot entry content verified", CheckResult::pass(
+            format!("linux=/vmlinuz, initrd=/initramfs.img, root=UUID={}", root_uuid)
+        ));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -340,42 +291,61 @@ impl Step for EnableServices {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Services to enable from levitate-spec
-        // First check if service unit exists before trying to enable
-        for service in ENABLED_SERVICES {
-            // Check if service unit file exists
-            let unit_check = console.exec_chroot(
-                "/mnt",
-                &format!("test -f /usr/lib/systemd/system/{}.service || test -f /lib/systemd/system/{}.service", service.name, service.name),
-                Duration::from_secs(5),
-            )?;
+        // OPTIMIZATION: Batch service enablement into single command
+        // This saves multiple chroot round-trips (each has sync overhead)
 
-            if unit_check.exit_code != 0 {
-                // Service not present in tarball = TARBALL IS BROKEN
-                // If it's in ENABLED_SERVICES, it MUST be in the tarball. No exceptions.
+        // Build list of service names to enable
+        let service_names: Vec<&str> = ENABLED_SERVICES
+            .iter()
+            .map(|s| s.name)
+            .collect();
+
+        // First, batch-check which services exist
+        let check_cmd = service_names
+            .iter()
+            .map(|s| format!("test -f /usr/lib/systemd/system/{}.service && echo {}", s, s))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        let check_result = console.exec_chroot("/mnt", &check_cmd, Duration::from_secs(10))?;
+
+        // Parse which services were found
+        let found_services: Vec<&str> = service_names
+            .iter()
+            .filter(|s| check_result.output.contains(*s))
+            .copied()
+            .collect();
+
+        // Report missing services
+        for service in &service_names {
+            if !found_services.contains(service) {
                 result.add_check(
-                    &format!("{} enabled", service.name),
+                    &format!("{} enabled", service),
                     CheckResult::Fail {
-                        expected: format!("{}.service exists in tarball", service.name),
+                        expected: format!("{}.service exists", service),
                         actual: "Service unit file not found".to_string(),
                     },
                 );
-                continue;
             }
+        }
 
-            let enable_result = console.exec_chroot(
-                "/mnt",
-                &service.enable_command(),
-                Duration::from_secs(10),
-            )?;
+        // Batch-enable all found services in one command
+        if !found_services.is_empty() {
+            let enable_cmd = format!(
+                "systemctl enable {}",
+                found_services.join(" ")
+            );
+
+            let enable_result = console.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(15))?;
 
             if enable_result.success() {
-                result.add_check(&format!("{} enabled", service.name), CheckResult::Pass);
+                for service in &found_services {
+                    result.add_check(&format!("{} enabled", service), CheckResult::pass("symlink created"));
+                }
             } else {
-                // Service failed to enable = INSTALLATION IS BROKEN
-                // If it's in ENABLED_SERVICES, it MUST enable successfully. No exceptions.
+                // Batch failed, report which one(s) might have failed
                 result.add_check(
-                    &format!("{} enabled", service.name),
+                    "services enabled",
                     CheckResult::Fail {
                         expected: "systemctl enable exit 0".to_string(),
                         actual: format!("exit {}: {}", enable_result.exit_code, enable_result.output.trim()),
@@ -384,8 +354,7 @@ impl Step for EnableServices {
             }
         }
 
-        // Enable serial console getty for testing
-        // This is required for post-reboot verification via serial console
+        // Enable serial console getty for testing (include in batch)
         let serial_result = console.exec_chroot(
             "/mnt",
             "systemctl enable serial-getty@ttyS0.service",
@@ -393,7 +362,7 @@ impl Step for EnableServices {
         )?;
 
         if serial_result.success() {
-            result.add_check("serial-getty@ttyS0 enabled", CheckResult::Pass);
+            result.add_check("serial-getty@ttyS0 enabled", CheckResult::pass("symlink created"));
         } else {
             result.add_check(
                 "serial-getty@ttyS0 enabled",
@@ -404,11 +373,70 @@ impl Step for EnableServices {
             );
         }
 
+        // NOTE: No autologin - installed system should behave like a normal install.
+        // The test harness must handle normal login (username + password).
+        // Autologin would mask login-related bugs and is not Arch-like behavior.
+
+        // PRE-REBOOT VERIFICATION: Catch issues before rebooting saves debugging time
+        // Verify kernel exists
+        let kernel_verify = console.exec("test -f /mnt/boot/vmlinuz", Duration::from_secs(5))?;
+        cheat_ensure!(
+            kernel_verify.success(),
+            protects = "Kernel exists on ESP before reboot",
+            severity = "CRITICAL",
+            cheats = ["Skip pre-reboot verification"],
+            consequence = "System won't boot - no kernel",
+            "Kernel not found at /mnt/boot/vmlinuz"
+        );
+        result.add_check("Pre-reboot: kernel present", CheckResult::pass("/mnt/boot/vmlinuz exists"));
+
+        // Verify initramfs exists
+        let initramfs_verify = console.exec("test -f /mnt/boot/initramfs.img", Duration::from_secs(5))?;
+        cheat_ensure!(
+            initramfs_verify.success(),
+            protects = "Initramfs exists on ESP before reboot",
+            severity = "CRITICAL",
+            cheats = ["Skip pre-reboot verification"],
+            consequence = "System won't boot - no initramfs",
+            "Initramfs not found at /mnt/boot/initramfs.img"
+        );
+        result.add_check("Pre-reboot: initramfs present", CheckResult::pass("/mnt/boot/initramfs.img exists"));
+
+        // Verify root password is set (not locked)
+        let password_verify = console.exec(
+            "grep '^root:' /mnt/etc/shadow | grep -v ':!:' | grep -v ':\\*:'",
+            Duration::from_secs(5),
+        )?;
+        cheat_ensure!(
+            password_verify.success(),
+            protects = "Root password is set before reboot",
+            severity = "CRITICAL",
+            cheats = ["Skip pre-reboot verification"],
+            consequence = "Cannot login after reboot - account locked",
+            "Root password not set in /mnt/etc/shadow"
+        );
+        result.add_check("Pre-reboot: root password set", CheckResult::pass("root has hash in /etc/shadow"));
+
+        // Verify fstab has boot entry
+        let fstab_verify = console.exec(
+            "grep '/boot' /mnt/etc/fstab",
+            Duration::from_secs(5),
+        )?;
+        cheat_ensure!(
+            fstab_verify.success(),
+            protects = "fstab has ESP mount entry before reboot",
+            severity = "CRITICAL",
+            cheats = ["Skip pre-reboot verification"],
+            consequence = "ESP won't be mounted after reboot - kernel updates will fail",
+            "No /boot entry in /mnt/etc/fstab"
+        );
+        result.add_check("Pre-reboot: fstab has /boot", CheckResult::pass(fstab_verify.output.trim()));
+
         // Unmount partitions (EFI first, then root)
         let _ = console.exec("umount /mnt/boot", Duration::from_secs(5));
         let _ = console.exec("umount /mnt", Duration::from_secs(5));
 
-        result.add_check("Partitions unmounted", CheckResult::Pass);
+        result.add_check("Partitions unmounted", CheckResult::pass("umount /mnt/boot and /mnt"));
 
         result.duration = start.elapsed();
         Ok(result)

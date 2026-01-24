@@ -63,7 +63,7 @@ cargo run --bin boot-test
 - OVMF_VARS (writable EFI variable storage)
 - Built LevitateOS ISO (`leviso/output/levitateos.iso`)
 - Built initramfs (`leviso/output/initramfs-tiny.cpio.gz`)
-- Extracted kernel (`leviso/downloads/iso-contents/images/pxeboot/vmlinuz`)
+- Built kernel (`leviso/output/iso-root/boot/vmlinuz`)
 
 ## Code Structure
 

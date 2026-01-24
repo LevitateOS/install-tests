@@ -46,6 +46,8 @@ pub struct Console {
     pub(super) rx: Receiver<String>,
     /// Output buffer for all received lines.
     pub(super) output_buffer: Vec<String>,
+    /// Services that failed during boot (tracked for diagnostics).
+    pub(super) failed_services: Vec<String>,
 }
 
 impl Console {
@@ -64,6 +66,7 @@ impl Console {
             stdin,
             rx,
             output_buffer: Vec::new(),
+            failed_services: Vec::new(),
         })
     }
 

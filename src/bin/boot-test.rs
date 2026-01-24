@@ -35,7 +35,9 @@ fn main() -> Result<()> {
 
     // Find required files
     let leviso_dir = PathBuf::from("../leviso");
-    let kernel_path = leviso_dir.join("downloads/iso-contents/images/pxeboot/vmlinuz");
+    // Use the LevitateOS kernel from the ISO build, NOT the Rocky kernel from downloads
+    // The LevitateOS kernel (6.18.0) has virtio drivers built-in; Rocky kernel (6.12.0) has them as modules
+    let kernel_path = leviso_dir.join("output/iso-root/boot/vmlinuz");
     let initramfs_path = leviso_dir.join("output/initramfs-tiny.cpio.gz");
     let iso_path = leviso_dir.join("output/levitateos.iso");
 
@@ -126,7 +128,7 @@ fn main() -> Result<()> {
     // The ISO is mounted at /media/cdrom by the tiny initramfs
     println!("  Copying kernel and initramfs from ISO to ESP...");
     console.exec_ok("cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz", Duration::from_secs(10))?;
-    console.exec_ok("cp /media/cdrom/boot/initramfs.img /mnt/boot/initramfs.img", Duration::from_secs(10))?;
+    console.exec_ok("cp /media/cdrom/boot/initramfs-live.img /mnt/boot/initramfs.img", Duration::from_secs(10))?;
 
     // Verify files are on ESP
     let ls_boot = console.exec_ok("ls -la /mnt/boot/", Duration::from_secs(5))?;

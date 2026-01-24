@@ -17,9 +17,9 @@ pub const FATAL_ERROR_PATTERNS: &[&str] = &[
     "systemd-coredump",     // Systemd detected crash
 ];
 
-/// Boot error patterns - FAIL IMMEDIATELY when seen.
-/// Organized by boot stage for clarity.
-pub const BOOT_ERROR_PATTERNS: &[&str] = &[
+/// Critical boot error patterns - FAIL IMMEDIATELY when seen.
+/// These indicate the boot will never succeed.
+pub const CRITICAL_BOOT_ERRORS: &[&str] = &[
     // === UEFI STAGE ===
     "No bootable device",           // UEFI found nothing
     "Boot Failed",                  // UEFI boot failed
@@ -46,18 +46,60 @@ pub const BOOT_ERROR_PATTERNS: &[&str] = &[
     "No root device",               // Root device missing
     "SQUASHFS error",               // Squashfs corruption
 
-    // === INIT STAGE ===
+    // === INIT STAGE (critical) ===
     "emergency shell",              // Dropped to emergency
     "Emergency shell",              // Alternate casing
     "emergency.target",             // Systemd emergency
     "rescue.target",                // Systemd rescue mode
-    "Failed to start",              // Service start failure (broad)
     "Timed out waiting for device", // Device timeout
-    "Dependency failed",            // Systemd dep failure
 
     // === GENERAL ===
-    "FAILED:",                      // Generic failure marker
     "fatal error",                  // Generic fatal
     "Segmentation fault",           // Segfault
     "core dumped",                  // Core dump
+];
+
+/// Boot error patterns - for live ISO boot, FAIL IMMEDIATELY on these.
+/// For installed system, we use a more lenient approach to capture diagnostics.
+pub const BOOT_ERROR_PATTERNS: &[&str] = &[
+    // Include all critical errors
+    "No bootable device",
+    "Boot Failed",
+    "Default Boot Device Missing",
+    "Shell>",
+    "ASSERT_EFI_ERROR",
+    "map: Cannot find",
+    "systemd-boot: Failed",
+    "loader: Failed",
+    "vmlinuz: not found",
+    "initramfs: not found",
+    "Error loading",
+    "File not found",
+    "Kernel panic",
+    "not syncing",
+    "VFS: Cannot open root device",
+    "No init found",
+    "Attempted to kill init",
+    "can't find /init",
+    "No root device",
+    "SQUASHFS error",
+    "emergency shell",
+    "Emergency shell",
+    "emergency.target",
+    "rescue.target",
+    "Failed to start",              // For live ISO, any service failure is bad
+    "Timed out waiting for device",
+    "Dependency failed",
+    "FAILED:",
+    "fatal error",
+    "Segmentation fault",
+    "core dumped",
+];
+
+/// Service failure patterns - track these during installed system boot
+/// so we can capture diagnostics instead of failing immediately.
+pub const SERVICE_FAILURE_PATTERNS: &[&str] = &[
+    "Failed to start",
+    "[FAILED]",
+    "Dependency failed",
 ];

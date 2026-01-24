@@ -1,10 +1,18 @@
 //! Phase 1: Boot verification steps.
 //!
 //! Steps 1-2: Verify UEFI mode, sync clock, identify target disk.
+//!
+//! # Anti-Cheat
+//!
+//! Step 1 (UEFI verification) is CRITICAL. If we're not booting through real UEFI
+//! firmware, we're not testing the actual boot chain users will experience.
+//! This was the source of the TEAM_062 architectural cheat where -kernel bypass
+//! was used while appearing to test UEFI.
 
 use super::{CheckResult, Step, StepResult};
 use crate::qemu::Console;
 use anyhow::Result;
+use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
 /// Step 1: Verify UEFI boot mode
@@ -22,23 +30,29 @@ impl Step for VerifyUefi {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check for EFI variables directory
-        // Note: With direct kernel boot (-kernel), UEFI firmware is not actually used
-        // even if OVMF is loaded. This is expected behavior for testing.
+        // ANTI-CHEAT: This MUST pass. If it fails, we're using -kernel bypass
+        // instead of booting through real UEFI firmware.
         let cmd_result = console.exec(
             "ls /sys/firmware/efi/efivars 2>/dev/null && echo UEFI_OK || echo UEFI_FAIL",
             Duration::from_secs(5),
         )?;
 
-        if cmd_result.output.contains("UEFI_OK") {
-            result.add_check("UEFI mode detected", CheckResult::Pass);
-        } else {
-            // Direct kernel boot bypasses UEFI - this is a SKIP, not a pass
-            // We're not actually testing UEFI boot, just using GPT+ESP layout
-            result.add_check(
-                "UEFI mode detected",
-                CheckResult::Skip("Direct kernel boot - UEFI not tested (using GPT+ESP layout)".to_string()),
-            );
-        }
+        // CRITICAL: Real UEFI boot is required - no skip, no bypass
+        cheat_ensure!(
+            cmd_result.output.contains("UEFI_OK"),
+            protects = "System booted via real UEFI firmware",
+            severity = "CRITICAL",
+            cheats = [
+                "Use -kernel direct boot to bypass UEFI",
+                "Skip UEFI check and mark as optional",
+                "Convert failure to Skip instead of Fail"
+            ],
+            consequence = "UEFI boot path not tested, bootloader issues won't be caught until users hit them on real hardware",
+            "UEFI mode not detected - /sys/firmware/efi/efivars missing. \
+             This means QEMU is using -kernel bypass instead of booting through OVMF firmware."
+        );
+
+        result.add_check("UEFI mode detected", CheckResult::pass("/sys/firmware/efi/efivars exists"));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -59,47 +73,32 @@ impl Step for SyncClock {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Try to enable NTP sync (may not work in all environments)
-        let _ntp_result = console.exec(
-            "timedatectl set-ntp true 2>&1",
-            Duration::from_secs(5),
-        )?;
-
-        // Check timedatectl status
-        let status = console.exec(
-            "timedatectl show --property=NTP --property=NTPSynchronized",
-            Duration::from_secs(5),
-        )?;
-
-        if status.output.contains("NTP=yes") {
-            result.add_check("NTP enabled", CheckResult::Pass);
-        } else {
-            // NTP not working - this is a SKIP, not a pass
-            // We didn't test NTP functionality
-            result.add_check(
-                "NTP enabled",
-                CheckResult::Skip("NTP not available in QEMU test environment".to_string()),
-            );
-        }
+        // NTP check REMOVED - network-dependent, tests run offline
+        // The purpose is to verify system time is reasonable for file timestamps,
+        // not to test NTP infrastructure.
 
         // Verify time looks reasonable (year >= 2024)
-        // Note: QEMU's RTC may not be set correctly, so we just note the time
-        // without failing - this is not critical for offline installation
+        // QEMU typically inherits host time, so this should pass
         let date_result = console.exec("date +%Y", Duration::from_secs(5))?;
         let year: i32 = date_result.output.trim().parse().unwrap_or(0);
 
-        if year >= 2024 {
-            result.add_check("System time reasonable", CheckResult::Pass);
-        } else {
-            // Wrong year - this is a WARNING, not a pass
-            // System time is wrong but installation can proceed
-            result.add_check(
-                "System time reasonable",
-                CheckResult::Warning(format!("Year is {} - RTC not set correctly", year)),
-            );
-        }
+        // Time must be reasonable for certificates and file timestamps
+        cheat_ensure!(
+            year >= 2024,
+            protects = "System time is reasonable for file operations and certificates",
+            severity = "HIGH",
+            cheats = [
+                "Accept any year value",
+                "Skip time check entirely",
+                "Convert to warning"
+            ],
+            consequence = "Wrong system time can cause certificate validation failures and confusing file timestamps",
+            "System year is {} - expected >= 2024. RTC not set correctly.", year
+        );
 
-        // Add a small delay to let any timedatectl async output settle
+        result.add_check("System time reasonable", CheckResult::pass(format!("year={}", year)));
+
+        // Add a small delay to let any async output settle
         // This prevents cross-contamination with the next step
         let _ = console.exec("sleep 0.5", Duration::from_secs(2))?;
 

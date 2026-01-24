@@ -36,6 +36,32 @@ impl Step for VerifySystemdBoot {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // INFRASTRUCTURE CANARY: Verify we're on installed system, not live ISO
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // Check root filesystem type - should NOT be overlay (live ISO uses overlay)
+        let fstype = console.exec("findmnt / -o FSTYPE -n", Duration::from_secs(5))?;
+
+        // ANTI-CHEAT: Root must not be overlay - that would mean we're still on live ISO
+        cheat_ensure!(
+            !fstype.output.contains("overlay"),
+            protects = "Verification runs on installed system, not live ISO",
+            severity = "CRITICAL",
+            cheats = [
+                "Never reboot after install",
+                "Skip Phase 6 entirely",
+                "Verify on live ISO overlay"
+            ],
+            consequence = "Installation success faked, real rootfs never tested",
+            "Root is overlay ({}) - still on live ISO, not installed system!",
+            fstype.output.trim()
+        );
+
+        result.add_check("Root is not overlay", CheckResult::pass(
+            format!("root fstype={} (installed, not live)", fstype.output.trim())
+        ));
+
         // Flush any pending output from login
         let _ = console.exec("true", Duration::from_secs(2))?;
 
@@ -56,7 +82,7 @@ impl Step for VerifySystemdBoot {
             "PID 1 is '{}', expected 'systemd'", pid1.output.trim()
         );
 
-        result.add_check("systemd is PID 1", CheckResult::Pass);
+        result.add_check("systemd is PID 1", CheckResult::pass("/proc/1/comm = systemd"));
 
         // Check we reached multi-user target
         let target = console.exec(
@@ -65,7 +91,7 @@ impl Step for VerifySystemdBoot {
         )?;
 
         if target.output.contains("active") {
-            result.add_check("multi-user.target reached", CheckResult::Pass);
+            result.add_check("multi-user.target reached", CheckResult::pass("systemctl shows active"));
         } else {
             result.add_check(
                 "multi-user.target reached",
@@ -89,7 +115,7 @@ impl Step for VerifySystemdBoot {
             .unwrap_or(0);
 
         if failed_count == 0 {
-            result.add_check("No failed units", CheckResult::Pass);
+            result.add_check("No failed units", CheckResult::pass("0 failed units"));
         } else {
             // Get the list of failed units
             let failed_list = console.exec(
@@ -128,7 +154,7 @@ impl Step for VerifyHostname {
 
         // Should be the hostname we set during installation
         if hostname.output.contains("levitate") {
-            result.add_check("Hostname correct", CheckResult::Pass);
+            result.add_check("Hostname correct", CheckResult::pass(hostname.output.trim()));
         } else {
             result.add_check(
                 "Hostname correct",
@@ -175,7 +201,7 @@ impl Step for VerifyUserLogin {
             "User 'levitate' not found after reboot - user creation may have failed"
         );
 
-        result.add_check("User exists", CheckResult::Pass);
+        result.add_check("User exists", CheckResult::pass(user_check.output.trim()));
 
         // Check home directory exists and is accessible
         let home_check = console.exec(
@@ -184,7 +210,7 @@ impl Step for VerifyUserLogin {
         )?;
 
         if home_check.output.contains("HOME_OK") {
-            result.add_check("Home directory accessible", CheckResult::Pass);
+            result.add_check("Home directory accessible", CheckResult::pass("/home/levitate accessible"));
         } else {
             result.add_check(
                 "Home directory accessible",
@@ -202,7 +228,7 @@ impl Step for VerifyUserLogin {
         )?;
 
         if write_check.output.contains("WRITE_OK") {
-            result.add_check("User can write to home", CheckResult::Pass);
+            result.add_check("User can write to home", CheckResult::pass("touch+rm ~/test_file succeeded"));
         } else {
             result.add_check(
                 "User can write to home",
@@ -239,7 +265,7 @@ impl Step for VerifyNetworking {
         )?;
 
         if networkd.output.contains("active") {
-            result.add_check("Network service running", CheckResult::Pass);
+            result.add_check("Network service running", CheckResult::pass("systemd-networkd or NetworkManager active"));
         } else {
             result.add_check(
                 "Network service running",
@@ -251,20 +277,28 @@ impl Step for VerifyNetworking {
         }
 
         // Check for IP address on any interface (excluding lo)
+        // QEMU user-mode networking is now enabled, so this MUST work
         let ip_check = console.exec(
             "ip -4 addr show | grep -v '127.0.0.1' | grep 'inet ' | head -1",
             Duration::from_secs(10),
         )?;
 
-        if ip_check.output.contains("inet ") {
-            result.add_check("IP address assigned", CheckResult::Pass);
-        } else {
-            // In QEMU without network, this is a SKIP - not tested, not a pass
-            result.add_check(
-                "IP address assigned",
-                CheckResult::Skip("No IP address - QEMU may not have network configured".to_string()),
-            );
-        }
+        // ANTI-CHEAT: IP address is now required since we enable QEMU user network
+        cheat_ensure!(
+            ip_check.output.contains("inet "),
+            protects = "Network interface has IP address",
+            severity = "HIGH",
+            cheats = [
+                "Run without QEMU network",
+                "Skip network verification",
+                "Convert to optional Skip"
+            ],
+            consequence = "No network = can't install packages, can't reach internet on daily driver",
+            "No IP address assigned. QEMU user network should provide DHCP. Output: {}",
+            ip_check.output.trim()
+        );
+
+        result.add_check("IP address assigned", CheckResult::pass(ip_check.output.trim()));
 
         // Check DNS resolution (if we have network)
         let dns_check = console.exec(
@@ -273,7 +307,7 @@ impl Step for VerifyNetworking {
         )?;
 
         if dns_check.success() {
-            result.add_check("DNS resolution works", CheckResult::Pass);
+            result.add_check("DNS resolution works", CheckResult::pass(dns_check.output.trim()));
         } else {
             result.add_check(
                 "DNS resolution works",
@@ -320,23 +354,30 @@ impl Step for VerifySudo {
             "sudo binary not found - base system missing sudo package"
         );
 
-        result.add_check("sudo installed", CheckResult::Pass);
+        result.add_check("sudo installed", CheckResult::pass(sudo_check.output.trim()));
 
         // Check if wheel group exists and user is in it
+        // This is the standard sudo configuration on Fedora/Rocky-based systems
         let wheel_check = console.exec(
             "getent group wheel && id levitate | grep -q wheel && echo WHEEL_OK",
             Duration::from_secs(5),
         )?;
 
-        if wheel_check.output.contains("WHEEL_OK") {
-            result.add_check("User in wheel group", CheckResult::Pass);
-        } else {
-            // User not in wheel - may use different sudoers config, but note it
-            result.add_check(
-                "User in wheel group",
-                CheckResult::Skip("User not in wheel group (may use different sudoers config)".to_string()),
-            );
-        }
+        // ANTI-CHEAT: User MUST be in wheel group for sudo to work
+        cheat_ensure!(
+            wheel_check.output.contains("WHEEL_OK"),
+            protects = "User is in wheel group for sudo access",
+            severity = "HIGH",
+            cheats = [
+                "Accept any sudoers configuration",
+                "Skip wheel group check",
+                "Convert to optional"
+            ],
+            consequence = "User not in wheel = sudo doesn't work = can't administer system",
+            "User 'levitate' not in wheel group. Output: {}", wheel_check.output.trim()
+        );
+
+        result.add_check("User in wheel group", CheckResult::pass("levitate in wheel group"));
 
         // Test sudo actually works (with password from stdin)
         // This requires the user's password to be "levitate" as set during installation
@@ -359,7 +400,7 @@ impl Step for VerifySudo {
             "sudo elevation failed: {}", sudo_test.output.trim()
         );
 
-        result.add_check("sudo elevation works", CheckResult::Pass);
+        result.add_check("sudo elevation works", CheckResult::pass("sudo whoami returned 'root'"));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -427,7 +468,7 @@ impl Step for VerifyEssentialCommands {
             "{} essential commands missing", failed
         );
 
-        result.add_check("All essential commands", CheckResult::Pass);
+        result.add_check("All essential commands", CheckResult::pass("9/9 commands working"));
 
         // Test file operations work
         let file_ops = console.exec(
@@ -436,7 +477,7 @@ impl Step for VerifyEssentialCommands {
         )?;
 
         if file_ops.output.contains("FILE_OPS_OK") {
-            result.add_check("File operations work", CheckResult::Pass);
+            result.add_check("File operations work", CheckResult::pass("echo+cat+rm in /tmp succeeded"));
         } else {
             result.add_check(
                 "File operations work",
@@ -454,7 +495,7 @@ impl Step for VerifyEssentialCommands {
         )?;
 
         if journal_check.success() && !journal_check.output.is_empty() {
-            result.add_check("Journal logging works", CheckResult::Pass);
+            result.add_check("Journal logging works", CheckResult::pass("journalctl -b shows entries"));
         } else {
             result.add_check(
                 "Journal logging works",

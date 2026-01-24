@@ -53,7 +53,7 @@ impl Step for MountInstallMedia {
             "ISO not mounted at /media/cdrom. Init should mount this automatically."
         );
 
-        result.add_check("ISO mounted", CheckResult::Pass);
+        result.add_check("ISO mounted", CheckResult::pass("/media/cdrom/live exists"));
 
         // Verify squashfs is accessible
         let squashfs_check = console.exec(
@@ -75,7 +75,9 @@ impl Step for MountInstallMedia {
             "Squashfs not found at {}. ISO must contain live/{}", SQUASHFS_CDROM_PATH, SQUASHFS_NAME
         );
 
-        result.add_check("Squashfs accessible", CheckResult::Pass);
+        // Show squashfs size as evidence
+        let size_info = squashfs_check.output.lines().next().unwrap_or("found");
+        result.add_check("Squashfs accessible", CheckResult::pass(size_info.trim()));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -119,12 +121,13 @@ impl Step for ExtractSquashfs {
             "recstrap not found. ISO may be incomplete."
         );
 
-        result.add_check("recstrap available", CheckResult::Pass);
+        result.add_check("recstrap available", CheckResult::pass(recstrap_check.output.trim()));
 
         // Run recstrap to extract base system
         // recstrap handles squashfs location automatically (/media/cdrom/live/filesystem.squashfs)
+        // Use --force because the freshly formatted ext4 contains lost+found
         let extract = console.exec(
-            "recstrap /mnt",
+            "recstrap --force /mnt",
             Duration::from_secs(300), // 5 minutes for extraction
         )?;
 
@@ -142,7 +145,7 @@ impl Step for ExtractSquashfs {
             "recstrap failed (exit {}): {}", extract.exit_code, extract.output
         );
 
-        result.add_check("recstrap completed", CheckResult::Pass);
+        result.add_check("recstrap completed", CheckResult::pass("exit 0"));
 
         // Verify essential directories exist
         let verify = console.exec(
@@ -164,7 +167,7 @@ impl Step for ExtractSquashfs {
             "Essential directories missing after recstrap. /bin, /usr, /etc must exist."
         );
 
-        result.add_check("Base system verified", CheckResult::Pass);
+        result.add_check("Base system verified", CheckResult::pass("/mnt/{bin,usr,etc} exist"));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -207,7 +210,7 @@ impl Step for GenerateFstab {
             "recfstab not found. ISO may be incomplete."
         );
 
-        result.add_check("recfstab available", CheckResult::Pass);
+        result.add_check("recfstab available", CheckResult::pass(recfstab_check.output.trim()));
 
         // Generate fstab using recfstab
         // recfstab reads mounted filesystems under /mnt and outputs fstab entries
@@ -230,7 +233,7 @@ impl Step for GenerateFstab {
             "recfstab failed (exit {}): {}", fstab_result.exit_code, fstab_result.output
         );
 
-        result.add_check("recfstab completed", CheckResult::Pass);
+        result.add_check("recfstab completed", CheckResult::pass("exit 0"));
 
         // Verify fstab contains UUIDs
         let verify = console.exec("cat /mnt/etc/fstab", Duration::from_secs(5))?;
@@ -249,7 +252,11 @@ impl Step for GenerateFstab {
             "fstab doesn't contain UUID entries:\n{}", verify.output
         );
 
-        result.add_check("fstab contains UUIDs", CheckResult::Pass);
+        // Show actual UUIDs found
+        let uuid_line = verify.output.lines()
+            .find(|l| l.contains("UUID="))
+            .unwrap_or("UUID= found");
+        result.add_check("fstab contains UUIDs", CheckResult::pass(uuid_line.trim()));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -293,7 +300,7 @@ impl Step for VerifyChroot {
             "recchroot not found. ISO may be incomplete."
         );
 
-        result.add_check("recchroot available", CheckResult::Pass);
+        result.add_check("recchroot available", CheckResult::pass(recchroot_check.output.trim()));
 
         // Verify recchroot can execute commands
         let verify = console.exec_chroot("/mnt", "echo CHROOT_OK", Duration::from_secs(10))?;
@@ -312,7 +319,7 @@ impl Step for VerifyChroot {
             "recchroot test failed: {}", verify.output
         );
 
-        result.add_check("recchroot functional", CheckResult::Pass);
+        result.add_check("recchroot functional", CheckResult::pass("echo CHROOT_OK returned CHROOT_OK"));
 
         result.duration = start.elapsed();
         Ok(result)

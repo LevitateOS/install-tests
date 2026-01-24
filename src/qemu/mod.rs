@@ -9,10 +9,12 @@
 //! - `QemuBuilder` - QEMU command line builder
 //! - `find_ovmf()` - OVMF firmware discovery
 //! - `create_disk()` - Virtual disk creation
+//! - `auth` - Authentication subsystem (login, shell markers)
 //!
 //! Read `console.rs` and `builder.rs` before adding anything.
 
 mod ansi;
+mod auth;
 mod boot;
 mod builder;
 mod chroot;

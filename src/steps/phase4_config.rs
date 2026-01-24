@@ -31,35 +31,36 @@ impl Step for SetTimezone {
         // Default to UTC for testing (can be parameterized later)
         let timezone = "UTC";
 
-        // Create symlink for timezone
-        let cmd = format!(
-            "ln -sf /usr/share/zoneinfo/{} /etc/localtime",
-            timezone
-        );
-
-        let tz_result = console.exec_chroot("/mnt", &cmd, Duration::from_secs(5))?;
-
-        if tz_result.success() {
-            result.add_check("Timezone symlink created", CheckResult::Pass);
-        } else {
-            result.add_check(
-                "Timezone symlink created",
-                CheckResult::Fail {
-                    expected: "symlink created".to_string(),
-                    actual: format!("exit {}", tz_result.exit_code),
-                },
-            );
-        }
-
-        // Verify
-        let verify = console.exec_chroot(
+        // OPTIMIZATION: Check if timezone is already set correctly (squashfs default)
+        let check = console.exec_chroot(
             "/mnt",
-            "ls -la /etc/localtime",
+            "readlink /etc/localtime",
             Duration::from_secs(5),
         )?;
 
-        if verify.output.contains(timezone) {
-            result.add_check("Timezone verified", CheckResult::Pass);
+        if check.success() && check.output.contains(timezone) {
+            // Already correct, skip the write
+            result.add_check("Timezone already correct (skipped)", CheckResult::pass(format!("/etc/localtime → {}", timezone)));
+        } else {
+            // Create symlink for timezone
+            let cmd = format!(
+                "ln -sf /usr/share/zoneinfo/{} /etc/localtime",
+                timezone
+            );
+
+            let tz_result = console.exec_chroot("/mnt", &cmd, Duration::from_secs(5))?;
+
+            if tz_result.success() {
+                result.add_check("Timezone symlink created", CheckResult::pass(format!("/etc/localtime → {}", timezone)));
+            } else {
+                result.add_check(
+                    "Timezone symlink created",
+                    CheckResult::Fail {
+                        expected: "symlink created".to_string(),
+                        actual: format!("exit {}", tz_result.exit_code),
+                    },
+                );
+            }
         }
 
         result.duration = start.elapsed();
@@ -84,22 +85,30 @@ impl Step for ConfigureLocale {
         // Use en_US.UTF-8 as default
         let locale = "en_US.UTF-8";
 
-        // Write locale.conf
-        console.write_file("/mnt/etc/locale.conf", &format!("LANG={}\n", locale))?;
+        // OPTIMIZATION: Check if locale is already set correctly (squashfs default)
+        let check = console.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
 
-        // Verify
-        let verify = console.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
-
-        if verify.output.contains(locale) {
-            result.add_check("locale.conf written", CheckResult::Pass);
+        if check.success() && check.output.contains(locale) {
+            // Already correct, skip the write
+            result.add_check("locale.conf already correct (skipped)", CheckResult::pass(format!("LANG={}", locale)));
         } else {
-            result.add_check(
-                "locale.conf written",
-                CheckResult::Fail {
-                    expected: format!("LANG={}", locale),
-                    actual: verify.output.clone(),
-                },
-            );
+            // Write locale.conf
+            console.write_file("/mnt/etc/locale.conf", &format!("LANG={}\n", locale))?;
+
+            // Verify
+            let verify = console.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
+
+            if verify.output.contains(locale) {
+                result.add_check("locale.conf written", CheckResult::pass(format!("LANG={}", locale)));
+            } else {
+                result.add_check(
+                    "locale.conf written",
+                    CheckResult::Fail {
+                        expected: format!("LANG={}", locale),
+                        actual: verify.output.clone(),
+                    },
+                );
+            }
         }
 
         result.duration = start.elapsed();
@@ -147,7 +156,7 @@ impl Step for SetHostname {
             .any(|line| line.trim() == hostname);
 
         if hostname_found {
-            result.add_check("Hostname set", CheckResult::Pass);
+            result.add_check("Hostname set", CheckResult::pass(hostname));
         } else {
             result.add_check(
                 "Hostname set",
@@ -159,7 +168,7 @@ impl Step for SetHostname {
         }
 
         if verify_hosts.output.contains(hostname) {
-            result.add_check("Hosts file updated", CheckResult::Pass);
+            result.add_check("Hosts file updated", CheckResult::pass(format!("127.0.1.1 → {}", hostname)));
         }
 
         result.duration = start.elapsed();
@@ -182,7 +191,7 @@ impl Step for SetRootPassword {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Use chpasswd in chroot (non-interactive)
-        // For testing, use a simple password (in production, this would be parameterized)
+        // NOTE: This requires unix_chkpwd in /usr/sbin (added to AUTH_SBIN in definitions.rs)
         let password_cmd = "echo 'root:levitate' | chpasswd";
 
         let passwd_result = console.exec_chroot("/mnt", password_cmd, Duration::from_secs(10))?;
@@ -201,7 +210,26 @@ impl Step for SetRootPassword {
             "chpasswd failed (exit {}): {}", passwd_result.exit_code, passwd_result.output
         );
 
-        result.add_check("Root password set", CheckResult::Pass);
+        // Verify password was actually set (not still locked with ! or *)
+        let verify = console.exec(
+            "grep '^root:' /mnt/etc/shadow | grep -v ':!:' | grep -v ':\\*:'",
+            Duration::from_secs(5),
+        )?;
+
+        cheat_ensure!(
+            verify.success(),
+            protects = "Root password is actually set in /etc/shadow",
+            severity = "CRITICAL",
+            cheats = [
+                "Trust command exit code without verification",
+                "Skip shadow file check",
+                "Accept locked account as success"
+            ],
+            consequence = "Root account appears locked (! or *), login will fail",
+            "Password not set in /etc/shadow - account still locked. Is unix_chkpwd in the squashfs?"
+        );
+
+        result.add_check("Root password set", CheckResult::pass("root has password hash in /etc/shadow"));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -268,7 +296,7 @@ impl Step for CreateUser {
             "useradd failed (exit {}): {}", useradd_result.exit_code, useradd_result.output
         );
 
-        result.add_check("User created", CheckResult::Pass);
+        result.add_check("User created", CheckResult::pass(format!("user '{}' with groups: {}", username, groups_str)));
 
         // Set user password
         let passwd_result = console.exec_chroot(
@@ -291,7 +319,7 @@ impl Step for CreateUser {
             "Failed to set password for '{}' (exit {})", username, passwd_result.exit_code
         );
 
-        result.add_check("User password set", CheckResult::Pass);
+        result.add_check("User password set", CheckResult::pass(format!("'{}' has password hash", username)));
 
         // Verify user exists
         let verify = console.exec_chroot(
@@ -301,7 +329,8 @@ impl Step for CreateUser {
         )?;
 
         if verify.success() && verify.output.contains(username) {
-            result.add_check("User verified", CheckResult::Pass);
+            // Show actual id output as evidence
+            result.add_check("User verified", CheckResult::pass(verify.output.trim()));
         }
 
         result.duration = start.elapsed();

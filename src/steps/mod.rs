@@ -36,11 +36,46 @@ use crate::qemu::Console;
 use anyhow::Result;
 use std::time::Duration;
 
+/// Log entry for a command execution
+#[derive(Debug, Clone)]
+pub struct CommandLog {
+    /// The command that was run
+    pub command: String,
+    /// Exit code (0 = success)
+    pub exit_code: i32,
+    /// Command output (stdout + stderr)
+    pub output: String,
+    /// Whether the command succeeded
+    pub success: bool,
+    /// How long the command took
+    pub duration: Duration,
+}
+
+impl CommandLog {
+    pub fn new(
+        command: impl Into<String>,
+        exit_code: i32,
+        output: impl Into<String>,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            command: command.into(),
+            exit_code,
+            output: output.into(),
+            success: exit_code == 0,
+            duration,
+        }
+    }
+}
+
 /// Result of a verification check
 #[derive(Debug, Clone)]
 pub enum CheckResult {
-    /// Check passed - the feature works correctly
-    Pass,
+    /// Check passed with evidence proving it worked
+    /// The evidence string should contain ACTUAL VALUES, not just "ok"
+    /// Good: "45MB initramfs at /boot/initramfs.img"
+    /// Bad:  "file exists" (skeptic asks: "but is it empty?")
+    Pass { evidence: String },
     /// Check failed - the feature is broken
     Fail { expected: String, actual: String },
     /// Check skipped - feature not available (e.g., missing from tarball)
@@ -52,6 +87,12 @@ pub enum CheckResult {
 }
 
 impl CheckResult {
+    /// Create a passing check with evidence
+    /// Evidence should be ACTUAL VALUES proving it worked, not just "ok"
+    pub fn pass(evidence: impl Into<String>) -> Self {
+        CheckResult::Pass { evidence: evidence.into() }
+    }
+
     /// Returns true for Skip
     pub fn skipped(&self) -> bool {
         matches!(self, CheckResult::Skip(_))
@@ -77,6 +118,8 @@ pub struct StepResult {
     pub duration: Duration,
     pub checks: Vec<(String, CheckResult)>,
     pub fix_suggestion: Option<String>,
+    /// Commands executed during this step with their results
+    pub commands: Vec<CommandLog>,
 }
 
 impl StepResult {
@@ -90,12 +133,45 @@ impl StepResult {
             duration: Duration::ZERO,
             checks: Vec::new(),
             fix_suggestion: None,
+            commands: Vec::new(),
         }
+    }
+
+    /// Log a command execution with its result and duration
+    pub fn log_command(
+        &mut self,
+        command: impl Into<String>,
+        exit_code: i32,
+        output: impl Into<String>,
+        duration: Duration,
+    ) {
+        self.commands.push(CommandLog::new(command, exit_code, output, duration));
+    }
+
+    /// Add a passing check with evidence
+    /// Evidence should be ACTUAL VALUES that prove the check passed
+    pub fn pass(&mut self, name: &str, evidence: impl Into<String>) {
+        self.checks.push((
+            name.to_string(),
+            CheckResult::Pass { evidence: evidence.into() },
+        ));
+    }
+
+    /// Add a failing check
+    pub fn fail(&mut self, name: &str, expected: impl Into<String>, actual: impl Into<String>) {
+        self.passed = false;
+        self.checks.push((
+            name.to_string(),
+            CheckResult::Fail {
+                expected: expected.into(),
+                actual: actual.into(),
+            },
+        ));
     }
 
     pub fn add_check(&mut self, name: &str, result: CheckResult) {
         match &result {
-            CheckResult::Pass => {
+            CheckResult::Pass { .. } => {
                 // Pass is good, no state change needed
             }
             CheckResult::Fail { .. } => {

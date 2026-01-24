@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use qemu::{find_ovmf, create_disk, QemuBuilder, kill_stale_qemu_processes, acquire_test_lock};
-use steps::{all_steps, steps_for_phase, Step, StepResult, CheckResult};
+use steps::{all_steps, steps_for_phase, Step, StepResult, CheckResult, CommandLog};
 
 #[derive(Parser)]
 #[command(name = "install-tests")]
@@ -47,16 +47,16 @@ enum Commands {
         #[arg(long)]
         phase: Option<usize>,
 
-        /// Path to leviso directory (default: ../leviso)
-        #[arg(long, default_value = "../leviso")]
+        /// Path to leviso directory (default: ../../leviso)
+        #[arg(long, default_value = "../../leviso")]
         leviso_dir: PathBuf,
 
         /// Path to ISO file (default: <leviso_dir>/output/leviso.iso)
         #[arg(long)]
         iso: Option<PathBuf>,
 
-        /// Disk size for virtual disk
-        #[arg(long, default_value = "8G")]
+        /// Disk size for virtual disk (20G matches production requirements)
+        #[arg(long, default_value = "20G")]
         disk_size: String,
 
         /// Keep VM running after tests (for debugging)
@@ -114,6 +114,67 @@ fn list_steps() {
     println!();
 }
 
+/// Print command logs for a step
+fn print_command_logs(commands: &[CommandLog]) {
+    if commands.is_empty() {
+        return;
+    }
+
+    for cmd in commands {
+        let exit_status = if cmd.success {
+            format!("{}", cmd.exit_code).green()
+        } else {
+            format!("{}", cmd.exit_code).red()
+        };
+
+        // Format duration - skeptics want to see timing
+        let duration_str = if cmd.duration.as_millis() < 1000 {
+            format!("{}ms", cmd.duration.as_millis())
+        } else {
+            format!("{:.1}s", cmd.duration.as_secs_f64())
+        };
+
+        // Show full command - don't hide anything from skeptics
+        println!(
+            "    {} {} [{}, {}]",
+            "→".cyan(),
+            cmd.command.dimmed(),
+            exit_status,
+            duration_str.dimmed()
+        );
+
+        // Show ALL output - truncating hides evidence
+        let output = cmd.output.trim();
+        if !output.is_empty() {
+            for line in output.lines() {
+                println!("      {}", line.dimmed());
+            }
+        }
+    }
+}
+
+/// Print check results with evidence
+fn print_checks(checks: &[(String, CheckResult)]) {
+    for (check_name, check_result) in checks {
+        match check_result {
+            CheckResult::Pass { evidence } => {
+                println!("    {} {}: {}", "✓".green(), check_name, evidence.green());
+            }
+            CheckResult::Fail { expected, actual } => {
+                println!("    {} {}", "✗".red(), check_name);
+                println!("      expected: {}", expected);
+                println!("      actual:   {}", actual.red());
+            }
+            CheckResult::Skip(reason) => {
+                println!("    {} {}: {}", "⊘".yellow(), check_name, reason);
+            }
+            CheckResult::Warning(reason) => {
+                println!("    {} {}: {}", "⚠".yellow(), check_name, reason);
+            }
+        }
+    }
+}
+
 /// Run a single step and print result
 fn run_single_step(step: &dyn Step, console: &mut qemu::Console) -> Result<(StepResult, bool)> {
     print!("{} Step {:2}: {}... ",
@@ -141,44 +202,21 @@ fn run_single_step(step: &dyn Step, console: &mut qemu::Console) -> Result<(Step
                 }
                 println!("{} ({:.1}s)", status, duration.as_secs_f64());
 
-                // Print skip details if any
-                for (check_name, check_result) in &result.checks {
-                    if let CheckResult::Skip(reason) = check_result {
-                        println!("    {} {} - {}", "⊘".yellow(), check_name, reason);
-                    }
-                }
+                // Print command logs - show what actually ran
+                print_command_logs(&result.commands);
 
-                // Print warning details if any
-                for (check_name, check_result) in &result.checks {
-                    if let CheckResult::Warning(reason) = check_result {
-                        println!("    {} {} - {}", "⚠".yellow(), check_name, reason);
-                    }
-                }
+                // Print ALL checks with evidence - skeptics want proof
+                print_checks(&result.checks);
 
                 Ok((result, true))
             } else {
                 println!("{} ({:.1}s)", "FAIL".red().bold(), duration.as_secs_f64());
 
-                // Print failure details
-                for (check_name, check_result) in &result.checks {
-                    if let CheckResult::Fail { expected, actual } = check_result {
-                        println!("    {} {}", "✗".red(), check_name);
-                        println!("      Expected: {}", expected);
-                        println!("      Actual:   {}", actual);
-                    }
-                }
+                // Print command logs - essential for debugging failures
+                print_command_logs(&result.commands);
 
-                // Also show skips and warnings for context
-                for (check_name, check_result) in &result.checks {
-                    if let CheckResult::Skip(reason) = check_result {
-                        println!("    {} {} - {}", "⊘".yellow(), check_name, reason);
-                    }
-                }
-                for (check_name, check_result) in &result.checks {
-                    if let CheckResult::Warning(reason) = check_result {
-                        println!("    {} {} - {}", "⚠".yellow(), check_name, reason);
-                    }
-                }
+                // Print ALL checks - show what passed AND what failed
+                print_checks(&result.checks);
 
                 if let Some(fix) = &result.fix_suggestion {
                     println!("    {} {}", "Fix:".yellow(), fix);
@@ -215,24 +253,10 @@ fn run_tests(
     println!();
 
     // Validate leviso directory
-    let kernel_path = leviso_dir.join("downloads/iso-contents/images/pxeboot/vmlinuz");
-    // Tiny initramfs - mounts squashfs from ISO, creates overlay, switch_root
-    // The squashfs contains the full system including recstrap and unsquashfs
-    let initramfs_path = leviso_dir.join("output/initramfs-tiny.cpio.gz");
+    // ANTI-CHEAT: We boot the ISO through real UEFI firmware, not -kernel bypass
+    // This tests the actual boot chain: OVMF → systemd-boot → kernel
     let iso_path = iso_path.unwrap_or_else(|| leviso_dir.join("output/levitateos.iso"));
 
-    if !kernel_path.exists() {
-        bail!(
-            "Kernel not found at {}. Run 'cargo run -- build' in leviso first.",
-            kernel_path.display()
-        );
-    }
-    if !initramfs_path.exists() {
-        bail!(
-            "Initramfs not found at {}. Run 'cargo run -- initramfs' in leviso first.",
-            initramfs_path.display()
-        );
-    }
     if !iso_path.exists() {
         bail!(
             "ISO not found at {}. Run 'cargo run -- iso' in leviso first.",
@@ -240,8 +264,6 @@ fn run_tests(
         );
     }
 
-    println!("  Kernel:    {}", kernel_path.display());
-    println!("  Initramfs: {}", initramfs_path.display());
     println!("  ISO:       {}", iso_path.display());
 
     // Find OVMF for UEFI boot
@@ -310,15 +332,15 @@ fn run_tests(
         println!();
 
         // Build QEMU command for live ISO boot
-        // Tiny initramfs mounts squashfs from ISO, creating a complete live system
+        // ANTI-CHEAT: Boot through real UEFI firmware, not -kernel bypass
+        // Boot chain: OVMF → ISO's EFI boot → systemd-boot → kernel → initramfs → live system
         let mut cmd = QemuBuilder::new()
-            .kernel(kernel_path.clone())
-            .initrd(initramfs_path.clone())
-            .append("console=tty0 console=ttyS0,115200n8 rdinit=/init panic=30")
-            .disk(disk_path.clone())
             .cdrom(iso_path.clone())
+            .disk(disk_path.clone())
             .uefi(ovmf.clone())
             .uefi_vars(ovmf_vars_path.clone())  // Writable for boot entries
+            .boot_order("dc")  // CDROM first (live ISO), then disk
+            .with_user_network()  // Enable networking for IP address testing
             .nographic()
             .no_reboot()
             .build_piped();
@@ -378,12 +400,14 @@ fn run_tests(
         println!();
 
         // Boot from disk (not ISO) - UEFI will boot from disk's EFI partition
-        // We use a simpler QEMU command that boots directly from the disk
+        // Boot chain: OVMF → disk's EFI partition → systemd-boot → kernel
         // Same OVMF_VARS file is used to preserve boot entries from installation
         let mut cmd = QemuBuilder::new()
             .disk(disk_path.clone())
             .uefi(ovmf.clone())
             .uefi_vars(ovmf_vars_path.clone())
+            .boot_order("c")  // Disk only (installed system)
+            .with_user_network()  // Enable networking for IP address testing
             .nographic()
             .no_reboot()
             .build_piped();
@@ -394,49 +418,137 @@ fn run_tests(
 
         // Wait for the installed system to boot
         // Uses fail-fast detection - timeout only triggers if detection is broken
+        // Service failures are tracked (not fatal) so we can capture diagnostics
         println!("{}", "Waiting for installed system to boot...".cyan());
         console.wait_for_installed_boot(Duration::from_secs(30))?;
         println!("{}", "Installed system booted!".green());
+
+        // Check if any services failed during boot
+        let boot_failures = console.failed_services().to_vec();
+        if !boot_failures.is_empty() {
+            println!();
+            println!("{}", "⚠ Services failed during boot - will capture diagnostics".yellow());
+            for failure in &boot_failures {
+                println!("    {}", failure.trim());
+            }
+            println!();
+        }
 
         // Login or verify shell access (handles both autologin and manual login cases)
         println!("{}", "Verifying shell access...".cyan());
         console.login("root", "levitate", Duration::from_secs(15))?;
         println!("{}", "Logged in!".green());
 
-        // CRITICAL: Allow shell to fully stabilize after login
-        // The login function returns immediately after getting LOGIN_OK marker,
-        // but there's often additional output (prompts, motd, etc.) still arriving.
-        // On the installed system, bash initialization takes longer.
-        std::thread::sleep(Duration::from_millis(3000));
+        // Brief settle time - shell should be ready after login verification
+        std::thread::sleep(Duration::from_millis(500));
 
-        // Run multiple warmup commands to ensure the shell is fully ready
-        // The first few might fail while bash finishes initializing
-        let mut warmup_ok = false;
-        for attempt in 1..=5 {
-            let warmup = console.exec("echo SHELL_READY_CHECK", Duration::from_secs(5))?;
-            if warmup.output.contains("SHELL_READY_CHECK") {
-                warmup_ok = true;
-                break;
-            }
-            eprintln!("  {} Shell warmup attempt {} didn't return expected output", "WARN:".yellow(), attempt);
-            eprintln!("  Got: {:?}", warmup.output.trim());
-            std::thread::sleep(Duration::from_millis(1000));
-        }
-
-        if !warmup_ok {
+        // Single warmup command to verify shell is functional
+        let warmup = console.exec("echo SHELL_READY_CHECK", Duration::from_secs(5))?;
+        if !warmup.output.contains("SHELL_READY_CHECK") {
             // Shell is broken - don't proceed with useless tests
-            // This is a real failure, not something to silently ignore
             drop(console);
             let _ = child.kill();
             let _ = child.wait();
             let _ = std::fs::remove_file(&disk_path);
             let _ = std::fs::remove_file(&ovmf_vars_path);
             bail!(
-                "Shell warmup failed after 5 attempts. The installed system booted but \
-                 the shell is not responding correctly. This indicates a broken installation."
+                "Shell warmup failed. The installed system booted but \
+                 the shell is not responding correctly. This indicates a broken installation.\n\
+                 Got: {:?}",
+                warmup.output.trim()
             );
         }
         println!("{}", "Shell ready!".green());
+
+        // If services failed during boot, capture diagnostics NOW
+        if !boot_failures.is_empty() {
+            println!();
+            println!("{}", "═".repeat(60));
+            println!("{}", "CAPTURING DIAGNOSTICS FOR FAILED SERVICES".yellow().bold());
+            println!("{}", "═".repeat(60));
+            println!();
+
+            // Get list of failed units
+            let failed_list = console.exec(
+                "systemctl --failed --no-pager",
+                Duration::from_secs(10),
+            )?;
+            println!("{}", "Failed units:".yellow());
+            println!("{}", failed_list.output);
+
+            // For each failed service, get detailed status
+            // Extract service names from boot_failures
+            for failure_line in &boot_failures {
+                // Try to extract service name (e.g., "sshd.service")
+                if let Some(start) = failure_line.find("start ") {
+                    let after_start = &failure_line[start + 6..];
+                    if let Some(end) = after_start.find(|c: char| c == ' ' || c == '-' || c == '.') {
+                        let service = &after_start[..end];
+                        // Try getting status for common service patterns
+                        for suffix in ["", ".service"] {
+                            let full_name = format!("{}{}", service, suffix);
+                            println!();
+                            println!("{} {}:", "Status of".yellow(), full_name);
+                            let status = console.exec(
+                                &format!("systemctl status {} --no-pager 2>&1 || true", full_name),
+                                Duration::from_secs(10),
+                            )?;
+                            println!("{}", status.output);
+
+                            // Get journal logs
+                            println!("{} {}:", "Journal for".yellow(), full_name);
+                            let journal = console.exec(
+                                &format!("journalctl -u {} --no-pager -n 50 2>&1 || true", full_name),
+                                Duration::from_secs(10),
+                            )?;
+                            println!("{}", journal.output);
+                        }
+                    }
+                }
+            }
+
+            // Also try common failing services
+            for service in ["sshd", "sshd-keygen@rsa", "sshd-keygen@ecdsa", "sshd-keygen@ed25519"] {
+                println!();
+                println!("{} {}:", "Checking".yellow(), service);
+                let status = console.exec(
+                    &format!("systemctl status {} --no-pager 2>&1 | head -30 || true", service),
+                    Duration::from_secs(10),
+                )?;
+                if !status.output.contains("could not be found") {
+                    println!("{}", status.output);
+                }
+            }
+
+            // Check /run/sshd exists
+            println!();
+            println!("{}", "Checking /run/sshd:".yellow());
+            let run_sshd = console.exec("ls -la /run/sshd 2>&1 || echo 'NOT FOUND'", Duration::from_secs(5))?;
+            println!("{}", run_sshd.output);
+
+            // Check SSH host keys
+            println!();
+            println!("{}", "Checking SSH host keys:".yellow());
+            let host_keys = console.exec("ls -la /etc/ssh/ssh_host_* 2>&1 || echo 'NO HOST KEYS'", Duration::from_secs(5))?;
+            println!("{}", host_keys.output);
+
+            // Check tmpfiles.d config
+            println!();
+            println!("{}", "Checking tmpfiles.d sshd config:".yellow());
+            let tmpfiles = console.exec("cat /usr/lib/tmpfiles.d/sshd.conf 2>&1 || echo 'NOT FOUND'", Duration::from_secs(5))?;
+            println!("{}", tmpfiles.output);
+
+            // ALL OR NOTHING: Services failed, this is a test failure
+            drop(console);
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&disk_path);
+            let _ = std::fs::remove_file(&ovmf_vars_path);
+            bail!(
+                "Boot completed but {} service(s) failed. See diagnostics above.",
+                boot_failures.len()
+            );
+        }
 
         // Run post-reboot verification steps
         let steps: Vec<Box<dyn Step>> = all_steps()

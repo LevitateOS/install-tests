@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::console::Console;
-use super::patterns::BOOT_ERROR_PATTERNS;
+use super::patterns::{BOOT_ERROR_PATTERNS, CRITICAL_BOOT_ERRORS, SERVICE_FAILURE_PATTERNS};
 
 impl Console {
     /// Wait for the system to boot.
@@ -22,8 +22,10 @@ impl Console {
         self.wait_for_boot_with_patterns(
             stall_timeout,
             // Success patterns for live ISO boot
-            // "serial-console.service" = console ready, we can interact
+            // "___SHELL_READY___" = instrumented shell is ready (primary, from 00-levitate-test.sh)
+            // "serial-console.service" = console ready fallback
             &[
+                "___SHELL_READY___",
                 "Startup finished",
                 "login:",
                 "LevitateOS Live",
@@ -31,35 +33,52 @@ impl Console {
             ],
             // Error patterns (shared)
             BOOT_ERROR_PATTERNS,
+            false, // Don't track service failures, fail immediately
         )
     }
 
     /// Wait for installed system to boot (different success patterns).
+    ///
+    /// Unlike live ISO boot, this tracks service failures instead of immediately
+    /// bailing, allowing us to login and capture diagnostic information.
     pub fn wait_for_installed_boot(&mut self, stall_timeout: Duration) -> Result<()> {
         self.wait_for_boot_with_patterns(
             stall_timeout,
             // Success patterns for installed system
+            // "___SHELL_READY___" = instrumented shell is ready (if profile.d script is installed)
             // Installed systems use serial-getty@ttyS0.service (not serial-console.service which is live-only)
             &[
+                "___SHELL_READY___",
                 "Startup finished",
                 "login:",
                 "serial-getty@ttyS0",
                 "getty.target",
             ],
-            // Error patterns (shared)
-            BOOT_ERROR_PATTERNS,
+            // Only critical errors - service failures are tracked separately
+            CRITICAL_BOOT_ERRORS,
+            true, // Track service failures for later diagnostic capture
         )
+    }
+
+    /// Get any failed services that were observed during boot.
+    pub fn failed_services(&self) -> &[String] {
+        &self.failed_services
     }
 
     /// Core boot waiting logic with configurable patterns.
     ///
     /// Uses STALL DETECTION: only fails if no output for `stall_timeout`.
     /// Boot can take as long as it needs as long as it's making progress.
+    ///
+    /// If `track_service_failures` is true, service failures are tracked in
+    /// `self.failed_services` instead of causing immediate failure. This allows
+    /// capturing diagnostics after boot completes.
     fn wait_for_boot_with_patterns(
         &mut self,
         stall_timeout: Duration,
         success_patterns: &[&str],
         error_patterns: &[&str],
+        track_service_failures: bool,
     ) -> Result<()> {
         let mut last_output_time = Instant::now();
 
@@ -67,6 +86,9 @@ impl Console {
         let mut saw_uefi = false;
         let mut saw_bootloader = false;
         let mut saw_kernel = false;
+
+        // Clear any previously tracked service failures
+        self.failed_services.clear();
 
         loop {
             // STALL DETECTION: Only fail if no output for stall_timeout
@@ -120,6 +142,20 @@ impl Console {
                         || line.contains("KASLR")
                     {
                         saw_kernel = true;
+                    }
+
+                    // Track service failures if enabled
+                    if track_service_failures {
+                        for pattern in SERVICE_FAILURE_PATTERNS {
+                            if line.contains(pattern) {
+                                // Extract the service name from lines like:
+                                // "[FAILED] Failed to start sshd.service - OpenSSH server daemon."
+                                // "Starting sshd.service..." followed by failure
+                                self.failed_services.push(line.clone());
+                                eprintln!("  {} Service failure observed: {}", "WARN:".to_string(), line.trim());
+                                break;
+                            }
+                        }
                     }
 
                     // FAIL FAST: Check error patterns FIRST

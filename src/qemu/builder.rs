@@ -15,6 +15,8 @@ pub struct QemuBuilder {
     disk: Option<PathBuf>,
     ovmf: Option<PathBuf>,
     ovmf_vars: Option<PathBuf>, // UEFI variable storage (writable)
+    boot_order: Option<String>, // BIOS/UEFI boot order (e.g., "dc" = cdrom first, then disk)
+    user_network: bool,         // Enable QEMU user-mode network (for IP address testing)
     nographic: bool,
     no_reboot: bool,
 }
@@ -66,6 +68,18 @@ impl QemuBuilder {
         self
     }
 
+    /// Set boot order (e.g., "dc" = cdrom first, then disk; "c" = disk only)
+    pub fn boot_order(mut self, order: &str) -> Self {
+        self.boot_order = Some(order.to_string());
+        self
+    }
+
+    /// Enable QEMU user-mode networking (provides DHCP, DNS, NAT to guest)
+    pub fn with_user_network(mut self) -> Self {
+        self.user_network = true;
+        self
+    }
+
     /// Disable graphics, use serial console
     pub fn nographic(mut self) -> Self {
         self.nographic = true;
@@ -79,7 +93,32 @@ impl QemuBuilder {
     }
 
     /// Build the QEMU command (piped for console control)
+    ///
+    /// # Panics
+    ///
+    /// Panics if both `.uefi()` and `.kernel()` are set - this combination
+    /// bypasses UEFI firmware while appearing to use it (architectural cheating).
     pub fn build_piped(self) -> Command {
+        // ARCHITECTURAL ANTI-CHEAT: Detect invalid combinations that bypass UEFI
+        if self.ovmf.is_some() && self.kernel.is_some() {
+            panic!(
+                "\n{border}\n\
+                ARCHITECTURAL CHEAT BLOCKED\n\
+                {border}\n\n\
+                Using .uefi() with .kernel() bypasses UEFI firmware entirely.\n\
+                The -kernel flag makes QEMU load the kernel directly, skipping:\n\
+                  - OVMF firmware execution\n\
+                  - Boot entry resolution\n\
+                  - systemd-boot loading\n\n\
+                To test real UEFI boot:\n\
+                  - Remove .kernel() and .initrd()\n\
+                  - Use .cdrom() or .disk() with .boot_order()\n\
+                  - Let OVMF discover and load the bootloader\n\n\
+                {border}\n",
+                border = "!".repeat(60)
+            );
+        }
+
         let mut cmd = self.build_base();
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -97,8 +136,9 @@ impl QemuBuilder {
         // CPU: Skylake-Client for x86-64-v3 support required by Rocky 10
         cmd.args(["-cpu", "Skylake-Client"]);
 
-        // Memory: 2G for installation - don't use toy values
-        cmd.args(["-m", "2G"]);
+        // Memory: 4G for installation - don't use toy values
+        // Increased from 2G to match production requirements
+        cmd.args(["-m", "4G"]);
 
         // Direct kernel boot
         if let Some(kernel) = &self.kernel {
@@ -141,6 +181,17 @@ impl QemuBuilder {
                 "-drive",
                 &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
             ]);
+        }
+
+        // Boot order (e.g., "dc" = cdrom first, then disk)
+        if let Some(order) = &self.boot_order {
+            cmd.args(["-boot", order]);
+        }
+
+        // User-mode networking (provides DHCP, DNS, NAT to guest)
+        if self.user_network {
+            cmd.args(["-netdev", "user,id=net0"]);
+            cmd.args(["-device", "virtio-net-pci,netdev=net0"]);
         }
 
         // Display options
