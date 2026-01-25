@@ -69,9 +69,10 @@ impl Console {
     /// Execute a command and capture output + exit code.
     pub fn exec(&mut self, command: &str, timeout: Duration) -> Result<CommandResult> {
         // Wait for shell to be ready via ___PROMPT___ marker
-        // Use a short timeout - if shell is instrumented, prompt should be immediate
-        // If not found, we proceed anyway (shell may not be instrumented)
-        let _ = self.wait_for_prompt(Duration::from_millis(500));
+        // Timeout is short since marker should appear immediately after previous command
+        // If marker not seen, continue anyway - the marker is a sync mechanism, not a gate
+        // The command will still execute and we'll detect actual failures via exit codes
+        let _ = self.wait_for_prompt(Duration::from_millis(500))?;
 
         // Generate unique markers for this command
         let (start_marker, done_marker) = generate_command_markers();

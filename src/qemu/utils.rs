@@ -24,7 +24,9 @@ impl Console {
             .replace('%', "%%") // Bug #1 fix: escape % for printf
             .replace('\n', "\\n");
 
-        let cmd = format!("printf \"{}\" > {}", escaped, path);
+        // Disable history expansion (set +H) to prevent ! from being interpreted
+        // as a history command (e.g., #!/bin/bash would fail with "event not found")
+        let cmd = format!("set +H; printf \"{}\" > {}", escaped, path);
         self.exec_ok(&cmd, Duration::from_secs(10))?;
         Ok(())
     }
