@@ -1,6 +1,7 @@
-//! E2E Installation Test Runner for LevitateOS.
+//! E2E Installation Test Runner for LevitateOS and AcornOS.
 //!
 //! Runs installation steps in QEMU and verifies each step completes correctly.
+//! Supports multiple distros via the DistroContext trait.
 //!
 //! # STOP. READ. THEN ACT.
 //!
@@ -14,6 +15,7 @@
 //!
 //! See `/home/vince/Projects/LevitateOS/STOP_READ_THEN_ACT.md` for why this matters.
 
+mod distro;
 mod qemu;
 mod steps;
 
@@ -22,8 +24,10 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
 use qemu::{find_ovmf, create_disk, QemuBuilder, kill_stale_qemu_processes, acquire_test_lock};
 use steps::{all_steps, steps_for_phase, Step, StepResult, CheckResult, CommandLog};
 
@@ -47,11 +51,15 @@ enum Commands {
         #[arg(long)]
         phase: Option<usize>,
 
+        /// Distro to test (levitate or acorn)
+        #[arg(long, default_value = "levitate")]
+        distro: String,
+
         /// Path to leviso directory (default: ../../leviso)
         #[arg(long, default_value = "../../leviso")]
         leviso_dir: PathBuf,
 
-        /// Path to ISO file (default: <leviso_dir>/output/leviso.iso)
+        /// Path to ISO file (default: distro-specific path)
         #[arg(long)]
         iso: Option<PathBuf>,
 
@@ -65,25 +73,43 @@ enum Commands {
     },
 
     /// List all test steps
-    List,
+    List {
+        /// Distro to list steps for (levitate or acorn)
+        #[arg(long, default_value = "levitate")]
+        distro: String,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { step, phase, leviso_dir, iso, disk_size, keep_vm } => {
-            run_tests(step, phase, &leviso_dir, iso, &disk_size, keep_vm)
+        Commands::Run { step, phase, distro, leviso_dir, iso, disk_size, keep_vm } => {
+            let ctx = context_for_distro(&distro).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown distro '{}'. Available: {}",
+                    distro,
+                    AVAILABLE_DISTROS.join(", ")
+                )
+            })?;
+            run_tests(step, phase, Arc::from(ctx), &leviso_dir, iso, &disk_size, keep_vm)
         }
-        Commands::List => {
-            list_steps();
+        Commands::List { distro } => {
+            let ctx = context_for_distro(&distro).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown distro '{}'. Available: {}",
+                    distro,
+                    AVAILABLE_DISTROS.join(", ")
+                )
+            })?;
+            list_steps(&*ctx);
             Ok(())
         }
     }
 }
 
-fn list_steps() {
-    println!("{}", "LevitateOS Installation Test Steps".bold());
+fn list_steps(ctx: &dyn DistroContext) {
+    println!("{}", format!("{} Installation Test Steps", ctx.name()).bold());
     println!();
     println!("Each step has an 'ensures' statement describing what it guarantees.");
     println!();
@@ -103,7 +129,7 @@ fn list_steps() {
                 3 => "Phase 3 (Base System)",
                 4 => "Phase 4 (Configuration)",
                 5 => "Phase 5 (Bootloader)",
-                6 => "Phase 6 (Post-Reboot Verification) ← REBOOTS INTO INSTALLED SYSTEM",
+                6 => "Phase 6 (Post-Reboot Verification) <- REBOOTS INTO INSTALLED SYSTEM",
                 _ => "Unknown Phase",
             };
             println!("{}", phase_desc.blue().bold());
@@ -176,7 +202,7 @@ fn print_checks(checks: &[(String, CheckResult)]) {
 }
 
 /// Run a single step and print result
-fn run_single_step(step: &dyn Step, console: &mut qemu::Console) -> Result<(StepResult, bool)> {
+fn run_single_step(step: &dyn Step, console: &mut qemu::Console, ctx: &dyn DistroContext) -> Result<(StepResult, bool)> {
     print!("{} Step {:2}: {}... ",
         "▶".cyan(),
         step.num(),
@@ -184,7 +210,7 @@ fn run_single_step(step: &dyn Step, console: &mut qemu::Console) -> Result<(Step
     );
 
     let start = Instant::now();
-    match step.execute(console) {
+    match step.execute(console, ctx) {
         Ok(result) => {
             let duration = start.elapsed();
             if result.passed {
@@ -236,12 +262,13 @@ fn run_single_step(step: &dyn Step, console: &mut qemu::Console) -> Result<(Step
 fn run_tests(
     step_num: Option<usize>,
     phase_num: Option<usize>,
+    ctx: Arc<dyn DistroContext>,
     leviso_dir: &std::path::Path,
     iso_path: Option<PathBuf>,
     disk_size: &str,
     _keep_vm: bool,
 ) -> Result<()> {
-    println!("{}", "LevitateOS E2E Installation Tests".bold());
+    println!("{}", format!("{} E2E Installation Tests", ctx.name()).bold());
     println!();
 
     // CRITICAL: Acquire exclusive lock and kill any stale QEMU processes
@@ -252,15 +279,25 @@ fn run_tests(
     println!("{}", "Lock acquired, no other tests running.".green());
     println!();
 
-    // Validate leviso directory
+    // Validate ISO path
     // ANTI-CHEAT: We boot the ISO through real UEFI firmware, not -kernel bypass
     // This tests the actual boot chain: OVMF → systemd-boot → kernel
-    let iso_path = iso_path.unwrap_or_else(|| leviso_dir.join("output/levitateos.iso"));
+    let iso_path = iso_path.unwrap_or_else(|| {
+        // Use distro-specific default path
+        let default = ctx.default_iso_path();
+        if default.is_relative() {
+            // Resolve relative to current directory (where install-tests is run from)
+            std::env::current_dir().unwrap_or_default().join(default)
+        } else {
+            default
+        }
+    });
 
     if !iso_path.exists() {
         bail!(
-            "ISO not found at {}. Run 'cargo run -- iso' in leviso first.",
-            iso_path.display()
+            "ISO not found at {}. Build the {} ISO first.",
+            iso_path.display(),
+            ctx.name()
         );
     }
 
@@ -352,8 +389,8 @@ fn run_tests(
 
         // Wait for boot - fail-fast detection, timeout only if detection broken
         println!("{}", "Waiting for boot...".cyan());
-        console.wait_for_boot(Duration::from_secs(30))?;
-        println!("{}", "Live ISO booted!".green());
+        console.wait_for_live_boot_with_context(Duration::from_secs(30), &*ctx)?;
+        println!("{}", format!("{} live ISO booted!", ctx.name()).green());
         println!();
 
         // Run pre-reboot steps
@@ -363,7 +400,7 @@ fn run_tests(
             .collect();
 
         for step in steps {
-            let (result, passed) = run_single_step(step.as_ref(), &mut console)?;
+            let (result, passed) = run_single_step(step.as_ref(), &mut console, &*ctx)?;
             if !passed {
                 results.push(result);
                 // Stop on first failure
@@ -420,8 +457,8 @@ fn run_tests(
         // Uses fail-fast detection - timeout only triggers if detection is broken
         // Service failures are tracked (not fatal) so we can capture diagnostics
         println!("{}", "Waiting for installed system to boot...".cyan());
-        console.wait_for_installed_boot(Duration::from_secs(30))?;
-        println!("{}", "Installed system booted!".green());
+        console.wait_for_installed_boot_with_context(Duration::from_secs(30), &*ctx)?;
+        println!("{}", format!("{} installed system booted!", ctx.name()).green());
 
         // Check if any services failed during boot
         let boot_failures = console.failed_services().to_vec();
@@ -436,7 +473,7 @@ fn run_tests(
 
         // Login or verify shell access (handles both autologin and manual login cases)
         println!("{}", "Verifying shell access...".cyan());
-        console.login("root", "levitate", Duration::from_secs(15))?;
+        console.login("root", ctx.default_password(), Duration::from_secs(15))?;
         println!("{}", "Logged in!".green());
 
         // Brief settle time - shell should be ready after login verification
@@ -557,7 +594,7 @@ fn run_tests(
             .collect();
 
         for step in steps {
-            let (result, passed) = run_single_step(step.as_ref(), &mut console)?;
+            let (result, passed) = run_single_step(step.as_ref(), &mut console, &*ctx)?;
             if !passed {
                 all_passed = false;
             }

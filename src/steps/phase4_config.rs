@@ -8,10 +8,10 @@
 //! User creation MUST include password - empty passwords = security hole.
 
 use super::{CheckResult, Step, StepResult};
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
-use distro_spec::levitate::{DEFAULT_HOSTNAME, default_user};
 use std::time::{Duration, Instant};
 
 /// Step 10: Set timezone
@@ -24,7 +24,7 @@ impl Step for SetTimezone {
         "System timezone is configured for correct local time display"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -78,7 +78,7 @@ impl Step for ConfigureLocale {
         "System locale is set for proper character encoding and language"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -126,12 +126,12 @@ impl Step for SetHostname {
         "System has a hostname configured for network identification"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Use hostname from levitate-spec
-        let hostname = DEFAULT_HOSTNAME;
+        // Use hostname from distro context
+        let hostname = ctx.default_hostname();
 
         // Write hostname
         console.write_file("/mnt/etc/hostname", &format!("{}\n", hostname))?;
@@ -186,15 +186,15 @@ impl Step for SetRootPassword {
         "Root account has a password for emergency system recovery"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Use chpasswd in chroot (non-interactive)
         // NOTE: This requires unix_chkpwd in /usr/sbin (added to AUTH_SBIN in definitions.rs)
-        let password_cmd = "echo 'root:levitate' | chpasswd";
+        let password_cmd = format!("echo 'root:{}' | chpasswd", ctx.default_password());
 
-        let passwd_result = console.exec_chroot("/mnt", password_cmd, Duration::from_secs(10))?;
+        let passwd_result = console.exec_chroot("/mnt", &password_cmd, Duration::from_secs(10))?;
 
         // CHEAT GUARD: Root password MUST be set for emergency access
         cheat_ensure!(
@@ -246,33 +246,36 @@ impl Step for CreateUser {
         "Primary user account exists with proper groups for daily use"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Use user spec from distro-spec (LevitateOS defaults)
-        let user = default_user("levitate");
-        let username = &user.username;
+        // Get user details from distro context
+        let username = ctx.default_username();
+        let user_shell = ctx.chroot_shell(); // Use chroot shell as default user shell
+
+        // Default groups for sudo/admin access
+        let default_groups = ["wheel", "audio", "video", "input"];
 
         // First, check which groups actually exist in the target system
         let mut available_groups = Vec::new();
-        for group in user.groups.iter() {
+        for group in default_groups {
             let check = console.exec_chroot(
                 "/mnt",
                 &format!("getent group {}", group),
                 Duration::from_secs(5),
             )?;
             if check.exit_code == 0 {
-                available_groups.push(group.as_str());
+                available_groups.push(group);
             }
         }
 
         // Build useradd command with only available groups
         let groups_str = available_groups.join(",");
         let useradd_cmd = if available_groups.is_empty() {
-            format!("useradd -m -s {} {}", user.shell, username)
+            format!("useradd -m -s {} {}", user_shell, username)
         } else {
-            format!("useradd -m -s {} -G {} {}", user.shell, groups_str, username)
+            format!("useradd -m -s {} -G {} {}", user_shell, groups_str, username)
         };
 
         // Create user with home directory
@@ -298,10 +301,10 @@ impl Step for CreateUser {
 
         result.add_check("User created", CheckResult::pass(format!("user '{}' with groups: {}", username, groups_str)));
 
-        // Set user password
+        // Set user password (same as root password for testing)
         let passwd_result = console.exec_chroot(
             "/mnt",
-            &format!("echo '{}:levitate' | chpasswd", username),
+            &format!("echo '{}:{}' | chpasswd", username, ctx.default_password()),
             Duration::from_secs(10),
         )?;
 

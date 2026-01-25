@@ -32,6 +32,7 @@ mod phase4_config;
 mod phase5_boot;
 mod phase6_verify;
 
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use std::time::Duration;
@@ -212,8 +213,8 @@ pub trait Step {
     /// This is displayed in test output and helps document what each step guarantees.
     fn ensures(&self) -> &str;
 
-    /// Execute the step
-    fn execute(&self, console: &mut Console) -> Result<StepResult>;
+    /// Execute the step with distro context.
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult>;
 
     /// Phase this step belongs to
     fn phase(&self) -> usize {

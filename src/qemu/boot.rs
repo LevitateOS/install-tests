@@ -2,6 +2,10 @@
 //!
 //! Provides wait_for_boot() and wait_for_installed_boot() with stall detection
 //! and fail-fast error pattern matching.
+//!
+//! Methods come in two variants:
+//! - Default methods use hardcoded LevitateOS patterns for backward compatibility
+//! - `_with_context` methods accept a DistroContext for multi-distro support
 
 use anyhow::{bail, Result};
 use std::sync::mpsc;
@@ -9,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::console::Console;
 use super::patterns::{BOOT_ERROR_PATTERNS, CRITICAL_BOOT_ERRORS, SERVICE_FAILURE_PATTERNS};
+use crate::distro::DistroContext;
 
 impl Console {
     /// Wait for the system to boot.
@@ -21,16 +26,10 @@ impl Console {
     pub fn wait_for_boot(&mut self, stall_timeout: Duration) -> Result<()> {
         self.wait_for_boot_with_patterns(
             stall_timeout,
-            // Success patterns for live ISO boot
-            // "___SHELL_READY___" = instrumented shell is ready (primary, from 00-levitate-test.sh)
-            // "serial-console.service" = console ready fallback
-            &[
-                "___SHELL_READY___",
-                "Startup finished",
-                "login:",
-                "LevitateOS Live",
-                "serial-console.service",
-            ],
+            // Success pattern for live ISO boot
+            // FAIL FAST: Only accept ___SHELL_READY___ from 00-levitate-test.sh
+            // No fallbacks - if instrumentation is broken, test must fail immediately
+            &["___SHELL_READY___"],
             // Error patterns (shared)
             BOOT_ERROR_PATTERNS,
             false, // Don't track service failures, fail immediately
@@ -44,16 +43,13 @@ impl Console {
     pub fn wait_for_installed_boot(&mut self, stall_timeout: Duration) -> Result<()> {
         self.wait_for_boot_with_patterns(
             stall_timeout,
-            // Success patterns for installed system
-            // "___SHELL_READY___" = instrumented shell is ready (if profile.d script is installed)
-            // Installed systems use serial-getty@ttyS0.service (not serial-console.service which is live-only)
-            &[
-                "___SHELL_READY___",
-                "Startup finished",
-                "login:",
-                "serial-getty@ttyS0",
-                "getty.target",
-            ],
+            // Success patterns for installed system boot
+            // Unlike live ISO which has autologin, installed system requires login
+            // Use "levitateos login:" to avoid matching "Login Prompts" in systemd output
+            // After login, shell emits ___SHELL_READY___ for command execution
+            // Also accept multi-user.target - proves system booted successfully even if
+            // serial console login prompt has issues (VT emulation quirks in QEMU)
+            &["___SHELL_READY___", "levitateos login:", "multi-user.target"],
             // Only critical errors - service failures are tracked separately
             CRITICAL_BOOT_ERRORS,
             true, // Track service failures for later diagnostic capture
@@ -63,6 +59,34 @@ impl Console {
     /// Get any failed services that were observed during boot.
     pub fn failed_services(&self) -> &[String] {
         &self.failed_services
+    }
+
+    /// Wait for live ISO boot using distro-specific patterns.
+    pub fn wait_for_live_boot_with_context(
+        &mut self,
+        stall_timeout: Duration,
+        ctx: &dyn DistroContext,
+    ) -> Result<()> {
+        self.wait_for_boot_with_patterns(
+            stall_timeout,
+            ctx.live_boot_success_patterns(),
+            ctx.boot_error_patterns(),
+            false, // Don't track service failures, fail immediately
+        )
+    }
+
+    /// Wait for installed system boot using distro-specific patterns.
+    pub fn wait_for_installed_boot_with_context(
+        &mut self,
+        stall_timeout: Duration,
+        ctx: &dyn DistroContext,
+    ) -> Result<()> {
+        self.wait_for_boot_with_patterns(
+            stall_timeout,
+            ctx.installed_boot_success_patterns(),
+            ctx.critical_boot_errors(),
+            true, // Track service failures for later diagnostic capture
+        )
     }
 
     /// Core boot waiting logic with configurable patterns.

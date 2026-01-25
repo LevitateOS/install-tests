@@ -15,6 +15,7 @@
 //! - recchroot must actually enter the new root
 
 use super::{CheckResult, Step, StepResult};
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
@@ -31,7 +32,7 @@ impl Step for MountInstallMedia {
         "Installation media (ISO) is mounted and squashfs is accessible"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -97,7 +98,7 @@ impl Step for ExtractSquashfs {
         "Base system is extracted with all essential directories present"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -186,7 +187,7 @@ impl Step for GenerateFstab {
         "System has valid /etc/fstab with correct UUIDs for automatic mounting"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -276,7 +277,7 @@ impl Step for VerifyChroot {
         "recchroot can execute commands in the installed system"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 

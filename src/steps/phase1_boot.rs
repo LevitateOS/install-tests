@@ -10,6 +10,7 @@
 //! was used while appearing to test UEFI.
 
 use super::{CheckResult, Step, StepResult};
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
@@ -25,7 +26,7 @@ impl Step for VerifyUefi {
         "System booted in UEFI mode required for GPT/ESP installation"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -69,7 +70,7 @@ impl Step for SyncClock {
         "System clock is synchronized for proper file timestamps and certificates"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 

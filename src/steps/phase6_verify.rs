@@ -17,6 +17,7 @@
 //! - Essential commands prove base system is complete
 
 use super::{CheckResult, Step, StepResult};
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
@@ -32,7 +33,7 @@ impl Step for VerifySystemdBoot {
         "Installed system boots to multi-user target with systemd running"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -65,48 +66,49 @@ impl Step for VerifySystemdBoot {
         // Flush any pending output from login
         let _ = console.exec("true", Duration::from_secs(2))?;
 
-        // Check systemd is running (PID 1)
+        // Check expected init is running (PID 1)
+        let expected_pid1 = ctx.expected_pid1_name();
         let pid1 = console.exec("cat /proc/1/comm", Duration::from_secs(5))?;
 
-        // CHEAT GUARD: systemd MUST be PID 1 for proper boot
+        // CHEAT GUARD: Expected init MUST be PID 1 for proper boot
         cheat_ensure!(
-            pid1.output.contains("systemd"),
-            protects = "System booted with systemd as init",
+            pid1.output.contains(expected_pid1),
+            protects = "System booted with expected init system",
             severity = "CRITICAL",
             cheats = [
                 "Skip PID 1 check",
                 "Accept any init system",
-                "Assume systemd is running"
+                "Assume init is running"
             ],
             consequence = "System didn't boot properly, may be in emergency shell or wrong init",
-            "PID 1 is '{}', expected 'systemd'", pid1.output.trim()
+            "PID 1 is '{}', expected '{}'", pid1.output.trim(), expected_pid1
         );
 
-        result.add_check("systemd is PID 1", CheckResult::pass("/proc/1/comm = systemd"));
+        result.add_check(
+            &format!("{} is PID 1", expected_pid1),
+            CheckResult::pass(format!("/proc/1/comm = {}", expected_pid1)),
+        );
 
-        // Check we reached multi-user target
-        let target = console.exec(
-            "systemctl is-active multi-user.target",
-            Duration::from_secs(10),
-        )?;
+        // Check we reached boot target using distro-specific command
+        let target_cmd = ctx.check_target_reached_cmd();
+        let target_expected = ctx.target_reached_expected();
+        let target = console.exec(target_cmd, Duration::from_secs(10))?;
 
-        if target.output.contains("active") {
-            result.add_check("multi-user.target reached", CheckResult::pass("systemctl shows active"));
+        if target.output.contains(target_expected) {
+            result.add_check("boot target reached", CheckResult::pass(format!("{} target active", ctx.id())));
         } else {
             result.add_check(
-                "multi-user.target reached",
+                "boot target reached",
                 CheckResult::Fail {
-                    expected: "active".to_string(),
+                    expected: target_expected.to_string(),
                     actual: target.output.trim().to_string(),
                 },
             );
         }
 
-        // Check for failed units
-        let failed = console.exec(
-            "systemctl --failed --no-legend | wc -l",
-            Duration::from_secs(10),
-        )?;
+        // Check for failed units/services using distro-specific command
+        let failed_cmd = ctx.count_failed_services_cmd();
+        let failed = console.exec(failed_cmd, Duration::from_secs(10))?;
 
         let failed_count: i32 = failed.output
             .lines()
@@ -115,17 +117,15 @@ impl Step for VerifySystemdBoot {
             .unwrap_or(0);
 
         if failed_count == 0 {
-            result.add_check("No failed units", CheckResult::pass("0 failed units"));
+            result.add_check("No failed services", CheckResult::pass("0 failed services"));
         } else {
-            // Get the list of failed units
-            let failed_list = console.exec(
-                "systemctl --failed --no-legend",
-                Duration::from_secs(5),
-            )?;
+            // Get the list of failed services
+            let failed_list_cmd = ctx.list_failed_services_cmd();
+            let failed_list = console.exec(&failed_list_cmd, Duration::from_secs(5))?;
             result.add_check(
-                "Failed units",
+                "Failed services",
                 CheckResult::Fail {
-                    expected: "0 failed units".to_string(),
+                    expected: "0 failed services".to_string(),
                     actual: format!("{} failed:\n{}", failed_count, failed_list.output),
                 },
             );
@@ -146,20 +146,21 @@ impl Step for VerifyHostname {
         "Configured hostname persisted across reboot"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         let hostname = console.exec("hostname", Duration::from_secs(5))?;
+        let expected_pattern = ctx.hostname_check_pattern();
 
-        // Should be the hostname we set during installation
-        if hostname.output.contains("levitate") {
+        // Should contain the hostname pattern we set during installation
+        if hostname.output.contains(expected_pattern) {
             result.add_check("Hostname correct", CheckResult::pass(hostname.output.trim()));
         } else {
             result.add_check(
                 "Hostname correct",
                 CheckResult::Fail {
-                    expected: "levitate".to_string(),
+                    expected: format!("contains '{}'", expected_pattern),
                     actual: hostname.output.trim().to_string(),
                 },
             );
@@ -180,12 +181,13 @@ impl Step for VerifyUserLogin {
         "Created user account can authenticate and access home directory"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check user exists
-        let user_check = console.exec("id levitate", Duration::from_secs(5))?;
+        let username = ctx.default_username();
+        let user_check = console.exec(&format!("id {}", username), Duration::from_secs(5))?;
 
         // CHEAT GUARD: User account MUST exist after reboot
         cheat_ensure!(
@@ -198,19 +200,19 @@ impl Step for VerifyUserLogin {
                 "Assume user exists"
             ],
             consequence = "User account lost after reboot, cannot login as non-root user",
-            "User 'levitate' not found after reboot - user creation may have failed"
+            "User '{}' not found after reboot - user creation may have failed", username
         );
 
         result.add_check("User exists", CheckResult::pass(user_check.output.trim()));
 
         // Check home directory exists and is accessible
         let home_check = console.exec(
-            "su - levitate -c 'pwd && test -d ~ && echo HOME_OK'",
+            &format!("su - {} -c 'pwd && test -d ~ && echo HOME_OK'", username),
             Duration::from_secs(10),
         )?;
 
         if home_check.output.contains("HOME_OK") {
-            result.add_check("Home directory accessible", CheckResult::pass("/home/levitate accessible"));
+            result.add_check("Home directory accessible", CheckResult::pass(format!("/home/{} accessible", username)));
         } else {
             result.add_check(
                 "Home directory accessible",
@@ -223,7 +225,7 @@ impl Step for VerifyUserLogin {
 
         // Check user can write to home
         let write_check = console.exec(
-            "su - levitate -c 'touch ~/test_file && rm ~/test_file && echo WRITE_OK'",
+            &format!("su - {} -c 'touch ~/test_file && rm ~/test_file && echo WRITE_OK'", username),
             Duration::from_secs(10),
         )?;
 
@@ -254,18 +256,16 @@ impl Step for VerifyNetworking {
         "Network interface is up and has IP address (DHCP or static)"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Check network service is running
-        let networkd = console.exec(
-            "systemctl is-active systemd-networkd || systemctl is-active NetworkManager",
-            Duration::from_secs(10),
-        )?;
+        // Check network service is running using distro-specific command
+        let network_cmd = ctx.check_network_service_cmd();
+        let networkd = console.exec(network_cmd, Duration::from_secs(10))?;
 
         if networkd.output.contains("active") {
-            result.add_check("Network service running", CheckResult::pass("systemd-networkd or NetworkManager active"));
+            result.add_check("Network service running", CheckResult::pass("network service active"));
         } else {
             result.add_check(
                 "Network service running",
@@ -333,7 +333,7 @@ impl Step for VerifySudo {
         "User can elevate privileges with sudo for system administration"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -357,9 +357,10 @@ impl Step for VerifySudo {
         result.add_check("sudo installed", CheckResult::pass(sudo_check.output.trim()));
 
         // Check if wheel group exists and user is in it
-        // This is the standard sudo configuration on Fedora/Rocky-based systems
+        // This is the standard sudo configuration on most Linux systems
+        let username = ctx.default_username();
         let wheel_check = console.exec(
-            "getent group wheel && id levitate | grep -q wheel && echo WHEEL_OK",
+            &format!("getent group wheel && id {} | grep -q wheel && echo WHEEL_OK", username),
             Duration::from_secs(5),
         )?;
 
@@ -374,15 +375,15 @@ impl Step for VerifySudo {
                 "Convert to optional"
             ],
             consequence = "User not in wheel = sudo doesn't work = can't administer system",
-            "User 'levitate' not in wheel group. Output: {}", wheel_check.output.trim()
+            "User '{}' not in wheel group. Output: {}", username, wheel_check.output.trim()
         );
 
-        result.add_check("User in wheel group", CheckResult::pass("levitate in wheel group"));
+        result.add_check("User in wheel group", CheckResult::pass(format!("{} in wheel group", username)));
 
         // Test sudo actually works (with password from stdin)
-        // This requires the user's password to be "levitate" as set during installation
+        let password = ctx.default_password();
         let sudo_test = console.exec(
-            "echo 'levitate' | su - levitate -c 'sudo -S whoami'",
+            &format!("echo '{}' | su - {} -c 'sudo -S whoami'", password, username),
             Duration::from_secs(15),
         )?;
 
@@ -417,7 +418,7 @@ impl Step for VerifyEssentialCommands {
         "Core system utilities (coreutils, systemd tools) are functional"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 

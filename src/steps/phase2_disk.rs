@@ -10,6 +10,7 @@
 //! - Not waiting for kernel to create device nodes
 
 use super::{CheckResult, Step, StepResult};
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
@@ -26,7 +27,7 @@ impl Step for IdentifyDisk {
         "Target disk is detected and accessible for installation"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -82,7 +83,7 @@ impl Step for PartitionDisk {
         "Disk has GPT layout with EFI and root partitions"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -110,9 +111,24 @@ impl Step for PartitionDisk {
         result.add_check("GPT partition table created", CheckResult::pass("sfdisk exit 0"));
 
         // Wait for kernel to create partition device nodes
-        // partprobe forces kernel to re-read partition table, udevadm settle waits for udev
-        let _ = console.exec("partprobe /dev/vda 2>/dev/null || true", Duration::from_secs(5))?;
-        let _ = console.exec("udevadm settle --timeout=5 2>/dev/null || sleep 2", Duration::from_secs(10))?;
+        // blockdev --rereadpt ensures kernel sees new partition table
+        // udevadm settle waits for udev to process device events
+        console.exec_ok("blockdev --rereadpt /dev/vda", Duration::from_secs(5))?;
+        // Wait for udevd to be ready before settle (ping with retry)
+        // udevd startup can take time on slow systems (TCG emulation without KVM)
+        let mut udev_ready = false;
+        for _ in 0..30 {  // 15 seconds total
+            let ping = console.exec("udevadm control --ping", Duration::from_secs(2))?;
+            if ping.success() {
+                udev_ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        if !udev_ready {
+            anyhow::bail!("udevd not responding after 15 seconds of retries. Check systemd-udevd.service status.");
+        }
+        console.exec_ok("udevadm settle --timeout=10", Duration::from_secs(15))?;
 
         // CRITICAL: Verify partitions actually exist - don't trust sfdisk exit code alone
         let verify = console.exec("lsblk /dev/vda -o NAME,SIZE,TYPE", Duration::from_secs(5))?;
@@ -152,7 +168,7 @@ impl Step for FormatPartitions {
         "Partitions have proper filesystems (FAT32 for EFI, ext4 for root)"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -226,7 +242,7 @@ impl Step for MountPartitions {
         "Root partition at /mnt, EFI partition at /mnt/boot"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 

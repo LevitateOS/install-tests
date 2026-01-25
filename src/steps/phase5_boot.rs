@@ -10,10 +10,11 @@
 //! - Essential services MUST be enabled (no getty = no login prompt)
 
 use super::{CheckResult, Step, StepResult};
+use crate::distro::DistroContext;
 use crate::qemu::Console;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
-use distro_spec::levitate::{ENABLED_SERVICES, default_boot_entry, default_loader_config};
+use distro_spec::shared::boot::{BootEntry, LoaderConfig};
 use std::time::{Duration, Instant};
 
 /// Step 16: Copy/install initramfs from ISO
@@ -29,7 +30,7 @@ impl Step for GenerateInitramfs {
         "Initramfs exists at /boot/initramfs.img with drivers for installed hardware"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let step_start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -122,7 +123,7 @@ impl Step for InstallBootloader {
         "System is bootable via systemd-boot with correct kernel and root"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -175,8 +176,16 @@ impl Step for InstallBootloader {
             // Create EFI boot entry using efibootmgr
             // Run from live environment (not chroot) since efibootmgr needs /sys/firmware/efi/efivars
             // This creates a real UEFI boot entry instead of relying on fallback boot path
+            //
+            // efivarfs should already be mounted rw by systemd mount unit (sys-firmware-efi-efivars.mount)
+            // If it's not mounted or not writable, that's a product bug we want to catch
+            let _ = console.exec(
+                "mount -t efivarfs -o rw efivarfs /sys/firmware/efi/efivars || mount -o remount,rw /sys/firmware/efi/efivars",
+                Duration::from_secs(5),
+            )?;
+            let efi_label = ctx.efi_entry_label();
             let efi_entry = console.exec(
-                "efibootmgr --create --disk /dev/vda --part 1 --label 'LevitateOS' --loader '\\EFI\\systemd\\systemd-bootx64.efi' 2>&1",
+                &format!("efibootmgr --create --disk /dev/vda --part 1 --label '{}' --loader '\\EFI\\systemd\\systemd-bootx64.efi' 2>&1", efi_label),
                 Duration::from_secs(10),
             )?;
 
@@ -195,23 +204,27 @@ impl Step for InstallBootloader {
                 "efibootmgr failed: {}", efi_entry.output.trim()
             );
 
-            result.add_check("EFI boot entry created", CheckResult::pass("efibootmgr created LevitateOS entry"));
+            result.add_check("EFI boot entry created", CheckResult::pass(format!("efibootmgr created {} entry", efi_label)));
         }
 
         // Get root partition UUID for boot entry
         let uuid_result = console.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
         let root_uuid = uuid_result.output.trim();
 
-        // Create loader.conf using levitate-spec (goes in ESP at /boot)
-        let loader_config = default_loader_config()
+        // Create loader.conf (goes in ESP at /boot)
+        let loader_config = LoaderConfig::with_defaults(ctx.id())
             .disable_editor()  // Disable for security
             .with_console_mode("max");
         console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
 
         // Create boot entry with serial console output for testing
         // Production installs would use default_boot_entry().set_root() without console settings
-        let mut boot_entry = default_boot_entry()
-            .set_root(format!("UUID={}", root_uuid));
+        let mut boot_entry = BootEntry::with_defaults(
+            ctx.id(),
+            ctx.name(),
+            "vmlinuz",
+            "initramfs.img",
+        ).set_root(format!("UUID={}", root_uuid));
         // Add console settings for QEMU serial output (required for test automation)
         boot_entry.options = format!(
             "root=UUID={} rw console=tty0 console=ttyS0,115200n8",
@@ -287,87 +300,65 @@ impl Step for EnableServices {
         "Essential services (networkd, sshd, getty) start automatically on boot"
     }
 
-    fn execute(&self, console: &mut Console) -> Result<StepResult> {
+    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // OPTIMIZATION: Batch service enablement into single command
-        // This saves multiple chroot round-trips (each has sync overhead)
+        // Get services to enable from distro context
+        let enabled_services = ctx.enabled_services();
 
-        // Build list of service names to enable
-        let service_names: Vec<&str> = ENABLED_SERVICES
-            .iter()
-            .map(|s| s.name)
-            .collect();
+        // Enable each service using the distro-specific command
+        for (service_name, target, is_required) in &enabled_services {
+            // Check if service exists
+            let check_cmd = ctx.check_service_exists_cmd(service_name);
+            let check_result = console.exec_chroot("/mnt", &check_cmd, Duration::from_secs(5))?;
 
-        // First, batch-check which services exist
-        let check_cmd = service_names
-            .iter()
-            .map(|s| format!("test -f /usr/lib/systemd/system/{}.service && echo {}", s, s))
-            .collect::<Vec<_>>()
-            .join("; ");
-
-        let check_result = console.exec_chroot("/mnt", &check_cmd, Duration::from_secs(10))?;
-
-        // Parse which services were found
-        let found_services: Vec<&str> = service_names
-            .iter()
-            .filter(|s| check_result.output.contains(*s))
-            .copied()
-            .collect();
-
-        // Report missing services
-        for service in &service_names {
-            if !found_services.contains(service) {
-                result.add_check(
-                    &format!("{} enabled", service),
-                    CheckResult::Fail {
-                        expected: format!("{}.service exists", service),
-                        actual: "Service unit file not found".to_string(),
-                    },
-                );
+            if !check_result.output.contains(service_name) {
+                if *is_required {
+                    result.add_check(
+                        &format!("{} enabled", service_name),
+                        CheckResult::Fail {
+                            expected: format!("{} service exists", service_name),
+                            actual: "Service not found".to_string(),
+                        },
+                    );
+                } else {
+                    result.add_check(
+                        &format!("{} enabled", service_name),
+                        CheckResult::Skip(format!("{} not available (optional)", service_name)),
+                    );
+                }
+                continue;
             }
-        }
 
-        // Batch-enable all found services in one command
-        if !found_services.is_empty() {
-            let enable_cmd = format!(
-                "systemctl enable {}",
-                found_services.join(" ")
-            );
-
-            let enable_result = console.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(15))?;
+            // Enable the service
+            let enable_cmd = ctx.enable_service_cmd(service_name, target);
+            let enable_result = console.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(10))?;
 
             if enable_result.success() {
-                for service in &found_services {
-                    result.add_check(&format!("{} enabled", service), CheckResult::pass("symlink created"));
-                }
+                result.add_check(&format!("{} enabled", service_name), CheckResult::pass("enabled"));
             } else {
-                // Batch failed, report which one(s) might have failed
                 result.add_check(
-                    "services enabled",
+                    &format!("{} enabled", service_name),
                     CheckResult::Fail {
-                        expected: "systemctl enable exit 0".to_string(),
+                        expected: "enable success".to_string(),
                         actual: format!("exit {}: {}", enable_result.exit_code, enable_result.output.trim()),
                     },
                 );
             }
         }
 
-        // Enable serial console getty for testing (include in batch)
-        let serial_result = console.exec_chroot(
-            "/mnt",
-            "systemctl enable serial-getty@ttyS0.service",
-            Duration::from_secs(10),
-        )?;
+        // Enable serial console getty for testing using distro-specific command
+        let serial_cmd = ctx.enable_serial_getty_cmd();
+        let serial_result = console.exec_chroot("/mnt", &serial_cmd, Duration::from_secs(10))?;
 
         if serial_result.success() {
-            result.add_check("serial-getty@ttyS0 enabled", CheckResult::pass("symlink created"));
+            result.add_check("serial getty enabled", CheckResult::pass("serial console configured"));
         } else {
             result.add_check(
-                "serial-getty@ttyS0 enabled",
+                "serial getty enabled",
                 CheckResult::Fail {
-                    expected: "systemctl enable exit 0".to_string(),
+                    expected: "serial getty enable success".to_string(),
                     actual: format!("exit {}: {}", serial_result.exit_code, serial_result.output),
                 },
             );
@@ -431,6 +422,16 @@ impl Step for EnableServices {
             "No /boot entry in /mnt/etc/fstab"
         );
         result.add_check("Pre-reboot: fstab has /boot", CheckResult::pass(fstab_verify.output.trim()));
+
+        // Copy test instrumentation to installed system
+        // This enables ___SHELL_READY___ and ___PROMPT___ markers after reboot
+        // Without this, the installed system won't have the markers that install-tests requires
+        let test_script = ctx.test_instrumentation_source();
+        let script_name = format!("00-{}-test.sh", ctx.id());
+        let script_path = format!("/mnt/etc/profile.d/{}", script_name);
+        console.write_file(&script_path, test_script)?;
+        console.exec_ok(&format!("chmod +x {}", script_path), Duration::from_secs(5))?;
+        result.add_check("Test instrumentation installed", CheckResult::pass(format!("/etc/profile.d/{}", script_name)));
 
         // Unmount partitions (EFI first, then root)
         let _ = console.exec("umount /mnt/boot", Duration::from_secs(5));
