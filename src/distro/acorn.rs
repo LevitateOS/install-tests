@@ -30,18 +30,26 @@ impl DistroContext for AcornContext {
     // ═══════════════════════════════════════════════════════════════════════════
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        // AcornOS test instrumentation markers
-        // Also accept initramfs completion message and login prompt as fallbacks
+        // AcornOS test instrumentation markers (in order of preference):
+        // 1. ___SHELL_READY___ - emitted by 00-acorn-test.sh when shell is ready (ideal)
+        // 2. [autologin] - emitted by serial-autologin before shell starts (fallback)
+        // 3. login: - generic login prompt (last resort, may not appear with autologin)
+        //
+        // NOTE: Do NOT use "=== ACORNOS INIT STARTING ===" - that appears DURING
+        // initramfs, long before OpenRC finishes and efivarfs is available
         &[
             "___SHELL_READY___",
-            "=== ACORNOS INIT STARTING ===",
+            "[autologin]",
             "login:",
         ]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {
-        // For installed system, we need test instrumentation or login prompt
-        // "acornos login:" to avoid false matches
+        // For installed system boot detection (in order of preference):
+        // 1. ___SHELL_READY___ - test instrumentation (if installed)
+        // 2. acornos login: - hostname-prefixed login prompt (reliable)
+        // 3. login: - generic login prompt (fallback)
+        // 4. Welcome to AcornOS - MOTD/issue message (fallback)
         &[
             "___SHELL_READY___",
             "acornos login:",
@@ -239,5 +247,17 @@ impl DistroContext for AcornContext {
 
     fn login_prompt_pattern(&self) -> &str {
         "acornos login:"
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Summary Display
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fn init_system_name(&self) -> &str {
+        "OpenRC"
+    }
+
+    fn boot_target_name(&self) -> &str {
+        "default runlevel"
     }
 }

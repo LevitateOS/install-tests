@@ -719,8 +719,8 @@ fn run_tests(
         println!("{}", "═".repeat(60));
         println!();
         println!("The installed system:");
-        println!("  • Boots with systemd as init");
-        println!("  • Reaches multi-user.target");
+        println!("  • Boots with {} as init", ctx.init_system_name());
+        println!("  • Reaches {}", ctx.boot_target_name());
         println!("  • Has working user accounts");
         if total_skips > 0 || total_warnings > 0 {
             println!("  • {} Some features were not tested or have warnings", "⚠".yellow());

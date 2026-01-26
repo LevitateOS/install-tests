@@ -240,4 +240,16 @@ impl DistroContext for LevitateContext {
     fn login_prompt_pattern(&self) -> &str {
         "levitateos login:"
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Summary Display
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fn init_system_name(&self) -> &str {
+        "systemd"
+    }
+
+    fn boot_target_name(&self) -> &str {
+        "multi-user.target"
+    }
 }

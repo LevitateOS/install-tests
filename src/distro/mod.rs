@@ -140,6 +140,16 @@ pub trait DistroContext: Send + Sync {
 
     /// Login prompt pattern to detect.
     fn login_prompt_pattern(&self) -> &str;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Summary Display
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Init system name for display (e.g., "systemd", "OpenRC").
+    fn init_system_name(&self) -> &str;
+
+    /// Boot target name for display (e.g., "multi-user.target", "default runlevel").
+    fn boot_target_name(&self) -> &str;
 }
 
 /// Create a DistroContext based on the distro ID string.
