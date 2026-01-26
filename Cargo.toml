@@ -3,7 +3,7 @@ name = "install-tests"
 version = "0.1.0"
 edition = "2021"
 description = "E2E test runner for LevitateOS installation process"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [[bin]]
 name = "boot-test"
