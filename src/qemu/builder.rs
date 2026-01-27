@@ -190,8 +190,50 @@ impl QemuBuilder {
         cmd
     }
 
+    /// Build QEMU command for direct kernel boot debugging (bypasses UEFI/UKI).
+    ///
+    /// This is for debugging initramfs issues in isolation. It boots the kernel
+    /// and initramfs directly via QEMU's -kernel/-initrd flags, completely
+    /// bypassing OVMF, systemd-boot, and UKI loading.
+    ///
+    /// Use this to verify the initramfs works independently of UKI packaging.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `.kernel()` or `.initrd()` or `.append()` are not set.
+    /// Panics if `.uefi()` is set (this method is for non-UEFI debug only).
+    pub fn build_direct_boot_debug(self) -> Command {
+        if self.kernel.is_none() {
+            panic!("Direct boot debug requires .kernel() to be set");
+        }
+        if self.initrd.is_none() {
+            panic!("Direct boot debug requires .initrd() to be set");
+        }
+        if self.append.is_none() {
+            panic!("Direct boot debug requires .append() to be set");
+        }
+        if self.ovmf.is_some() {
+            panic!(
+                "Direct boot debug cannot use .uefi() - it bypasses UEFI entirely.\n\
+                 Remove the .uefi() call to use direct kernel boot."
+            );
+        }
+
+        let mut cmd = self.build_base(false);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        cmd
+    }
+
     fn build_base(self, qmp_mode: bool) -> Command {
         let mut cmd = Command::new("qemu-system-x86_64");
+
+        // Enable KVM if available for faster tests
+        // This is a performance optimization, not a workaround for bugs
+        if std::path::Path::new("/dev/kvm").exists() {
+            cmd.arg("-enable-kvm");
+        }
 
         // Start with no default devices to avoid conflicts with explicit drive definitions
         // (QEMU 10+ has stricter drive index handling)

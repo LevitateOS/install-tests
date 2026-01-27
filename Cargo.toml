@@ -20,6 +20,10 @@ path = "src/bin/qmp.rs"
 name = "boot-test"
 path = "src/bin/boot-test.rs"
 
+[[bin]]
+name = "initramfs-debug"
+path = "src/bin/initramfs-debug.rs"
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
