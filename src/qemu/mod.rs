@@ -9,23 +9,18 @@
 //! - `QemuBuilder` - QEMU command line builder
 //! - `find_ovmf()` - OVMF firmware discovery
 //! - `create_disk()` - Virtual disk creation
-//! - `auth` - Authentication subsystem (login, shell markers)
+//! - `serial` module - Serial console backend with auth, boot, exec
+//! - `qmp` module - QMP backend for visual testing (keystrokes, screenshots)
 //!
-//! Read `console.rs` and `builder.rs` before adding anything.
+//! Read `serial/mod.rs`, `qmp/mod.rs`, and `builder.rs` before adding anything.
 
-mod ansi;
-mod auth;
-mod boot;
 mod builder;
-mod chroot;
-mod console;
-mod exec;
-mod patterns;
-mod sync;
-mod utils;
+pub mod patterns;
+pub mod qmp;
+pub mod serial;
 
 pub use builder::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes,
     QemuBuilder,
 };
-pub use console::Console;
+pub use serial::{Console, SerialExecutorExt};

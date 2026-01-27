@@ -1,6 +1,7 @@
 //! QEMU command builder for installation tests.
 //!
 //! Adapted from leviso's qemu.rs with additions for installation testing.
+//! Supports both serial console (piped) and QMP (socket) control modes.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -19,6 +20,9 @@ pub struct QemuBuilder {
     user_network: bool,         // Enable QEMU user-mode network (for IP address testing)
     nographic: bool,
     no_reboot: bool,
+    // QMP support
+    qmp_socket: Option<PathBuf>, // QMP Unix socket path
+    vnc_display: Option<u16>,    // VNC display number (optional, for live viewing)
 }
 
 impl QemuBuilder {
@@ -92,6 +96,24 @@ impl QemuBuilder {
         self
     }
 
+    /// Set QMP Unix socket path for QMP control mode.
+    ///
+    /// When set, QEMU will listen on this socket for QMP commands.
+    /// Use with `build_qmp()` instead of `build_piped()`.
+    pub fn qmp_socket(mut self, path: PathBuf) -> Self {
+        self.qmp_socket = Some(path);
+        self
+    }
+
+    /// Set VNC display number for optional live viewing.
+    ///
+    /// Display 0 = port 5900, display 1 = port 5901, etc.
+    /// Only useful with QMP mode for visual testing.
+    pub fn vnc_display(mut self, display: u16) -> Self {
+        self.vnc_display = Some(display);
+        self
+    }
+
     /// Build the QEMU command (piped for console control)
     ///
     /// # Panics
@@ -119,14 +141,56 @@ impl QemuBuilder {
             );
         }
 
-        let mut cmd = self.build_base();
+        let mut cmd = self.build_base(false);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         cmd
     }
 
-    fn build_base(self) -> Command {
+    /// Build the QEMU command for QMP control mode.
+    ///
+    /// Unlike `build_piped()`, this configures QEMU for QMP control:
+    /// - QMP socket for sending commands
+    /// - Optional VNC for screenshot capture
+    /// - Serial log to file instead of stdio
+    ///
+    /// # Panics
+    ///
+    /// Panics if `qmp_socket()` was not called.
+    pub fn build_qmp(self) -> Command {
+        if self.qmp_socket.is_none() {
+            panic!("QMP mode requires qmp_socket() to be set");
+        }
+
+        // ARCHITECTURAL ANTI-CHEAT: Detect invalid combinations that bypass UEFI
+        if self.ovmf.is_some() && self.kernel.is_some() {
+            panic!(
+                "\n{border}\n\
+                ARCHITECTURAL CHEAT BLOCKED\n\
+                {border}\n\n\
+                Using .uefi() with .kernel() bypasses UEFI firmware entirely.\n\
+                The -kernel flag makes QEMU load the kernel directly, skipping:\n\
+                  - OVMF firmware execution\n\
+                  - Boot entry resolution\n\
+                  - systemd-boot loading\n\n\
+                To test real UEFI boot:\n\
+                  - Remove .kernel() and .initrd()\n\
+                  - Use .cdrom() or .disk() with .boot_order()\n\
+                  - Let OVMF discover and load the bootloader\n\n\
+                {border}\n",
+                border = "!".repeat(60)
+            );
+        }
+
+        let mut cmd = self.build_base(true);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        cmd
+    }
+
+    fn build_base(self, qmp_mode: bool) -> Command {
         let mut cmd = Command::new("qemu-system-x86_64");
 
         // Start with no default devices to avoid conflicts with explicit drive definitions
@@ -194,9 +258,32 @@ impl QemuBuilder {
             cmd.args(["-device", "virtio-net-pci,netdev=net0"]);
         }
 
-        // Display options
-        if self.nographic {
-            cmd.args(["-nographic", "-serial", "mon:stdio"]);
+        // Display and control options depend on mode
+        if qmp_mode {
+            // QMP mode: use socket for control, optionally VNC for viewing
+            if let Some(socket) = &self.qmp_socket {
+                cmd.args([
+                    "-qmp",
+                    &format!("unix:{},server,nowait", socket.display()),
+                ]);
+            }
+
+            if let Some(display) = self.vnc_display {
+                // VNC for optional live viewing/screenshots
+                cmd.args(["-vnc", &format!(":{}", display)]);
+            } else {
+                // No display
+                cmd.arg("-display");
+                cmd.arg("none");
+            }
+
+            // Serial to file for debugging (optional)
+            cmd.args(["-serial", "file:/tmp/qemu-serial.log"]);
+        } else {
+            // Serial mode: nographic with stdio
+            if self.nographic {
+                cmd.args(["-nographic", "-serial", "mon:stdio"]);
+            }
         }
 
         // Reboot behavior

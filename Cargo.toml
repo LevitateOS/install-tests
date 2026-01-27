@@ -5,6 +5,17 @@ edition = "2021"
 description = "E2E test runner for LevitateOS installation process"
 license = "MIT OR Apache-2.0"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "serial"
+path = "src/bin/serial.rs"
+
+[[bin]]
+name = "qmp"
+path = "src/bin/qmp.rs"
+
 [[bin]]
 name = "boot-test"
 path = "src/bin/boot-test.rs"
