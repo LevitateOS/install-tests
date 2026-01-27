@@ -111,9 +111,9 @@ impl Step for PartitionDisk {
         result.add_check("GPT partition table created", CheckResult::pass("sfdisk exit 0"));
 
         // Wait for kernel to create partition device nodes
-        // blockdev --rereadpt ensures kernel sees new partition table
+        // NOTE: sfdisk already calls BLKRRPART internally, so we don't need blockdev --rereadpt
+        // Calling it separately often fails with "device busy" because udev has the device open
         // udevadm settle waits for udev to process device events
-        executor.exec_ok("blockdev --rereadpt /dev/vda", Duration::from_secs(5))?;
         // Wait for udevd to be ready before settle (ping with retry)
         // udevd startup can take time on slow systems (TCG emulation without KVM)
         let mut udev_ready = false;
