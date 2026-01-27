@@ -226,10 +226,11 @@ impl Step for InstallBootloader {
             "initramfs.img",
         ).set_root(format!("UUID={}", root_uuid));
         // Add console settings for QEMU serial output (required for test automation)
-        // rd.debug enables initrd debug logging
+        // rd.debug enables initrd debug logging to show exactly what systemd/udev is doing
+        // systemd.log_level=debug shows detailed systemd unit activation
         // rd.shell=1 drops to shell on failure (disabled - causes timeout issues)
         boot_entry.options = format!(
-            "root=UUID={} rw console=tty0 console=ttyS0,115200n8 rd.info",
+            "root=UUID={} rw console=tty0 console=ttyS0,115200n8 rd.info rd.debug systemd.log_level=debug",
             root_uuid
         );
         let entry_path = boot_entry.entry_path(); // /boot/loader/entries/X.conf
