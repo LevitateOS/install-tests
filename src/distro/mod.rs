@@ -45,6 +45,7 @@ pub trait DistroContext: Send + Sync {
     fn critical_boot_errors(&self) -> &[&str];
 
     /// Patterns indicating service failures to track (not immediately fatal).
+    #[allow(dead_code)]
     fn service_failure_patterns(&self) -> &[&str];
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -61,6 +62,7 @@ pub trait DistroContext: Send + Sync {
     fn check_service_exists_cmd(&self, service: &str) -> String;
 
     /// Command to check service status.
+    #[allow(dead_code)]
     fn check_service_status_cmd(&self, service: &str) -> String;
 
     /// Command to list failed services.
@@ -104,6 +106,7 @@ pub trait DistroContext: Send + Sync {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Command to install the bootloader (run in chroot).
+    #[allow(dead_code)]
     fn install_bootloader_cmd(&self) -> &str;
 
     /// EFI entry label for efibootmgr.
@@ -139,6 +142,7 @@ pub trait DistroContext: Send + Sync {
     fn default_password(&self) -> &str;
 
     /// Login prompt pattern to detect.
+    #[allow(dead_code)]
     fn login_prompt_pattern(&self) -> &str;
 
     // ═══════════════════════════════════════════════════════════════════════════

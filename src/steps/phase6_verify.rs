@@ -18,7 +18,7 @@
 
 use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
-use crate::qemu::Console;
+use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
@@ -33,7 +33,7 @@ impl Step for VerifySystemdBoot {
         "Installed system boots to multi-user target with systemd running"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -42,7 +42,7 @@ impl Step for VerifySystemdBoot {
         // ═══════════════════════════════════════════════════════════════════════
 
         // Check root filesystem type - should NOT be overlay (live ISO uses overlay)
-        let fstype = console.exec("findmnt / -o FSTYPE -n", Duration::from_secs(5))?;
+        let fstype = executor.exec("findmnt / -o FSTYPE -n", Duration::from_secs(5))?;
 
         // ANTI-CHEAT: Root must not be overlay - that would mean we're still on live ISO
         cheat_ensure!(
@@ -64,11 +64,11 @@ impl Step for VerifySystemdBoot {
         ));
 
         // Flush any pending output from login
-        let _ = console.exec("true", Duration::from_secs(2))?;
+        let _ = executor.exec("true", Duration::from_secs(2))?;
 
         // Check expected init is running (PID 1)
         let expected_pid1 = ctx.expected_pid1_name();
-        let pid1 = console.exec("cat /proc/1/comm", Duration::from_secs(5))?;
+        let pid1 = executor.exec("cat /proc/1/comm", Duration::from_secs(5))?;
 
         // CHEAT GUARD: Expected init MUST be PID 1 for proper boot
         cheat_ensure!(
@@ -92,7 +92,7 @@ impl Step for VerifySystemdBoot {
         // Check we reached boot target using distro-specific command
         let target_cmd = ctx.check_target_reached_cmd();
         let target_expected = ctx.target_reached_expected();
-        let target = console.exec(target_cmd, Duration::from_secs(10))?;
+        let target = executor.exec(target_cmd, Duration::from_secs(10))?;
 
         if target.output.contains(target_expected) {
             result.add_check("boot target reached", CheckResult::pass(format!("{} target active", ctx.id())));
@@ -108,7 +108,7 @@ impl Step for VerifySystemdBoot {
 
         // Check for failed units/services using distro-specific command
         let failed_cmd = ctx.count_failed_services_cmd();
-        let failed = console.exec(failed_cmd, Duration::from_secs(10))?;
+        let failed = executor.exec(failed_cmd, Duration::from_secs(10))?;
 
         let failed_count: i32 = failed.output
             .lines()
@@ -121,7 +121,7 @@ impl Step for VerifySystemdBoot {
         } else {
             // Get the list of failed services
             let failed_list_cmd = ctx.list_failed_services_cmd();
-            let failed_list = console.exec(&failed_list_cmd, Duration::from_secs(5))?;
+            let failed_list = executor.exec(&failed_list_cmd, Duration::from_secs(5))?;
             result.add_check(
                 "Failed services",
                 CheckResult::Fail {
@@ -146,11 +146,11 @@ impl Step for VerifyHostname {
         "Configured hostname persisted across reboot"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        let hostname = console.exec("hostname", Duration::from_secs(5))?;
+        let hostname = executor.exec("hostname", Duration::from_secs(5))?;
         let expected_pattern = ctx.hostname_check_pattern();
 
         // Should contain the hostname pattern we set during installation
@@ -181,13 +181,13 @@ impl Step for VerifyUserLogin {
         "Created user account can authenticate and access home directory"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check user exists
         let username = ctx.default_username();
-        let user_check = console.exec(&format!("id {}", username), Duration::from_secs(5))?;
+        let user_check = executor.exec(&format!("id {}", username), Duration::from_secs(5))?;
 
         // CHEAT GUARD: User account MUST exist after reboot
         cheat_ensure!(
@@ -206,7 +206,7 @@ impl Step for VerifyUserLogin {
         result.add_check("User exists", CheckResult::pass(user_check.output.trim()));
 
         // Check home directory exists and is accessible
-        let home_check = console.exec(
+        let home_check = executor.exec(
             &format!("su - {} -c 'pwd && test -d ~ && echo HOME_OK'", username),
             Duration::from_secs(10),
         )?;
@@ -224,7 +224,7 @@ impl Step for VerifyUserLogin {
         }
 
         // Check user can write to home
-        let write_check = console.exec(
+        let write_check = executor.exec(
             &format!("su - {} -c 'touch ~/test_file && rm ~/test_file && echo WRITE_OK'", username),
             Duration::from_secs(10),
         )?;
@@ -256,13 +256,13 @@ impl Step for VerifyNetworking {
         "Network interface is up and has IP address (DHCP or static)"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check network service is running using distro-specific command
         let network_cmd = ctx.check_network_service_cmd();
-        let networkd = console.exec(network_cmd, Duration::from_secs(10))?;
+        let networkd = executor.exec(network_cmd, Duration::from_secs(10))?;
 
         if networkd.output.contains("active") {
             result.add_check("Network service running", CheckResult::pass("network service active"));
@@ -278,7 +278,7 @@ impl Step for VerifyNetworking {
 
         // Check for IP address on any interface (excluding lo)
         // QEMU user-mode networking is now enabled, so this MUST work
-        let ip_check = console.exec(
+        let ip_check = executor.exec(
             "ip -4 addr show | grep -v '127.0.0.1' | grep 'inet ' | head -1",
             Duration::from_secs(10),
         )?;
@@ -301,7 +301,7 @@ impl Step for VerifyNetworking {
         result.add_check("IP address assigned", CheckResult::pass(ip_check.output.trim()));
 
         // Check DNS resolution (if we have network)
-        let dns_check = console.exec(
+        let dns_check = executor.exec(
             "getent hosts localhost",
             Duration::from_secs(10),
         )?;
@@ -333,12 +333,12 @@ impl Step for VerifySudo {
         "User can elevate privileges with sudo for system administration"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check sudo is installed
-        let sudo_check = console.exec("which sudo", Duration::from_secs(5))?;
+        let sudo_check = executor.exec("which sudo", Duration::from_secs(5))?;
 
         // CHEAT GUARD: sudo MUST be installed for privilege escalation
         cheat_ensure!(
@@ -359,7 +359,7 @@ impl Step for VerifySudo {
         // Check if wheel group exists and user is in it
         // This is the standard sudo configuration on most Linux systems
         let username = ctx.default_username();
-        let wheel_check = console.exec(
+        let wheel_check = executor.exec(
             &format!("getent group wheel && id {} | grep -q wheel && echo WHEEL_OK", username),
             Duration::from_secs(5),
         )?;
@@ -382,7 +382,7 @@ impl Step for VerifySudo {
 
         // Test sudo actually works (with password from stdin)
         let password = ctx.default_password();
-        let sudo_test = console.exec(
+        let sudo_test = executor.exec(
             &format!("echo '{}' | su - {} -c 'sudo -S whoami'", password, username),
             Duration::from_secs(15),
         )?;
@@ -418,7 +418,7 @@ impl Step for VerifyEssentialCommands {
         "Core system utilities (coreutils, systemd tools) are functional"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -438,7 +438,7 @@ impl Step for VerifyEssentialCommands {
         let mut failed = 0;
 
         for (cmd, package) in essential_commands {
-            let check = console.exec(
+            let check = executor.exec(
                 &format!("{} 2>&1 | head -1", cmd),
                 Duration::from_secs(5),
             )?;
@@ -472,7 +472,7 @@ impl Step for VerifyEssentialCommands {
         result.add_check("All essential commands", CheckResult::pass("9/9 commands working"));
 
         // Test file operations work
-        let file_ops = console.exec(
+        let file_ops = executor.exec(
             "cd /tmp && echo test > testfile && cat testfile && rm testfile && echo FILE_OPS_OK",
             Duration::from_secs(10),
         )?;
@@ -490,7 +490,7 @@ impl Step for VerifyEssentialCommands {
         }
 
         // Verify journald is collecting logs
-        let journal_check = console.exec(
+        let journal_check = executor.exec(
             "journalctl -b --no-pager | head -5",
             Duration::from_secs(10),
         )?;

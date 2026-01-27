@@ -11,7 +11,7 @@
 
 use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
-use crate::qemu::Console;
+use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
 use distro_spec::PartitionLayout;
@@ -27,17 +27,17 @@ impl Step for IdentifyDisk {
         "Target disk is detected and accessible for installation"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Flush any pending output with a simple command
         // This ensures previous steps' async output is cleared
-        let _ = console.exec("true", Duration::from_secs(2))?;
+        let _ = executor.exec("true", Duration::from_secs(2))?;
 
         // Check for /dev/vda (virtio disk)
         // First, list all block devices for diagnostics
-        let lsblk_all = console.exec("lsblk -dn -o NAME,TYPE,SIZE", Duration::from_secs(5))?;
+        let lsblk_all = executor.exec("lsblk -dn -o NAME,TYPE,SIZE", Duration::from_secs(5))?;
 
         // CHEAT GUARD: Target disk MUST be detected
         cheat_ensure!(
@@ -83,7 +83,7 @@ impl Step for PartitionDisk {
         "Disk has GPT layout with EFI and root partitions"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -93,7 +93,7 @@ impl Step for PartitionDisk {
         let partition_script = layout.to_sfdisk_script();
 
         // Write partition table
-        let sfdisk_result = console.exec(
+        let sfdisk_result = executor.exec(
             &format!("echo '{}' | sfdisk /dev/vda", partition_script),
             Duration::from_secs(30),
         )?;
@@ -113,12 +113,12 @@ impl Step for PartitionDisk {
         // Wait for kernel to create partition device nodes
         // blockdev --rereadpt ensures kernel sees new partition table
         // udevadm settle waits for udev to process device events
-        console.exec_ok("blockdev --rereadpt /dev/vda", Duration::from_secs(5))?;
+        executor.exec_ok("blockdev --rereadpt /dev/vda", Duration::from_secs(5))?;
         // Wait for udevd to be ready before settle (ping with retry)
         // udevd startup can take time on slow systems (TCG emulation without KVM)
         let mut udev_ready = false;
         for _ in 0..30 {  // 15 seconds total
-            let ping = console.exec("udevadm control --ping", Duration::from_secs(2))?;
+            let ping = executor.exec("udevadm control --ping", Duration::from_secs(2))?;
             if ping.success() {
                 udev_ready = true;
                 break;
@@ -128,10 +128,10 @@ impl Step for PartitionDisk {
         if !udev_ready {
             anyhow::bail!("udevd not responding after 15 seconds of retries. Check systemd-udevd.service status.");
         }
-        console.exec_ok("udevadm settle --timeout=10", Duration::from_secs(15))?;
+        executor.exec_ok("udevadm settle --timeout=10", Duration::from_secs(15))?;
 
         // CRITICAL: Verify partitions actually exist - don't trust sfdisk exit code alone
-        let verify = console.exec("lsblk /dev/vda -o NAME,SIZE,TYPE", Duration::from_secs(5))?;
+        let verify = executor.exec("lsblk /dev/vda -o NAME,SIZE,TYPE", Duration::from_secs(5))?;
 
         // CHEAT GUARD: Must verify BOTH partitions exist
         cheat_ensure!(
@@ -168,12 +168,12 @@ impl Step for FormatPartitions {
         "Partitions have proper filesystems (FAT32 for EFI, ext4 for root)"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Format EFI partition as FAT32
-        let fat_result = console.exec(
+        let fat_result = executor.exec(
             "mkfs.fat -F32 /dev/vda1",
             Duration::from_secs(30),
         )?;
@@ -195,7 +195,7 @@ impl Step for FormatPartitions {
         result.add_check("EFI partition formatted", CheckResult::pass("mkfs.fat -F32 /dev/vda1 exit 0"));
 
         // Format root partition as ext4
-        let ext4_result = console.exec(
+        let ext4_result = executor.exec(
             "mkfs.ext4 -F /dev/vda2",
             Duration::from_secs(60),
         )?;
@@ -242,13 +242,13 @@ impl Step for MountPartitions {
         "Root partition at /mnt, EFI partition at /mnt/boot"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Mount root partition
-        console.exec("mkdir -p /mnt", Duration::from_secs(5))?;
-        let mount_root = console.exec("mount /dev/vda2 /mnt", Duration::from_secs(10))?;
+        executor.exec("mkdir -p /mnt", Duration::from_secs(5))?;
+        let mount_root = executor.exec("mount /dev/vda2 /mnt", Duration::from_secs(10))?;
 
         // CHEAT GUARD: Root partition MUST be mounted for installation
         cheat_ensure!(
@@ -269,8 +269,8 @@ impl Step for MountPartitions {
         // Create and mount EFI partition at /mnt/boot
         // NOTE: ESP is at /boot, NOT /boot/efi
         // systemd-boot can ONLY read from FAT partitions, so kernel must be on ESP
-        console.exec("mkdir -p /mnt/boot", Duration::from_secs(5))?;
-        let mount_boot = console.exec("mount /dev/vda1 /mnt/boot", Duration::from_secs(10))?;
+        executor.exec("mkdir -p /mnt/boot", Duration::from_secs(5))?;
+        let mount_boot = executor.exec("mount /dev/vda1 /mnt/boot", Duration::from_secs(10))?;
 
         // CHEAT GUARD: EFI partition MUST be mounted for bootloader
         cheat_ensure!(
@@ -289,7 +289,7 @@ impl Step for MountPartitions {
         result.add_check("EFI mounted", CheckResult::pass("/dev/vda1 → /mnt/boot"));
 
         // Verify mounts - show actual mount output as evidence
-        let mounts = console.exec("mount | grep /mnt", Duration::from_secs(5))?;
+        let mounts = executor.exec("mount | grep /mnt", Duration::from_secs(5))?;
         if mounts.output.contains("/mnt ") && mounts.output.contains("/mnt/boot ") {
             let mount_lines: Vec<&str> = mounts.output.lines().take(2).collect();
             result.add_check("Mounts verified", CheckResult::pass(mount_lines.join(" | ")));

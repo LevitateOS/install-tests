@@ -33,7 +33,7 @@ mod phase5_boot;
 mod phase6_verify;
 
 use crate::distro::DistroContext;
-use crate::qemu::Console;
+use crate::executor::Executor;
 use anyhow::Result;
 use std::time::Duration;
 
@@ -214,7 +214,7 @@ pub trait Step {
     fn ensures(&self) -> &str;
 
     /// Execute the step with distro context.
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult>;
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult>;
 
     /// Phase this step belongs to
     fn phase(&self) -> usize {
@@ -243,7 +243,7 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase2_disk::MountPartitions),
         // Phase 3: Base system
         Box::new(phase3_base::MountInstallMedia),
-        Box::new(phase3_base::ExtractSquashfs),
+        Box::new(phase3_base::ExtractRootfs),
         Box::new(phase3_base::GenerateFstab),
         Box::new(phase3_base::VerifyChroot),
         // Phase 4: Configuration
