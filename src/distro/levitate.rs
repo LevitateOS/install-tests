@@ -69,6 +69,7 @@ impl DistroContext for LevitateContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
+            "EROFS:",                 // EROFS filesystem error
             // === INIT STAGE ===
             "emergency shell",
             "Emergency shell",
@@ -110,6 +111,7 @@ impl DistroContext for LevitateContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
+            "EROFS:",                 // EROFS filesystem error
             // === INIT STAGE (critical) ===
             "emergency shell",
             "Emergency shell",
@@ -206,7 +208,29 @@ impl DistroContext for LevitateContext {
     // ═══════════════════════════════════════════════════════════════════════════
 
     fn default_iso_path(&self) -> PathBuf {
-        PathBuf::from("../../leviso/output/levitateos.iso")
+        // Use relative path that works from workspace root
+        // The test framework joins with current_dir() for relative paths
+        //
+        // Paths tried:
+        // - leviso/output/levitateos.iso (from workspace root)
+        // - ../../leviso/output/levitateos.iso (from testing/install-tests)
+        // - ../output/levitateos.iso (from leviso/)
+        let candidates = [
+            "leviso/output/levitateos.iso",
+            "../../leviso/output/levitateos.iso",
+            "../output/levitateos.iso",
+            "output/levitateos.iso",
+        ];
+
+        for candidate in candidates {
+            let path = PathBuf::from(candidate);
+            if path.exists() {
+                return path;
+            }
+        }
+
+        // Default fallback
+        PathBuf::from("leviso/output/levitateos.iso")
     }
 
     fn chroot_shell(&self) -> &str {

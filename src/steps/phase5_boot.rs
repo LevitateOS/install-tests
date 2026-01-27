@@ -11,7 +11,7 @@
 
 use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
-use crate::qemu::Console;
+use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
 use distro_spec::shared::boot::{BootEntry, LoaderConfig};
@@ -30,32 +30,32 @@ impl Step for GenerateInitramfs {
         "Initramfs exists at /boot/initramfs.img with drivers for installed hardware"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let step_start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // ═══════════════════════════════════════════════════════════════════════
         // KERNEL COPY: ISO → ESP
         // ═══════════════════════════════════════════════════════════════════════
-        // The squashfs doesn't include the kernel (it's on the ISO for live boot).
+        // The rootfs (EROFS) doesn't include the kernel (it's on the ISO for live boot).
         // We need to copy it to the ESP where systemd-boot can find it.
         let kernel_cmd = "cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz";
         let cmd_start = Instant::now();
-        let kernel_copy = console.exec(kernel_cmd, Duration::from_secs(10))?;
+        let kernel_copy = executor.exec(kernel_cmd, Duration::from_secs(10))?;
         result.log_command(kernel_cmd, kernel_copy.exit_code, &kernel_copy.output, cmd_start.elapsed());
 
         cheat_ensure!(
             kernel_copy.success(),
             protects = "Kernel is copied from ISO to ESP for boot",
             severity = "CRITICAL",
-            cheats = ["Skip kernel copy", "Assume kernel exists in squashfs", "Accept copy failure"],
+            cheats = ["Skip kernel copy", "Assume kernel exists in rootfs", "Accept copy failure"],
             consequence = "No kernel on ESP, systemd-boot can't find it, system won't boot",
             "Failed to copy kernel from ISO to ESP: {}", kernel_copy.output
         );
 
         // Get kernel size as evidence - skeptics want to see actual bytes
         let cmd_start = Instant::now();
-        let kernel_size = console.exec("stat -c '%s' /mnt/boot/vmlinuz", Duration::from_secs(5))?;
+        let kernel_size = executor.exec("stat -c '%s' /mnt/boot/vmlinuz", Duration::from_secs(5))?;
         result.log_command("stat -c '%s' /mnt/boot/vmlinuz", kernel_size.exit_code, &kernel_size.output, cmd_start.elapsed());
 
         let kernel_bytes: u64 = kernel_size.output.trim().parse().unwrap_or(0);
@@ -77,21 +77,21 @@ impl Step for GenerateInitramfs {
         // ═══════════════════════════════════════════════════════════════════════
         let copy_cmd = "cp /media/cdrom/boot/initramfs-installed.img /mnt/boot/initramfs.img";
         let cmd_start = Instant::now();
-        let copy_result = console.exec(copy_cmd, Duration::from_secs(30))?;
+        let copy_result = executor.exec(copy_cmd, Duration::from_secs(30))?;
         result.log_command(copy_cmd, copy_result.exit_code, &copy_result.output, cmd_start.elapsed());
 
         cheat_ensure!(
             copy_result.success(),
             protects = "initramfs is copied from ISO to ESP",
             severity = "CRITICAL",
-            cheats = ["Skip initramfs copy", "Fall back to dracut", "Accept missing initramfs on ISO"],
+            cheats = ["Skip initramfs copy", "Accept missing initramfs on ISO"],
             consequence = "No initramfs, system won't boot. Rebuild ISO with 'leviso build'",
             "Failed to copy initramfs from ISO: {}", copy_result.output
         );
 
         // Get initramfs size as evidence
         let cmd_start = Instant::now();
-        let initramfs_size = console.exec("stat -c '%s' /mnt/boot/initramfs.img", Duration::from_secs(5))?;
+        let initramfs_size = executor.exec("stat -c '%s' /mnt/boot/initramfs.img", Duration::from_secs(5))?;
         result.log_command("stat -c '%s' /mnt/boot/initramfs.img", initramfs_size.exit_code, &initramfs_size.output, cmd_start.elapsed());
 
         let initramfs_bytes: u64 = initramfs_size.output.trim().parse().unwrap_or(0);
@@ -123,12 +123,12 @@ impl Step for InstallBootloader {
         "System is bootable via systemd-boot with correct kernel and root"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check if systemd-boot EFI files exist in the tarball
-        let efi_check = console.exec_chroot(
+        let efi_check = executor.exec_chroot(
             "/mnt",
             "test -d /usr/lib/systemd/boot/efi",
             Duration::from_secs(5),
@@ -151,7 +151,7 @@ impl Step for InstallBootloader {
             // ESP is at /boot (FAT32)
             // --esp-path=/boot: REQUIRED in chroot - mount detection doesn't work
             // --no-variables: Skip EFI variable setup (not available in chroot)
-            let bootctl_result = console.exec_chroot(
+            let bootctl_result = executor.exec_chroot(
                 "/mnt",
                 "bootctl install --esp-path=/boot --no-variables",
                 Duration::from_secs(30),
@@ -179,12 +179,12 @@ impl Step for InstallBootloader {
             //
             // efivarfs should already be mounted rw by systemd mount unit (sys-firmware-efi-efivars.mount)
             // If it's not mounted or not writable, that's a product bug we want to catch
-            let _ = console.exec(
+            let _ = executor.exec(
                 "mount -t efivarfs -o rw efivarfs /sys/firmware/efi/efivars || mount -o remount,rw /sys/firmware/efi/efivars",
                 Duration::from_secs(5),
             )?;
             let efi_label = ctx.efi_entry_label();
-            let efi_entry = console.exec(
+            let efi_entry = executor.exec(
                 &format!("efibootmgr --create --disk /dev/vda --part 1 --label '{}' --loader '\\EFI\\systemd\\systemd-bootx64.efi' 2>&1", efi_label),
                 Duration::from_secs(10),
             )?;
@@ -208,14 +208,14 @@ impl Step for InstallBootloader {
         }
 
         // Get root partition UUID for boot entry
-        let uuid_result = console.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
+        let uuid_result = executor.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
         let root_uuid = uuid_result.output.trim();
 
         // Create loader.conf (goes in ESP at /boot)
         let loader_config = LoaderConfig::with_defaults(ctx.id())
             .disable_editor()  // Disable for security
             .with_console_mode("max");
-        console.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
+        executor.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
 
         // Create boot entry with serial console output for testing
         // Production installs would use default_boot_entry().set_root() without console settings
@@ -226,15 +226,17 @@ impl Step for InstallBootloader {
             "initramfs.img",
         ).set_root(format!("UUID={}", root_uuid));
         // Add console settings for QEMU serial output (required for test automation)
+        // rd.debug enables initrd debug logging
+        // rd.shell=1 drops to shell on failure (disabled - causes timeout issues)
         boot_entry.options = format!(
-            "root=UUID={} rw console=tty0 console=ttyS0,115200n8",
+            "root=UUID={} rw console=tty0 console=ttyS0,115200n8 rd.info",
             root_uuid
         );
         let entry_path = boot_entry.entry_path(); // /boot/loader/entries/X.conf
-        console.write_file(&format!("/mnt{}", entry_path), &boot_entry.to_entry_file())?;
+        executor.write_file(&format!("/mnt{}", entry_path), &boot_entry.to_entry_file())?;
 
         // Verify boot entry exists and has correct content
-        let verify = console.exec(
+        let verify = executor.exec(
             &format!("cat /mnt{}", entry_path),
             Duration::from_secs(5),
         )?;
@@ -300,7 +302,7 @@ impl Step for EnableServices {
         "Essential services (networkd, sshd, getty) start automatically on boot"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -311,7 +313,7 @@ impl Step for EnableServices {
         for (service_name, target, is_required) in &enabled_services {
             // Check if service exists
             let check_cmd = ctx.check_service_exists_cmd(service_name);
-            let check_result = console.exec_chroot("/mnt", &check_cmd, Duration::from_secs(5))?;
+            let check_result = executor.exec_chroot("/mnt", &check_cmd, Duration::from_secs(5))?;
 
             if !check_result.output.contains(service_name) {
                 if *is_required {
@@ -333,7 +335,7 @@ impl Step for EnableServices {
 
             // Enable the service
             let enable_cmd = ctx.enable_service_cmd(service_name, target);
-            let enable_result = console.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(10))?;
+            let enable_result = executor.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(10))?;
 
             if enable_result.success() {
                 result.add_check(&format!("{} enabled", service_name), CheckResult::pass("enabled"));
@@ -350,7 +352,7 @@ impl Step for EnableServices {
 
         // Enable serial console getty for testing using distro-specific command
         let serial_cmd = ctx.enable_serial_getty_cmd();
-        let serial_result = console.exec_chroot("/mnt", &serial_cmd, Duration::from_secs(10))?;
+        let serial_result = executor.exec_chroot("/mnt", &serial_cmd, Duration::from_secs(10))?;
 
         if serial_result.success() {
             result.add_check("serial getty enabled", CheckResult::pass("serial console configured"));
@@ -370,7 +372,7 @@ impl Step for EnableServices {
 
         // PRE-REBOOT VERIFICATION: Catch issues before rebooting saves debugging time
         // Verify kernel exists
-        let kernel_verify = console.exec("test -f /mnt/boot/vmlinuz", Duration::from_secs(5))?;
+        let kernel_verify = executor.exec("test -f /mnt/boot/vmlinuz", Duration::from_secs(5))?;
         cheat_ensure!(
             kernel_verify.success(),
             protects = "Kernel exists on ESP before reboot",
@@ -382,7 +384,7 @@ impl Step for EnableServices {
         result.add_check("Pre-reboot: kernel present", CheckResult::pass("/mnt/boot/vmlinuz exists"));
 
         // Verify initramfs exists
-        let initramfs_verify = console.exec("test -f /mnt/boot/initramfs.img", Duration::from_secs(5))?;
+        let initramfs_verify = executor.exec("test -f /mnt/boot/initramfs.img", Duration::from_secs(5))?;
         cheat_ensure!(
             initramfs_verify.success(),
             protects = "Initramfs exists on ESP before reboot",
@@ -394,7 +396,7 @@ impl Step for EnableServices {
         result.add_check("Pre-reboot: initramfs present", CheckResult::pass("/mnt/boot/initramfs.img exists"));
 
         // Verify root password is set (not locked)
-        let password_verify = console.exec(
+        let password_verify = executor.exec(
             "grep '^root:' /mnt/etc/shadow | grep -v ':!:' | grep -v ':\\*:'",
             Duration::from_secs(5),
         )?;
@@ -409,7 +411,7 @@ impl Step for EnableServices {
         result.add_check("Pre-reboot: root password set", CheckResult::pass("root has hash in /etc/shadow"));
 
         // Verify fstab has boot entry
-        let fstab_verify = console.exec(
+        let fstab_verify = executor.exec(
             "grep '/boot' /mnt/etc/fstab",
             Duration::from_secs(5),
         )?;
@@ -429,13 +431,13 @@ impl Step for EnableServices {
         let test_script = ctx.test_instrumentation_source();
         let script_name = format!("00-{}-test.sh", ctx.id());
         let script_path = format!("/mnt/etc/profile.d/{}", script_name);
-        console.write_file(&script_path, test_script)?;
-        console.exec_ok(&format!("chmod +x {}", script_path), Duration::from_secs(5))?;
+        executor.write_file(&script_path, test_script)?;
+        executor.exec_ok(&format!("chmod +x {}", script_path), Duration::from_secs(5))?;
         result.add_check("Test instrumentation installed", CheckResult::pass(format!("/etc/profile.d/{}", script_name)));
 
         // Unmount partitions (EFI first, then root)
-        let _ = console.exec("umount /mnt/boot", Duration::from_secs(5));
-        let _ = console.exec("umount /mnt", Duration::from_secs(5));
+        let _ = executor.exec("umount /mnt/boot", Duration::from_secs(5));
+        let _ = executor.exec("umount /mnt", Duration::from_secs(5));
 
         result.add_check("Partitions unmounted", CheckResult::pass("umount /mnt/boot and /mnt"));
 

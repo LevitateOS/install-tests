@@ -3,7 +3,7 @@
 //! Steps 7-10: Mount install media, run recstrap, generate fstab, verify chroot.
 //!
 //! Uses the LevitateOS installation tools:
-//! - recstrap (like pacstrap) - extracts squashfs to target
+//! - recstrap (like pacstrap) - extracts rootfs to target
 //! - recfstab (like genfstab) - generates fstab from mounts
 //! - recchroot (like arch-chroot) - runs commands in chroot
 //!
@@ -16,10 +16,10 @@
 
 use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
-use crate::qemu::Console;
+use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
-use distro_spec::levitate::{SQUASHFS_NAME, SQUASHFS_CDROM_PATH};
+use distro_spec::levitate::{ROOTFS_NAME, ROOTFS_CDROM_PATH};
 use std::time::{Duration, Instant};
 
 /// Step 7: Mount installation media (CDROM)
@@ -29,16 +29,16 @@ impl Step for MountInstallMedia {
     fn num(&self) -> usize { 7 }
     fn name(&self) -> &str { "Mount Installation Media" }
     fn ensures(&self) -> &str {
-        "Installation media (ISO) is mounted and squashfs is accessible"
+        "Installation media (ISO) is mounted and rootfs image is accessible"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // The init script mounts the ISO at /media/cdrom
         // Verify it's mounted by checking if the directory has content
-        let mount_check = console.exec("test -d /media/cdrom/live && echo MOUNTED", Duration::from_secs(5))?;
+        let mount_check = executor.exec("test -d /media/cdrom/live && echo MOUNTED", Duration::from_secs(5))?;
 
         // CHEAT GUARD: ISO MUST be mounted - can't proceed without installation media
         cheat_ensure!(
@@ -56,29 +56,29 @@ impl Step for MountInstallMedia {
 
         result.add_check("ISO mounted", CheckResult::pass("/media/cdrom/live exists"));
 
-        // Verify squashfs is accessible
-        let squashfs_check = console.exec(
-            &format!("ls -la {}", SQUASHFS_CDROM_PATH),
+        // Verify rootfs image is accessible
+        let rootfs_check = executor.exec(
+            &format!("ls -la {}", ROOTFS_CDROM_PATH),
             Duration::from_secs(5),
         )?;
 
-        // CHEAT GUARD: Squashfs MUST exist and be accessible
+        // CHEAT GUARD: Rootfs image MUST exist and be accessible
         cheat_ensure!(
-            squashfs_check.success() && squashfs_check.output.contains(SQUASHFS_NAME),
-            protects = "Squashfs image contains the base system",
+            rootfs_check.success() && rootfs_check.output.contains(ROOTFS_NAME),
+            protects = "Rootfs image contains the base system",
             severity = "CRITICAL",
             cheats = [
                 "Skip file existence check",
-                "Accept any file as squashfs",
+                "Accept any file as rootfs",
                 "Hardcode path without verification"
             ],
             consequence = "No base system to install, extraction fails, user stuck",
-            "Squashfs not found at {}. ISO must contain live/{}", SQUASHFS_CDROM_PATH, SQUASHFS_NAME
+            "Rootfs not found at {}. ISO must contain live/{}", ROOTFS_CDROM_PATH, ROOTFS_NAME
         );
 
-        // Show squashfs size as evidence
-        let size_info = squashfs_check.output.lines().next().unwrap_or("found");
-        result.add_check("Squashfs accessible", CheckResult::pass(size_info.trim()));
+        // Show rootfs size as evidence
+        let size_info = rootfs_check.output.lines().next().unwrap_or("found");
+        result.add_check("Rootfs accessible", CheckResult::pass(size_info.trim()));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -87,23 +87,23 @@ impl Step for MountInstallMedia {
 
 /// Step 8: Extract base system using recstrap
 ///
-/// recstrap is like pacstrap for Arch - extracts the squashfs to target.
+/// recstrap is like pacstrap for Arch - extracts the rootfs image to target.
 /// User does partitioning/formatting/mounting manually before this step.
-pub struct ExtractSquashfs;
+pub struct ExtractRootfs;
 
-impl Step for ExtractSquashfs {
+impl Step for ExtractRootfs {
     fn num(&self) -> usize { 8 }
     fn name(&self) -> &str { "Extract Base System (recstrap)" }
     fn ensures(&self) -> &str {
         "Base system is extracted with all essential directories present"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check recstrap is available
-        let recstrap_check = console.exec(
+        let recstrap_check = executor.exec(
             "which recstrap",
             Duration::from_secs(5),
         )?;
@@ -115,7 +115,7 @@ impl Step for ExtractSquashfs {
             severity = "CRITICAL",
             cheats = [
                 "Skip recstrap check",
-                "Use unsquashfs directly",
+                "Bypass recstrap with manual extraction",
                 "Hardcode extraction command"
             ],
             consequence = "No installer available, cannot extract system",
@@ -125,9 +125,9 @@ impl Step for ExtractSquashfs {
         result.add_check("recstrap available", CheckResult::pass(recstrap_check.output.trim()));
 
         // Run recstrap to extract base system
-        // recstrap handles squashfs location automatically (/media/cdrom/live/filesystem.squashfs)
+        // recstrap handles rootfs location automatically (/media/cdrom/live/filesystem.erofs)
         // Use --force because the freshly formatted ext4 contains lost+found
-        let extract = console.exec(
+        let extract = executor.exec(
             "recstrap --force /mnt",
             Duration::from_secs(300), // 5 minutes for extraction
         )?;
@@ -149,7 +149,7 @@ impl Step for ExtractSquashfs {
         result.add_check("recstrap completed", CheckResult::pass("exit 0"));
 
         // Verify essential directories exist
-        let verify = console.exec(
+        let verify = executor.exec(
             "ls /mnt/bin /mnt/usr /mnt/etc 2>/dev/null && echo VERIFY_OK",
             Duration::from_secs(5),
         )?;
@@ -187,12 +187,12 @@ impl Step for GenerateFstab {
         "System has valid /etc/fstab with correct UUIDs for automatic mounting"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check recfstab is available
-        let recfstab_check = console.exec(
+        let recfstab_check = executor.exec(
             "which recfstab",
             Duration::from_secs(5),
         )?;
@@ -215,7 +215,7 @@ impl Step for GenerateFstab {
 
         // Generate fstab using recfstab
         // recfstab reads mounted filesystems under /mnt and outputs fstab entries
-        let fstab_result = console.exec(
+        let fstab_result = executor.exec(
             "recfstab /mnt >> /mnt/etc/fstab",
             Duration::from_secs(10),
         )?;
@@ -237,7 +237,7 @@ impl Step for GenerateFstab {
         result.add_check("recfstab completed", CheckResult::pass("exit 0"));
 
         // Verify fstab contains UUIDs
-        let verify = console.exec("cat /mnt/etc/fstab", Duration::from_secs(5))?;
+        let verify = executor.exec("cat /mnt/etc/fstab", Duration::from_secs(5))?;
 
         // CHEAT GUARD: fstab MUST contain UUID entries
         cheat_ensure!(
@@ -277,12 +277,12 @@ impl Step for VerifyChroot {
         "recchroot can execute commands in the installed system"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check recchroot is available
-        let recchroot_check = console.exec(
+        let recchroot_check = executor.exec(
             "which recchroot",
             Duration::from_secs(5),
         )?;
@@ -304,7 +304,7 @@ impl Step for VerifyChroot {
         result.add_check("recchroot available", CheckResult::pass(recchroot_check.output.trim()));
 
         // Verify recchroot can execute commands
-        let verify = console.exec_chroot("/mnt", "echo CHROOT_OK", Duration::from_secs(10))?;
+        let verify = executor.exec_chroot("/mnt", "echo CHROOT_OK", Duration::from_secs(10))?;
 
         // CHEAT GUARD: recchroot MUST actually work
         cheat_ensure!(

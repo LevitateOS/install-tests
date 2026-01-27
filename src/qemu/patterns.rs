@@ -6,9 +6,6 @@
 /// Fatal error patterns that should cause immediate failure.
 /// When ANY of these appear in output, stop waiting and return failure.
 pub const FATAL_ERROR_PATTERNS: &[&str] = &[
-    "dracut[F]:",           // dracut fatal error
-    "dracut[E]: FAILED:",   // dracut install failed
-    "dracut-install: ERROR:", // dracut-install binary failed
     "FATAL:",               // Generic fatal
     "Kernel panic",         // Kernel panic
     "not syncing",          // Kernel panic continuation
@@ -44,7 +41,8 @@ pub const CRITICAL_BOOT_ERRORS: &[&str] = &[
     "Attempted to kill init",       // init crashed
     "can't find /init",             // initramfs broken
     "No root device",               // Root device missing
-    "SQUASHFS error",               // Squashfs corruption
+    "SQUASHFS error",               // Squashfs corruption (legacy)
+    "EROFS:",                       // EROFS filesystem error
 
     // === INIT STAGE (critical) ===
     "emergency shell",              // Dropped to emergency
@@ -83,6 +81,7 @@ pub const BOOT_ERROR_PATTERNS: &[&str] = &[
     "can't find /init",
     "No root device",
     "SQUASHFS error",
+    "EROFS:",                       // EROFS filesystem error
     "emergency shell",
     "Emergency shell",
     "emergency.target",

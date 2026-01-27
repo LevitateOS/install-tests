@@ -1,7 +1,7 @@
 //! boot-test - Isolated test for systemd-boot with kernel on ESP
 //!
 //! Tests ONLY: "If kernel is on ESP, does systemd-boot work?"
-//! Creates minimal bootable disk without full squashfs extraction.
+//! Creates minimal bootable disk without full rootfs extraction.
 //!
 //! This is a hypothesis test. If the kernel STARTS loading, the hypothesis
 //! is confirmed: systemd-boot can only read from FAT partitions.
@@ -143,8 +143,8 @@ fn main() -> Result<()> {
     console.exec_ok("mkdir -p /mnt/boot/EFI/systemd", Duration::from_secs(5))?;
     console.exec_ok("mkdir -p /mnt/boot/loader/entries", Duration::from_secs(5))?;
 
-    // Copy systemd-boot EFI binary from squashfs
-    // The squashfs contains /usr/lib/systemd/boot/efi/systemd-bootx64.efi
+    // Copy systemd-boot EFI binary from rootfs
+    // The rootfs (EROFS) contains /usr/lib/systemd/boot/efi/systemd-bootx64.efi
     console.exec_ok("cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /mnt/boot/EFI/BOOT/BOOTX64.EFI", Duration::from_secs(10))?;
     console.exec_ok("cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /mnt/boot/EFI/systemd/systemd-bootx64.efi", Duration::from_secs(10))?;
 

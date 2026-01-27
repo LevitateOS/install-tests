@@ -9,7 +9,7 @@
 
 use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
-use crate::qemu::Console;
+use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
@@ -24,15 +24,15 @@ impl Step for SetTimezone {
         "System timezone is configured for correct local time display"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Default to UTC for testing (can be parameterized later)
         let timezone = "UTC";
 
-        // OPTIMIZATION: Check if timezone is already set correctly (squashfs default)
-        let check = console.exec_chroot(
+        // OPTIMIZATION: Check if timezone is already set correctly (rootfs default)
+        let check = executor.exec_chroot(
             "/mnt",
             "readlink /etc/localtime",
             Duration::from_secs(5),
@@ -48,7 +48,7 @@ impl Step for SetTimezone {
                 timezone
             );
 
-            let tz_result = console.exec_chroot("/mnt", &cmd, Duration::from_secs(5))?;
+            let tz_result = executor.exec_chroot("/mnt", &cmd, Duration::from_secs(5))?;
 
             if tz_result.success() {
                 result.add_check("Timezone symlink created", CheckResult::pass(format!("/etc/localtime → {}", timezone)));
@@ -78,25 +78,25 @@ impl Step for ConfigureLocale {
         "System locale is set for proper character encoding and language"
     }
 
-    fn execute(&self, console: &mut Console, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
         // Use en_US.UTF-8 as default
         let locale = "en_US.UTF-8";
 
-        // OPTIMIZATION: Check if locale is already set correctly (squashfs default)
-        let check = console.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
+        // OPTIMIZATION: Check if locale is already set correctly (rootfs default)
+        let check = executor.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
 
         if check.success() && check.output.contains(locale) {
             // Already correct, skip the write
             result.add_check("locale.conf already correct (skipped)", CheckResult::pass(format!("LANG={}", locale)));
         } else {
             // Write locale.conf
-            console.write_file("/mnt/etc/locale.conf", &format!("LANG={}\n", locale))?;
+            executor.write_file("/mnt/etc/locale.conf", &format!("LANG={}\n", locale))?;
 
             // Verify
-            let verify = console.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
+            let verify = executor.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
 
             if verify.output.contains(locale) {
                 result.add_check("locale.conf written", CheckResult::pass(format!("LANG={}", locale)));
@@ -126,7 +126,7 @@ impl Step for SetHostname {
         "System has a hostname configured for network identification"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -134,7 +134,7 @@ impl Step for SetHostname {
         let hostname = ctx.default_hostname();
 
         // Write hostname
-        console.write_file("/mnt/etc/hostname", &format!("{}\n", hostname))?;
+        executor.write_file("/mnt/etc/hostname", &format!("{}\n", hostname))?;
 
         // Write hosts file
         let hosts = format!(
@@ -144,11 +144,11 @@ impl Step for SetHostname {
 ",
             hostname, hostname
         );
-        console.write_file("/mnt/etc/hosts", &hosts)?;
+        executor.write_file("/mnt/etc/hosts", &hosts)?;
 
         // Verify (use contains since output may include command echo)
-        let verify_hostname = console.exec("cat /mnt/etc/hostname", Duration::from_secs(5))?;
-        let verify_hosts = console.exec("cat /mnt/etc/hosts", Duration::from_secs(5))?;
+        let verify_hostname = executor.exec("cat /mnt/etc/hostname", Duration::from_secs(5))?;
+        let verify_hosts = executor.exec("cat /mnt/etc/hosts", Duration::from_secs(5))?;
 
         // Check if hostname appears as a separate line in output
         let hostname_found = verify_hostname.output
@@ -186,7 +186,7 @@ impl Step for SetRootPassword {
         "Root account has a password for emergency system recovery"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -194,7 +194,7 @@ impl Step for SetRootPassword {
         // NOTE: This requires unix_chkpwd in /usr/sbin (added to AUTH_SBIN in definitions.rs)
         let password_cmd = format!("echo 'root:{}' | chpasswd", ctx.default_password());
 
-        let passwd_result = console.exec_chroot("/mnt", &password_cmd, Duration::from_secs(10))?;
+        let passwd_result = executor.exec_chroot("/mnt", &password_cmd, Duration::from_secs(10))?;
 
         // CHEAT GUARD: Root password MUST be set for emergency access
         cheat_ensure!(
@@ -211,7 +211,7 @@ impl Step for SetRootPassword {
         );
 
         // Verify password was actually set (not still locked with ! or *)
-        let verify = console.exec(
+        let verify = executor.exec(
             "grep '^root:' /mnt/etc/shadow | grep -v ':!:' | grep -v ':\\*:'",
             Duration::from_secs(5),
         )?;
@@ -226,7 +226,7 @@ impl Step for SetRootPassword {
                 "Accept locked account as success"
             ],
             consequence = "Root account appears locked (! or *), login will fail",
-            "Password not set in /etc/shadow - account still locked. Is unix_chkpwd in the squashfs?"
+            "Password not set in /etc/shadow - account still locked. Is unix_chkpwd in the rootfs?"
         );
 
         result.add_check("Root password set", CheckResult::pass("root has password hash in /etc/shadow"));
@@ -246,7 +246,7 @@ impl Step for CreateUser {
         "Primary user account exists with proper groups for daily use"
     }
 
-    fn execute(&self, console: &mut Console, ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
@@ -260,7 +260,7 @@ impl Step for CreateUser {
         // First, check which groups actually exist in the target system
         let mut available_groups = Vec::new();
         for group in default_groups {
-            let check = console.exec_chroot(
+            let check = executor.exec_chroot(
                 "/mnt",
                 &format!("getent group {}", group),
                 Duration::from_secs(5),
@@ -279,7 +279,7 @@ impl Step for CreateUser {
         };
 
         // Create user with home directory
-        let useradd_result = console.exec_chroot(
+        let useradd_result = executor.exec_chroot(
             "/mnt",
             &useradd_cmd,
             Duration::from_secs(10),
@@ -302,7 +302,7 @@ impl Step for CreateUser {
         result.add_check("User created", CheckResult::pass(format!("user '{}' with groups: {}", username, groups_str)));
 
         // Set user password (same as root password for testing)
-        let passwd_result = console.exec_chroot(
+        let passwd_result = executor.exec_chroot(
             "/mnt",
             &format!("echo '{}:{}' | chpasswd", username, ctx.default_password()),
             Duration::from_secs(10),
@@ -325,7 +325,7 @@ impl Step for CreateUser {
         result.add_check("User password set", CheckResult::pass(format!("'{}' has password hash", username)));
 
         // Verify user exists
-        let verify = console.exec_chroot(
+        let verify = executor.exec_chroot(
             "/mnt",
             &format!("id {}", username),
             Duration::from_secs(5),

@@ -83,6 +83,7 @@ impl DistroContext for AcornContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
+            "EROFS:",                 // EROFS filesystem error
             // === OPENRC INIT STAGE ===
             "ERROR: cannot start",
             "ERROR: ",
@@ -118,6 +119,7 @@ impl DistroContext for AcornContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
+            "EROFS:",                 // EROFS filesystem error
             // === GENERAL ===
             "fatal error",
             "Segmentation fault",
