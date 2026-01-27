@@ -16,14 +16,6 @@ path = "src/bin/serial.rs"
 name = "qmp"
 path = "src/bin/qmp.rs"
 
-[[bin]]
-name = "boot-test"
-path = "src/bin/boot-test.rs"
-
-[[bin]]
-name = "initramfs-debug"
-path = "src/bin/initramfs-debug.rs"
-
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
@@ -32,4 +24,6 @@ serde_json = "1.0"
 colored = "2.0"
 distro-spec = { path = "../../distro-spec" }
 leviso-cheat-guard = { path = "../cheat-guard" }
+recqemu = { path = "../../tools/recqemu" }
+fsdbg = { path = "../fsdbg" }
 libc = "0.2"
