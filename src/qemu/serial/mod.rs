@@ -1,30 +1,21 @@
 //! Serial console backend for QEMU tests.
 //!
-//! This module provides serial I/O for command execution with exit code capture.
+//! This module provides the Executor trait implementation for serial Console.
+//! The actual serial I/O is provided by recqemu::Console.
 //!
-//! # STOP. READ. THEN ACT.
+//! # Re-exports from recqemu
 //!
-//! This module already has:
 //! - `Console` - Serial I/O with command execution and exit code capture
-//! - `exec()` / `exec_ok()` - Run commands with exit code capture
-//! - `exec_chroot()` - Run commands in chroot via recchroot
-//! - `wait_for_boot()` - Wait for systemd startup
-//! - `write_file()` - Write files via serial console
-//! - `login()` - Authentication subsystem (login, shell markers)
+//! - `CommandResult` - Result of command execution
+//! - `generate_command_markers`, `is_marker_line` - Marker utilities
 //!
-//! Read all methods before adding new ones. Don't duplicate functionality.
+//! # Extensions
+//!
+//! - `impl Executor for Console` - Adapts Console to the test Executor trait
+//! - `SerialExecutorExt` - Context-aware methods for multi-distro support
 
-mod ansi;
-mod auth;
-mod boot;
-mod chroot;
-mod console;
-mod exec;
-mod sync;
-mod utils;
-
-pub use console::{CommandResult, Console};
-pub use sync::{generate_command_markers, is_marker_line};
+// Re-export from recqemu
+pub use recqemu::serial::{generate_command_markers, is_marker_line, CommandResult, Console};
 
 use crate::distro::DistroContext;
 use crate::executor::{ExecResult, Executor};
@@ -103,7 +94,13 @@ impl SerialExecutorExt for Console {
         stall_timeout: Duration,
         ctx: &dyn DistroContext,
     ) -> Result<()> {
-        Console::wait_for_live_boot_with_context(self, stall_timeout, ctx)
+        Console::wait_for_boot_with_patterns(
+            self,
+            stall_timeout,
+            ctx.live_boot_success_patterns(),
+            ctx.boot_error_patterns(),
+            false, // Don't track service failures, fail immediately
+        )
     }
 
     fn wait_for_installed_boot_with_context(
@@ -111,6 +108,12 @@ impl SerialExecutorExt for Console {
         stall_timeout: Duration,
         ctx: &dyn DistroContext,
     ) -> Result<()> {
-        Console::wait_for_installed_boot_with_context(self, stall_timeout, ctx)
+        Console::wait_for_boot_with_patterns(
+            self,
+            stall_timeout,
+            ctx.installed_boot_success_patterns(),
+            ctx.critical_boot_errors(),
+            true, // Track service failures for later diagnostic capture
+        )
     }
 }

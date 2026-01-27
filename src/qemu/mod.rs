@@ -2,17 +2,15 @@
 //!
 //! Provides builders and console control for running installation steps in QEMU.
 //!
-//! # STOP. READ. THEN ACT.
+//! # Architecture
 //!
-//! This module already has:
-//! - `Console` - Serial I/O with command execution and exit code capture
-//! - `QemuBuilder` - QEMU command line builder
-//! - `find_ovmf()` - OVMF firmware discovery
-//! - `create_disk()` - Virtual disk creation
-//! - `serial` module - Serial console backend with auth, boot, exec
-//! - `qmp` module - QMP backend for visual testing (keystrokes, screenshots)
+//! This module re-exports from `recqemu` and adds test-specific extensions:
 //!
-//! Read `serial/mod.rs`, `qmp/mod.rs`, and `builder.rs` before adding anything.
+//! - `QemuBuilder` - Local builder with anti-cheat protections
+//! - `Console` - Re-export from recqemu (serial I/O)
+//! - `patterns` - Re-export from recqemu (boot/error patterns)
+//! - `qmp` - Local QMP backend for visual testing
+//! - `serial` - Executor trait adapter for Console
 
 mod builder;
 pub mod patterns;
