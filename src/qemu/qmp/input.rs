@@ -81,21 +81,6 @@ pub fn send_text(client: &mut QmpClient, text: &str) -> Result<()> {
     client.send_text(text)
 }
 
-/// Send Ctrl+C to interrupt current process.
-pub fn send_ctrl_c(client: &mut QmpClient) -> Result<()> {
-    client.send_keys(&["ctrl", "c"])
-}
-
-/// Send Ctrl+D to signal EOF.
-pub fn send_ctrl_d(client: &mut QmpClient) -> Result<()> {
-    client.send_keys(&["ctrl", "d"])
-}
-
-/// Send Alt+F2 to switch to second virtual console.
-pub fn send_alt_f2(client: &mut QmpClient) -> Result<()> {
-    client.send_keys(&["alt", "f2"])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

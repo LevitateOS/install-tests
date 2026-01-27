@@ -20,25 +20,30 @@ pub struct QmpClient {
 }
 
 /// QMP greeting message sent by QEMU on connection.
+/// Fields are read by serde during deserialization.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QmpGreeting {
     #[serde(rename = "QMP")]
     qmp: QmpVersion,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QmpVersion {
     version: QmpVersionInfo,
     capabilities: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QmpVersionInfo {
     qemu: QemuVersion,
     package: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QemuVersion {
     micro: u32,
     minor: u32,
@@ -46,7 +51,9 @@ struct QemuVersion {
 }
 
 /// QMP response structure.
+/// Fields are read by serde during deserialization.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QmpResponse {
     #[serde(rename = "return")]
     return_value: Option<Value>,
@@ -54,6 +61,7 @@ struct QmpResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QmpError {
     class: String,
     desc: String,

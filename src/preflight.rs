@@ -15,7 +15,7 @@
 //!
 //! If preflight fails, we know the ISO is broken WITHOUT waiting for QEMU.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use colored::Colorize;
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
