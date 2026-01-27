@@ -14,6 +14,22 @@ use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
+/// Escape a string for use in single-quoted shell context.
+/// Handles single quotes by ending the quote, adding escaped quote, and resuming.
+/// Example: "it's" -> "it'\''s" (in shell: 'it'\''s' = it's)
+fn shell_escape(s: &str) -> String {
+    s.replace('\'', "'\\''")
+}
+
+/// Escape a string for use in sed replacement pattern.
+/// SHA-512 hashes contain base64 chars (A-Za-z0-9./) plus $ delimiters.
+/// We use | as the sed delimiter, so we only need to escape $ and backslashes.
+fn escape_for_sed(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('$', "\\$")
+        .replace('&', "\\&")  // & has special meaning in sed replacement
+}
+
 /// Step 10: Set timezone
 pub struct SetTimezone;
 
@@ -190,24 +206,68 @@ impl Step for SetRootPassword {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // Use chpasswd in chroot (non-interactive)
-        // NOTE: This requires unix_chkpwd in /usr/sbin (added to AUTH_SBIN in definitions.rs)
-        let password_cmd = format!("echo 'root:{}' | chpasswd", ctx.default_password());
+        // WORKAROUND: chpasswd via PAM silently fails in chroot environments.
+        // Instead, generate hash with openssl and edit /etc/shadow directly.
+        // This was documented in KNOWLEDGE_install-test-debugging.md (W2) and
+        // is now codified in the build system.
+        //
+        // See: https://github.com/systemd/systemd/issues/9197
+        let password = ctx.default_password();
 
-        let passwd_result = executor.exec_chroot("/mnt", &password_cmd, Duration::from_secs(10))?;
+        // Generate SHA-512 password hash using openssl (available on all systems)
+        // The -6 option uses SHA-512 (same as yescrypt in terms of security)
+        // Use -stdin to avoid shell escaping issues with special characters in password
+        let hash_cmd = format!("printf '%s' '{}' | openssl passwd -6 -stdin", shell_escape(password));
+        let hash_result = executor.exec(&hash_cmd, Duration::from_secs(10))?;
 
-        // CHEAT GUARD: Root password MUST be set for emergency access
         cheat_ensure!(
-            passwd_result.success(),
-            protects = "Root account has password for emergency recovery",
+            hash_result.success(),
+            protects = "Password hash can be generated",
             severity = "CRITICAL",
             cheats = [
-                "Skip password setting",
-                "Accept failure silently",
-                "Leave root with empty password"
+                "Skip password hashing",
+                "Use empty hash",
+                "Hardcode a known hash"
             ],
-            consequence = "No root password = locked out of system recovery, or security vulnerability",
-            "chpasswd failed (exit {}): {}", passwd_result.exit_code, passwd_result.output
+            consequence = "No valid password hash = no login possible",
+            "openssl passwd failed (exit {}): {}", hash_result.exit_code, hash_result.output
+        );
+
+        let hash = hash_result.output.trim();
+
+        // Verify hash format (SHA-512 hashes start with $6$)
+        cheat_ensure!(
+            hash.starts_with("$6$"),
+            protects = "Password hash is valid SHA-512 format",
+            severity = "CRITICAL",
+            cheats = [
+                "Accept any string as hash",
+                "Skip format validation"
+            ],
+            consequence = "Invalid hash format = login will fail",
+            "Invalid hash format: expected $6$..., got: {}", hash
+        );
+
+        // Edit /etc/shadow directly using sed to replace root's password field
+        // The shadow format is: username:password:lastchanged:min:max:warn:inactive:expire:reserved
+        // We replace the second field (password) with our hash
+        // SHA-512 hashes contain only base64 chars (A-Za-z0-9./) plus $ delimiters
+        let sed_cmd = format!(
+            "sed -i 's|^root:[^:]*:|root:{}:|' /mnt/etc/shadow",
+            escape_for_sed(hash)
+        );
+        let sed_result = executor.exec(&sed_cmd, Duration::from_secs(5))?;
+
+        cheat_ensure!(
+            sed_result.success(),
+            protects = "Shadow file can be modified",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip shadow modification",
+                "Accept sed failure"
+            ],
+            consequence = "Password not written = no login possible",
+            "sed failed (exit {}): {}", sed_result.exit_code, sed_result.output
         );
 
         // Verify password was actually set (not still locked with ! or *)
@@ -226,10 +286,10 @@ impl Step for SetRootPassword {
                 "Accept locked account as success"
             ],
             consequence = "Root account appears locked (! or *), login will fail",
-            "Password not set in /etc/shadow - account still locked. Is unix_chkpwd in the rootfs?"
+            "Password not set in /etc/shadow - account still locked"
         );
 
-        result.add_check("Root password set", CheckResult::pass("root has password hash in /etc/shadow"));
+        result.add_check("Root password set", CheckResult::pass("root has SHA-512 hash in /etc/shadow"));
 
         result.duration = start.elapsed();
         Ok(result)
@@ -301,28 +361,53 @@ impl Step for CreateUser {
 
         result.add_check("User created", CheckResult::pass(format!("user '{}' with groups: {}", username, groups_str)));
 
-        // Set user password (same as root password for testing)
-        let passwd_result = executor.exec_chroot(
-            "/mnt",
-            &format!("echo '{}:{}' | chpasswd", username, ctx.default_password()),
-            Duration::from_secs(10),
-        )?;
+        // Set user password using direct shadow manipulation (same workaround as root password)
+        // chpasswd via PAM silently fails in chroot environments
+        let password = ctx.default_password();
+
+        // Generate SHA-512 password hash using stdin to avoid shell escaping issues
+        let hash_cmd = format!("printf '%s' '{}' | openssl passwd -6 -stdin", shell_escape(password));
+        let hash_result = executor.exec(&hash_cmd, Duration::from_secs(10))?;
+
+        cheat_ensure!(
+            hash_result.success() && hash_result.output.trim().starts_with("$6$"),
+            protects = "User password hash can be generated",
+            severity = "CRITICAL",
+            cheats = [
+                "Skip password hashing",
+                "Use invalid hash format"
+            ],
+            consequence = "No valid password hash = user cannot login",
+            "openssl passwd failed for user '{}' (exit {}): {}", username, hash_result.exit_code, hash_result.output
+        );
+
+        let hash = hash_result.output.trim();
+
+        // Edit /etc/shadow to set user's password
+        // Username is from distro context (safe), hash is base64 + $ (safe with proper escaping)
+        let sed_cmd = format!(
+            "sed -i 's|^{}:[^:]*:|{}:{}:|' /mnt/etc/shadow",
+            username,
+            username,
+            escape_for_sed(hash)
+        );
+        let sed_result = executor.exec(&sed_cmd, Duration::from_secs(5))?;
 
         // CHEAT GUARD: User password MUST be set
         cheat_ensure!(
-            passwd_result.success(),
+            sed_result.success(),
             protects = "User account has password for authentication",
             severity = "CRITICAL",
             cheats = [
                 "Skip password setting",
-                "Accept chpasswd failure",
+                "Accept sed failure",
                 "Leave user with empty password"
             ],
             consequence = "User cannot login, or security vulnerability with empty password",
-            "Failed to set password for '{}' (exit {})", username, passwd_result.exit_code
+            "Failed to set password for '{}' (exit {}): {}", username, sed_result.exit_code, sed_result.output
         );
 
-        result.add_check("User password set", CheckResult::pass(format!("'{}' has password hash", username)));
+        result.add_check("User password set", CheckResult::pass(format!("'{}' has SHA-512 hash", username)));
 
         // Verify user exists
         let verify = executor.exec_chroot(

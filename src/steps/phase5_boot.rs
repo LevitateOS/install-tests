@@ -232,7 +232,7 @@ impl Step for InstallBootloader {
         boot_entry.options = format!(
             "root=UUID={} rw console=tty0 console=ttyS0,115200n8 rd.info rd.debug systemd.log_level=debug",
             root_uuid
-        );
+        ).into();
         let entry_path = boot_entry.entry_path(); // /boot/loader/entries/X.conf
         executor.write_file(&format!("/mnt{}", entry_path), &boot_entry.to_entry_file())?;
 
