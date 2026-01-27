@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use install_tests::{
     acquire_test_lock, all_steps, context_for_distro, create_disk, find_ovmf, find_ovmf_vars,
-    kill_stale_qemu_processes, steps_for_phase, DistroContext, Executor, QemuBuilder,
-    AVAILABLE_DISTROS,
+    kill_stale_qemu_processes, require_preflight, steps_for_phase, DistroContext, Executor,
+    QemuBuilder, AVAILABLE_DISTROS,
 };
 use install_tests::qemu::qmp::QmpClient;
 
@@ -308,6 +308,10 @@ fn run_tests_qmp(
             ctx.name()
         );
     }
+
+    // Run preflight verification to catch artifact issues BEFORE starting QEMU
+    let iso_dir = iso_path.parent().unwrap_or(std::path::Path::new("."));
+    require_preflight(iso_dir)?;
 
     // Find OVMF for UEFI boot
     let ovmf =
