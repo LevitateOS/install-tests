@@ -21,7 +21,7 @@ When a test fails, increasing the timeout says:
 - "I'm too lazy to investigate"
 - "Maybe if I wait longer, the universe will fix it for me"
 
-**The error message tells you exactly what's wrong.** `dracut[F]: missing dependency` doesn't need more time. It needs the dependency.
+**The error message tells you exactly what's wrong.** A missing dependency doesn't need more time - it needs the dependency.
 
 Increasing timeouts:
 1. Wastes even MORE of the developer's time on subsequent runs
@@ -41,15 +41,14 @@ A developer's time is not free. Every minute spent waiting for a timeout that wi
 
 ### 1. Fail Immediately on Error Patterns
 
-When we see `dracut[F]:`, `Kernel panic`, `Segmentation fault` - **stop immediately**. Don't wait. Don't hope. Return failure NOW.
+When we see `Kernel panic`, `Segmentation fault`, `FATAL:` - **stop immediately**. Don't wait. Don't hope. Return failure NOW.
 
 ```rust
 const FATAL_ERROR_PATTERNS: &[&str] = &[
-    "dracut[F]:",
-    "dracut[E]: FAILED:",
-    "dracut-install: ERROR:",
+    "FATAL:",
     "Kernel panic",
     "Segmentation fault",
+    "core dumped",
     // etc.
 ];
 ```
