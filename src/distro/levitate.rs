@@ -211,26 +211,25 @@ impl DistroContext for LevitateContext {
         // Use relative path that works from workspace root
         // The test framework joins with current_dir() for relative paths
         //
-        // Paths tried:
-        // - leviso/output/levitateos.iso (from workspace root)
-        // - ../../leviso/output/levitateos.iso (from testing/install-tests)
-        // - ../output/levitateos.iso (from leviso/)
+        // ISO filename comes from distro-spec constant: levitateos-x86_64.iso
+        use distro_spec::levitate::ISO_FILENAME;
+
         let candidates = [
-            "leviso/output/levitateos.iso",
-            "../../leviso/output/levitateos.iso",
-            "../output/levitateos.iso",
-            "output/levitateos.iso",
+            format!("leviso/output/{}", ISO_FILENAME),
+            format!("../../leviso/output/{}", ISO_FILENAME),
+            format!("../output/{}", ISO_FILENAME),
+            format!("output/{}", ISO_FILENAME),
         ];
 
         for candidate in candidates {
-            let path = PathBuf::from(candidate);
+            let path = PathBuf::from(&candidate);
             if path.exists() {
                 return path;
             }
         }
 
         // Default fallback
-        PathBuf::from("leviso/output/levitateos.iso")
+        PathBuf::from(format!("leviso/output/{}", ISO_FILENAME))
     }
 
     fn chroot_shell(&self) -> &str {
@@ -246,7 +245,7 @@ impl DistroContext for LevitateContext {
     }
 
     fn test_instrumentation_source(&self) -> &str {
-        include_str!("../../../../leviso/profile/live-overlay/etc/profile.d/00-levitate-test.sh")
+        include_str!("../../../../distro-spec/src/shared/auth/files/00-levitate-test.sh")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
