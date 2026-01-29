@@ -181,6 +181,17 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
             };
             fsdbg::checklist::iso::verify(&reader)
         }
+        ChecklistType::AuthAudit | ChecklistType::Qcow2 => {
+            // These checklist types are not used in preflight verification
+            return Ok(PreflightCheck {
+                name: name.to_string(),
+                passed: true,
+                total_checks: 0,
+                passed_checks: 0,
+                failures: 0,
+                details: vec![format!("Checklist type {} not applicable for preflight", name)],
+            });
+        }
     };
 
     let check = PreflightCheck::from_report(name, &report);
