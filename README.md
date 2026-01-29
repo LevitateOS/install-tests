@@ -51,7 +51,7 @@ cargo run --bin boot-test
 --step <N>              Run only step N (1-24)
 --phase <N>             Run only phase N (1-6)
 --leviso-dir <PATH>     Path to leviso directory (default: ../leviso)
---iso <PATH>            Path to ISO file (default: <leviso_dir>/output/levitateos.iso)
+--iso <PATH>            Path to ISO file (default: <leviso_dir>/output/levitateos-x86_64.iso)
 --disk-size <SIZE>      Virtual disk size (default: 8G)
 --keep-vm               Keep VM running after tests (for debugging)
 ```
@@ -61,7 +61,7 @@ cargo run --bin boot-test
 - QEMU with KVM support
 - OVMF (UEFI firmware)
 - OVMF_VARS (writable EFI variable storage)
-- Built LevitateOS ISO (`leviso/output/levitateos.iso`)
+- Built LevitateOS ISO (`leviso/output/levitateos-x86_64.iso`)
 - Built initramfs (`leviso/output/initramfs-tiny.cpio.gz`)
 - Built kernel (`leviso/output/iso-root/boot/vmlinuz`)
 

@@ -121,7 +121,8 @@ pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
     }
 
     // Check ISO with full content verification
-    let iso_path = iso_dir.join("levitateos.iso");
+    use distro_spec::levitate::ISO_FILENAME;
+    let iso_path = iso_dir.join(ISO_FILENAME);
     if iso_path.exists() {
         result.iso = Some(verify_artifact(&iso_path, ChecklistType::Iso)?);
         if !result.iso.as_ref().unwrap().passed {
