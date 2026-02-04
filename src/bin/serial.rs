@@ -198,7 +198,12 @@ fn print_checks(checks: &[(String, CheckResult)]) {
     for (check_name, check_result) in checks {
         match check_result {
             CheckResult::Pass { evidence } => {
-                println!("    {} {}: {}", "[PASS]".green(), check_name, evidence.green());
+                println!(
+                    "    {} {}: {}",
+                    "[PASS]".green(),
+                    check_name,
+                    evidence.green()
+                );
             }
             CheckResult::Fail { expected, actual } => {
                 println!("    {} {}", "[FAIL]".red(), check_name);
@@ -221,12 +226,7 @@ fn run_single_step(
     console: &mut Console,
     ctx: &dyn DistroContext,
 ) -> Result<(StepResult, bool)> {
-    print!(
-        "{} Step {:2}: {}... ",
-        ">>".cyan(),
-        step.num(),
-        step.name()
-    );
+    print!("{} Step {:2}: {}... ", ">>".cyan(), step.num(), step.name());
 
     let start = Instant::now();
     match step.execute(console, ctx) {
@@ -243,11 +243,7 @@ fn run_single_step(
                     if result.has_warnings {
                         notes.push(format!("{} warnings", result.warning_count()));
                     }
-                    status = format!(
-                        "{} ({})",
-                        "PASS".green().bold(),
-                        notes.join(", ").yellow()
-                    );
+                    status = format!("{} ({})", "PASS".green().bold(), notes.join(", ").yellow());
                 }
                 println!("{} ({:.1}s)", status, duration.as_secs_f64());
 
@@ -338,8 +334,7 @@ fn run_tests(
     require_preflight(iso_dir)?;
 
     // Find OVMF for UEFI boot
-    let ovmf =
-        find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
+    let ovmf = find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
     println!("  OVMF:      {}", ovmf.display());
 
     // Find OVMF_VARS template and copy to temp location (needs to be writable)
@@ -470,10 +465,7 @@ fn run_tests(
     if needs_post_reboot && all_passed {
         println!();
         println!("{}", "=".repeat(60));
-        println!(
-            "{}",
-            "VERIFICATION PHASE (Installed System)".cyan().bold()
-        );
+        println!("{}", "VERIFICATION PHASE (Installed System)".cyan().bold());
         println!("{}", "=".repeat(60));
         println!();
 
@@ -490,10 +482,7 @@ fn run_tests(
             .no_reboot()
             .build_piped();
 
-        println!(
-            "{}",
-            "Starting QEMU (booting installed system)...".cyan()
-        );
+        println!("{}", "Starting QEMU (booting installed system)...".cyan());
         let mut child = cmd
             .spawn()
             .context("Failed to spawn QEMU for installed system")?;
@@ -561,7 +550,8 @@ fn run_tests(
             println!();
 
             // Get list of failed units
-            let failed_list = console.exec("systemctl --failed --no-pager", Duration::from_secs(10))?;
+            let failed_list =
+                console.exec("systemctl --failed --no-pager", Duration::from_secs(10))?;
             println!("{}", "Failed units:".yellow());
             println!("{}", failed_list.output);
 
@@ -571,8 +561,7 @@ fn run_tests(
                 // Try to extract service name (e.g., "sshd.service")
                 if let Some(start) = failure_line.find("start ") {
                     let after_start = &failure_line[start + 6..];
-                    if let Some(end) =
-                        after_start.find(|c: char| c == ' ' || c == '-' || c == '.')
+                    if let Some(end) = after_start.find(|c: char| c == ' ' || c == '-' || c == '.')
                     {
                         let service = &after_start[..end];
                         // Try getting status for common service patterns
@@ -581,10 +570,7 @@ fn run_tests(
                             println!();
                             println!("{} {}:", "Status of".yellow(), full_name);
                             let status = console.exec(
-                                &format!(
-                                    "systemctl status {} --no-pager 2>&1 || true",
-                                    full_name
-                                ),
+                                &format!("systemctl status {} --no-pager 2>&1 || true", full_name),
                                 Duration::from_secs(10),
                             )?;
                             println!("{}", status.output);
@@ -775,7 +761,12 @@ fn run_tests(
 
         println!(
             "  {} Phase {}: {} ({}/{}){}",
-            phase_status, phase, phase_name, phase_passed, phase_total, note_str.yellow()
+            phase_status,
+            phase,
+            phase_name,
+            phase_passed,
+            phase_total,
+            note_str.yellow()
         );
     }
 
@@ -806,11 +797,7 @@ fn run_tests(
                 );
             }
         } else {
-            println!(
-                "{} All {} steps passed!",
-                "[PASS]".green().bold(),
-                passed
-            );
+            println!("{} All {} steps passed!", "[PASS]".green().bold(), passed);
         }
         println!("{}", "=".repeat(60));
         println!();

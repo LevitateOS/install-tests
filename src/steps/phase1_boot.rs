@@ -20,8 +20,12 @@ use std::time::{Duration, Instant};
 pub struct VerifyUefi;
 
 impl Step for VerifyUefi {
-    fn num(&self) -> usize { 1 }
-    fn name(&self) -> &str { "Verify UEFI Boot Mode" }
+    fn num(&self) -> usize {
+        1
+    }
+    fn name(&self) -> &str {
+        "Verify UEFI Boot Mode"
+    }
     fn ensures(&self) -> &str {
         "System booted in UEFI mode required for GPT/ESP installation"
     }
@@ -53,7 +57,10 @@ impl Step for VerifyUefi {
              This means QEMU is using -kernel bypass instead of booting through OVMF firmware."
         );
 
-        result.add_check("UEFI mode detected", CheckResult::pass("/sys/firmware/efi/efivars exists"));
+        result.add_check(
+            "UEFI mode detected",
+            CheckResult::pass("/sys/firmware/efi/efivars exists"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -64,8 +71,12 @@ impl Step for VerifyUefi {
 pub struct SyncClock;
 
 impl Step for SyncClock {
-    fn num(&self) -> usize { 2 }
-    fn name(&self) -> &str { "Sync System Clock" }
+    fn num(&self) -> usize {
+        2
+    }
+    fn name(&self) -> &str {
+        "Sync System Clock"
+    }
     fn ensures(&self) -> &str {
         "System clock is synchronized for proper file timestamps and certificates"
     }
@@ -97,7 +108,10 @@ impl Step for SyncClock {
             "System year is {} - expected >= 2024. RTC not set correctly.", year
         );
 
-        result.add_check("System time reasonable", CheckResult::pass(format!("year={}", year)));
+        result.add_check(
+            "System time reasonable",
+            CheckResult::pass(format!("year={}", year)),
+        );
 
         // Add a small delay to let any async output settle
         // This prevents cross-contamination with the next step

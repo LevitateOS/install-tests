@@ -88,7 +88,7 @@ impl Executor for QmpClient {
         // For real output capture, use serial backend or implement VNC screen reading
         Ok(ExecResult {
             completed: true,
-            exit_code: 0, // Assumed success - no way to verify without OCR
+            exit_code: 0,          // Assumed success - no way to verify without OCR
             output: String::new(), // No output capture in QMP mode
             aborted_on_error: false,
             stalled: false,

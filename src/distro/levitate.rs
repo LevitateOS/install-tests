@@ -41,7 +41,11 @@ impl DistroContext for LevitateContext {
         // After login, shell emits ___SHELL_READY___ for command execution
         // Also accept multi-user.target - proves system booted successfully even if
         // serial console login prompt has issues (VT emulation quirks in QEMU)
-        &["___SHELL_READY___", "levitateos login:", "multi-user.target"]
+        &[
+            "___SHELL_READY___",
+            "levitateos login:",
+            "multi-user.target",
+        ]
     }
 
     fn boot_error_patterns(&self) -> &[&str] {
@@ -69,7 +73,7 @@ impl DistroContext for LevitateContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
-            "EROFS:",                 // EROFS filesystem error
+            "EROFS:", // EROFS filesystem error
             // === INIT STAGE ===
             "emergency shell",
             "Emergency shell",
@@ -111,7 +115,7 @@ impl DistroContext for LevitateContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
-            "EROFS:",                 // EROFS filesystem error
+            "EROFS:", // EROFS filesystem error
             // === INIT STAGE (critical) ===
             "emergency shell",
             "Emergency shell",
@@ -139,7 +143,10 @@ impl DistroContext for LevitateContext {
     }
 
     fn check_service_exists_cmd(&self, service: &str) -> String {
-        format!("test -f /usr/lib/systemd/system/{}.service && echo {}", service, service)
+        format!(
+            "test -f /usr/lib/systemd/system/{}.service && echo {}",
+            service, service
+        )
     }
 
     fn check_service_status_cmd(&self, service: &str) -> String {

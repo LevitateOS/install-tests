@@ -91,7 +91,9 @@ impl CheckResult {
     /// Create a passing check with evidence
     /// Evidence should be ACTUAL VALUES proving it worked, not just "ok"
     pub fn pass(evidence: impl Into<String>) -> Self {
-        CheckResult::Pass { evidence: evidence.into() }
+        CheckResult::Pass {
+            evidence: evidence.into(),
+        }
     }
 
     /// Returns true for Skip
@@ -146,7 +148,8 @@ impl StepResult {
         output: impl Into<String>,
         duration: Duration,
     ) {
-        self.commands.push(CommandLog::new(command, exit_code, output, duration));
+        self.commands
+            .push(CommandLog::new(command, exit_code, output, duration));
     }
 
     /// Add a passing check with evidence
@@ -154,7 +157,9 @@ impl StepResult {
     pub fn pass(&mut self, name: &str, evidence: impl Into<String>) {
         self.checks.push((
             name.to_string(),
-            CheckResult::Pass { evidence: evidence.into() },
+            CheckResult::Pass {
+                evidence: evidence.into(),
+            },
         ));
     }
 

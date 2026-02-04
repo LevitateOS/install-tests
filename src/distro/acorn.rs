@@ -37,11 +37,7 @@ impl DistroContext for AcornContext {
         //
         // NOTE: Do NOT use "=== ACORNOS INIT STARTING ===" - that appears DURING
         // initramfs, long before OpenRC finishes and efivarfs is available
-        &[
-            "___SHELL_READY___",
-            "[autologin]",
-            "login:",
-        ]
+        &["___SHELL_READY___", "[autologin]", "login:"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {
@@ -83,7 +79,7 @@ impl DistroContext for AcornContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
-            "EROFS:",                 // EROFS filesystem error
+            "EROFS:", // EROFS filesystem error
             // === OPENRC INIT STAGE ===
             "ERROR: cannot start",
             "ERROR: ",
@@ -119,7 +115,7 @@ impl DistroContext for AcornContext {
             "can't find /init",
             "No root device",
             "SQUASHFS error",
-            "EROFS:",                 // EROFS filesystem error
+            "EROFS:", // EROFS filesystem error
             // === GENERAL ===
             "fatal error",
             "Segmentation fault",

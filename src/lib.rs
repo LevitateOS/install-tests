@@ -22,7 +22,7 @@ pub use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
 pub use executor::{ExecResult, Executor};
 pub use preflight::{require_preflight, run_preflight, PreflightCheck, PreflightResult};
 pub use qemu::{
-    acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes,
-    Console, QemuBuilder, SerialExecutorExt,
+    acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, Console,
+    QemuBuilder, SerialExecutorExt,
 };
 pub use steps::{all_steps, steps_for_phase, CheckResult, CommandLog, Step, StepResult};

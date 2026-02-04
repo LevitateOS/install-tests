@@ -115,8 +115,8 @@ impl QmpClient {
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
 
-        let _greeting: QmpGreeting = serde_json::from_str(&line)
-            .context("Failed to parse QMP greeting")?;
+        let _greeting: QmpGreeting =
+            serde_json::from_str(&line).context("Failed to parse QMP greeting")?;
 
         Ok(())
     }
@@ -150,8 +150,8 @@ impl QmpClient {
             let mut line = String::new();
             self.reader.read_line(&mut line)?;
 
-            let value: Value = serde_json::from_str(&line)
-                .context("Failed to parse QMP response")?;
+            let value: Value =
+                serde_json::from_str(&line).context("Failed to parse QMP response")?;
 
             // Skip event messages
             if value.get("event").is_some() {
@@ -160,10 +160,12 @@ impl QmpClient {
 
             // Check for error
             if let Some(error) = value.get("error") {
-                let class = error.get("class")
+                let class = error
+                    .get("class")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                let desc = error.get("desc")
+                let desc = error
+                    .get("desc")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No description");
                 bail!("QMP error ({}): {}", class, desc);
@@ -179,9 +181,12 @@ impl QmpClient {
     /// # Arguments
     /// * `key` - QMP key code (e.g., "a", "ret", "shift")
     pub fn send_key(&mut self, key: &str) -> Result<()> {
-        self.execute("send-key", Some(json!({
-            "keys": [{"type": "qcode", "data": key}]
-        })))?;
+        self.execute(
+            "send-key",
+            Some(json!({
+                "keys": [{"type": "qcode", "data": key}]
+            })),
+        )?;
         Ok(())
     }
 
@@ -190,13 +195,17 @@ impl QmpClient {
     /// # Arguments
     /// * `keys` - List of QMP key codes to press simultaneously
     pub fn send_keys(&mut self, keys: &[&str]) -> Result<()> {
-        let key_specs: Vec<Value> = keys.iter()
+        let key_specs: Vec<Value> = keys
+            .iter()
             .map(|k| json!({"type": "qcode", "data": k}))
             .collect();
 
-        self.execute("send-key", Some(json!({
-            "keys": key_specs
-        })))?;
+        self.execute(
+            "send-key",
+            Some(json!({
+                "keys": key_specs
+            })),
+        )?;
         Ok(())
     }
 
@@ -223,9 +232,12 @@ impl QmpClient {
     /// # Arguments
     /// * `filename` - Path to save the screenshot (PPM format)
     pub fn screendump(&mut self, filename: &str) -> Result<()> {
-        self.execute("screendump", Some(json!({
-            "filename": filename
-        })))?;
+        self.execute(
+            "screendump",
+            Some(json!({
+                "filename": filename
+            })),
+        )?;
         Ok(())
     }
 
@@ -237,20 +249,26 @@ impl QmpClient {
     /// * `button` - Mouse button ("left", "right", "middle")
     pub fn mouse_click(&mut self, x: i32, y: i32, button: &str) -> Result<()> {
         // Move mouse to position
-        self.execute("input-send-event", Some(json!({
-            "events": [
-                {"type": "abs", "data": {"axis": "x", "value": x}},
-                {"type": "abs", "data": {"axis": "y", "value": y}}
-            ]
-        })))?;
+        self.execute(
+            "input-send-event",
+            Some(json!({
+                "events": [
+                    {"type": "abs", "data": {"axis": "x", "value": x}},
+                    {"type": "abs", "data": {"axis": "y", "value": y}}
+                ]
+            })),
+        )?;
 
         // Click
-        self.execute("input-send-event", Some(json!({
-            "events": [
-                {"type": "btn", "data": {"button": button, "down": true}},
-                {"type": "btn", "data": {"button": button, "down": false}}
-            ]
-        })))?;
+        self.execute(
+            "input-send-event",
+            Some(json!({
+                "events": [
+                    {"type": "btn", "data": {"button": button, "down": true}},
+                    {"type": "btn", "data": {"button": button, "down": false}}
+                ]
+            })),
+        )?;
 
         Ok(())
     }

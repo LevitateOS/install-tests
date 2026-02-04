@@ -13,16 +13,20 @@ use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
 use crate::executor::Executor;
 use anyhow::Result;
-use leviso_cheat_guard::cheat_ensure;
 use distro_spec::PartitionLayout;
+use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
 /// Step 3: Identify target disk
 pub struct IdentifyDisk;
 
 impl Step for IdentifyDisk {
-    fn num(&self) -> usize { 3 }
-    fn name(&self) -> &str { "Identify Target Disk" }
+    fn num(&self) -> usize {
+        3
+    }
+    fn name(&self) -> &str {
+        "Identify Target Disk"
+    }
     fn ensures(&self) -> &str {
         "Target disk is detected and accessible for installation"
     }
@@ -50,14 +54,20 @@ impl Step for IdentifyDisk {
                 "Accept any output"
             ],
             consequence = "No disk to install to, all subsequent steps fail",
-            "Target disk /dev/vda not found. lsblk output: {}", lsblk_all.output.trim()
+            "Target disk /dev/vda not found. lsblk output: {}",
+            lsblk_all.output.trim()
         );
 
         // Extract disk size from lsblk output for evidence
-        let disk_info = lsblk_all.output.lines()
+        let disk_info = lsblk_all
+            .output
+            .lines()
             .find(|l| l.contains("vda"))
             .unwrap_or("vda found");
-        result.add_check("Target disk found", CheckResult::pass(format!("/dev/vda: {}", disk_info.trim())));
+        result.add_check(
+            "Target disk found",
+            CheckResult::pass(format!("/dev/vda: {}", disk_info.trim())),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -77,8 +87,12 @@ impl Step for IdentifyDisk {
 pub struct PartitionDisk;
 
 impl Step for PartitionDisk {
-    fn num(&self) -> usize { 4 }
-    fn name(&self) -> &str { "Partition Disk (GPT)" }
+    fn num(&self) -> usize {
+        4
+    }
+    fn name(&self) -> &str {
+        "Partition Disk (GPT)"
+    }
     fn ensures(&self) -> &str {
         "Disk has GPT layout with EFI and root partitions"
     }
@@ -105,10 +119,15 @@ impl Step for PartitionDisk {
             severity = "CRITICAL",
             cheats = ["Ignore exit code", "Catch and suppress errors"],
             consequence = "No partitions created, format step fails, user stuck",
-            "sfdisk failed with exit {}: {}", sfdisk_result.exit_code, sfdisk_result.output
+            "sfdisk failed with exit {}: {}",
+            sfdisk_result.exit_code,
+            sfdisk_result.output
         );
 
-        result.add_check("GPT partition table created", CheckResult::pass("sfdisk exit 0"));
+        result.add_check(
+            "GPT partition table created",
+            CheckResult::pass("sfdisk exit 0"),
+        );
 
         // Wait for kernel to create partition device nodes
         // NOTE: sfdisk already calls BLKRRPART internally, so we don't need blockdev --rereadpt
@@ -117,7 +136,8 @@ impl Step for PartitionDisk {
         // Wait for udevd to be ready before settle (ping with retry)
         // udevd startup can take time on slow systems (TCG emulation without KVM)
         let mut udev_ready = false;
-        for _ in 0..30 {  // 15 seconds total
+        for _ in 0..30 {
+            // 15 seconds total
             let ping = executor.exec("udevadm control --ping", Duration::from_secs(2))?;
             if ping.success() {
                 udev_ready = true;
@@ -144,14 +164,20 @@ impl Step for PartitionDisk {
                 "Skip this verification entirely"
             ],
             consequence = "Missing partition causes format/mount failure, user cannot install",
-            "Partitions not found. Expected vda1 AND vda2, got:\n{}", verify.output
+            "Partitions not found. Expected vda1 AND vda2, got:\n{}",
+            verify.output
         );
 
         // Extract partition info for evidence
-        let part_lines: Vec<&str> = verify.output.lines()
+        let part_lines: Vec<&str> = verify
+            .output
+            .lines()
             .filter(|l| l.contains("vda1") || l.contains("vda2"))
             .collect();
-        result.add_check("Partitions created", CheckResult::pass(part_lines.join(", ")));
+        result.add_check(
+            "Partitions created",
+            CheckResult::pass(part_lines.join(", ")),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -162,8 +188,12 @@ impl Step for PartitionDisk {
 pub struct FormatPartitions;
 
 impl Step for FormatPartitions {
-    fn num(&self) -> usize { 5 }
-    fn name(&self) -> &str { "Format Partitions" }
+    fn num(&self) -> usize {
+        5
+    }
+    fn name(&self) -> &str {
+        "Format Partitions"
+    }
     fn ensures(&self) -> &str {
         "Partitions have proper filesystems (FAT32 for EFI, ext4 for root)"
     }
@@ -173,10 +203,7 @@ impl Step for FormatPartitions {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Format EFI partition as FAT32
-        let fat_result = executor.exec(
-            "mkfs.fat -F32 /dev/vda1",
-            Duration::from_secs(30),
-        )?;
+        let fat_result = executor.exec("mkfs.fat -F32 /dev/vda1", Duration::from_secs(30))?;
 
         // CHEAT GUARD: EFI partition MUST be formatted as FAT32
         cheat_ensure!(
@@ -189,16 +216,18 @@ impl Step for FormatPartitions {
                 "Format wrong partition"
             ],
             consequence = "EFI partition unreadable by UEFI firmware, system won't boot",
-            "mkfs.fat failed (exit {}): {}", fat_result.exit_code, fat_result.output
+            "mkfs.fat failed (exit {}): {}",
+            fat_result.exit_code,
+            fat_result.output
         );
 
-        result.add_check("EFI partition formatted", CheckResult::pass("mkfs.fat -F32 /dev/vda1 exit 0"));
+        result.add_check(
+            "EFI partition formatted",
+            CheckResult::pass("mkfs.fat -F32 /dev/vda1 exit 0"),
+        );
 
         // Format root partition as ext4
-        let ext4_result = executor.exec(
-            "mkfs.ext4 -F /dev/vda2",
-            Duration::from_secs(60),
-        )?;
+        let ext4_result = executor.exec("mkfs.ext4 -F /dev/vda2", Duration::from_secs(60))?;
 
         // CHEAT GUARD: Root partition MUST be formatted as ext4
         cheat_ensure!(
@@ -211,10 +240,15 @@ impl Step for FormatPartitions {
                 "Format wrong partition"
             ],
             consequence = "Root partition unreadable, system cannot mount rootfs, VFS panic",
-            "mkfs.ext4 failed (exit {}): {}", ext4_result.exit_code, ext4_result.output
+            "mkfs.ext4 failed (exit {}): {}",
+            ext4_result.exit_code,
+            ext4_result.output
         );
 
-        result.add_check("Root partition formatted", CheckResult::pass("mkfs.ext4 /dev/vda2 exit 0"));
+        result.add_check(
+            "Root partition formatted",
+            CheckResult::pass("mkfs.ext4 /dev/vda2 exit 0"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -236,8 +270,12 @@ impl Step for FormatPartitions {
 pub struct MountPartitions;
 
 impl Step for MountPartitions {
-    fn num(&self) -> usize { 6 }
-    fn name(&self) -> &str { "Mount Partitions" }
+    fn num(&self) -> usize {
+        6
+    }
+    fn name(&self) -> &str {
+        "Mount Partitions"
+    }
     fn ensures(&self) -> &str {
         "Root partition at /mnt, EFI partition at /mnt/boot"
     }
@@ -261,7 +299,9 @@ impl Step for MountPartitions {
                 "Accept mount failure"
             ],
             consequence = "Files extracted to wrong location, installed system empty",
-            "Failed to mount /dev/vda2 to /mnt (exit {}): {}", mount_root.exit_code, mount_root.output
+            "Failed to mount /dev/vda2 to /mnt (exit {}): {}",
+            mount_root.exit_code,
+            mount_root.output
         );
 
         result.add_check("Root mounted", CheckResult::pass("/dev/vda2 → /mnt"));
@@ -283,7 +323,9 @@ impl Step for MountPartitions {
                 "Accept mount failure"
             ],
             consequence = "Kernel not on FAT32, systemd-boot can't find it, system won't boot",
-            "Failed to mount /dev/vda1 to /mnt/boot (exit {}): {}", mount_boot.exit_code, mount_boot.output
+            "Failed to mount /dev/vda1 to /mnt/boot (exit {}): {}",
+            mount_boot.exit_code,
+            mount_boot.output
         );
 
         result.add_check("EFI mounted", CheckResult::pass("/dev/vda1 → /mnt/boot"));
@@ -292,7 +334,10 @@ impl Step for MountPartitions {
         let mounts = executor.exec("mount | grep /mnt", Duration::from_secs(5))?;
         if mounts.output.contains("/mnt ") && mounts.output.contains("/mnt/boot ") {
             let mount_lines: Vec<&str> = mounts.output.lines().take(2).collect();
-            result.add_check("Mounts verified", CheckResult::pass(mount_lines.join(" | ")));
+            result.add_check(
+                "Mounts verified",
+                CheckResult::pass(mount_lines.join(" | ")),
+            );
         }
 
         result.duration = start.elapsed();

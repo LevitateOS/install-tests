@@ -13,8 +13,8 @@ use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
 use crate::executor::Executor;
 use anyhow::Result;
-use leviso_cheat_guard::cheat_ensure;
 use distro_spec::shared::boot::{BootEntry, LoaderConfig};
+use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
 /// Step 16: Copy/install initramfs from ISO
@@ -24,8 +24,12 @@ use std::time::{Duration, Instant};
 pub struct GenerateInitramfs;
 
 impl Step for GenerateInitramfs {
-    fn num(&self) -> usize { 16 }
-    fn name(&self) -> &str { "Copy/Install Initramfs" }
+    fn num(&self) -> usize {
+        16
+    }
+    fn name(&self) -> &str {
+        "Copy/Install Initramfs"
+    }
     fn ensures(&self) -> &str {
         "Initramfs exists at /boot/initramfs.img with drivers for installed hardware"
     }
@@ -42,28 +46,47 @@ impl Step for GenerateInitramfs {
         let kernel_cmd = "cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz";
         let cmd_start = Instant::now();
         let kernel_copy = executor.exec(kernel_cmd, Duration::from_secs(10))?;
-        result.log_command(kernel_cmd, kernel_copy.exit_code, &kernel_copy.output, cmd_start.elapsed());
+        result.log_command(
+            kernel_cmd,
+            kernel_copy.exit_code,
+            &kernel_copy.output,
+            cmd_start.elapsed(),
+        );
 
         cheat_ensure!(
             kernel_copy.success(),
             protects = "Kernel is copied from ISO to ESP for boot",
             severity = "CRITICAL",
-            cheats = ["Skip kernel copy", "Assume kernel exists in rootfs", "Accept copy failure"],
+            cheats = [
+                "Skip kernel copy",
+                "Assume kernel exists in rootfs",
+                "Accept copy failure"
+            ],
             consequence = "No kernel on ESP, systemd-boot can't find it, system won't boot",
-            "Failed to copy kernel from ISO to ESP: {}", kernel_copy.output
+            "Failed to copy kernel from ISO to ESP: {}",
+            kernel_copy.output
         );
 
         // Get kernel size as evidence - skeptics want to see actual bytes
         let cmd_start = Instant::now();
-        let kernel_size = executor.exec("stat -c '%s' /mnt/boot/vmlinuz", Duration::from_secs(5))?;
-        result.log_command("stat -c '%s' /mnt/boot/vmlinuz", kernel_size.exit_code, &kernel_size.output, cmd_start.elapsed());
+        let kernel_size =
+            executor.exec("stat -c '%s' /mnt/boot/vmlinuz", Duration::from_secs(5))?;
+        result.log_command(
+            "stat -c '%s' /mnt/boot/vmlinuz",
+            kernel_size.exit_code,
+            &kernel_size.output,
+            cmd_start.elapsed(),
+        );
 
         let kernel_bytes: u64 = kernel_size.output.trim().parse().unwrap_or(0);
         let kernel_mb = kernel_bytes as f64 / 1024.0 / 1024.0;
 
         // SKEPTIC-PROOF: Show actual size, not just "exists"
         if kernel_bytes > 1_000_000 {
-            result.pass("kernel on ESP", format!("{:.1}MB at /mnt/boot/vmlinuz", kernel_mb));
+            result.pass(
+                "kernel on ESP",
+                format!("{:.1}MB at /mnt/boot/vmlinuz", kernel_mb),
+            );
         } else {
             result.fail(
                 "kernel on ESP",
@@ -78,7 +101,12 @@ impl Step for GenerateInitramfs {
         let copy_cmd = "cp /media/cdrom/boot/initramfs-installed.img /mnt/boot/initramfs.img";
         let cmd_start = Instant::now();
         let copy_result = executor.exec(copy_cmd, Duration::from_secs(30))?;
-        result.log_command(copy_cmd, copy_result.exit_code, &copy_result.output, cmd_start.elapsed());
+        result.log_command(
+            copy_cmd,
+            copy_result.exit_code,
+            &copy_result.output,
+            cmd_start.elapsed(),
+        );
 
         cheat_ensure!(
             copy_result.success(),
@@ -86,20 +114,32 @@ impl Step for GenerateInitramfs {
             severity = "CRITICAL",
             cheats = ["Skip initramfs copy", "Accept missing initramfs on ISO"],
             consequence = "No initramfs, system won't boot. Rebuild ISO with 'leviso build'",
-            "Failed to copy initramfs from ISO: {}", copy_result.output
+            "Failed to copy initramfs from ISO: {}",
+            copy_result.output
         );
 
         // Get initramfs size as evidence
         let cmd_start = Instant::now();
-        let initramfs_size = executor.exec("stat -c '%s' /mnt/boot/initramfs.img", Duration::from_secs(5))?;
-        result.log_command("stat -c '%s' /mnt/boot/initramfs.img", initramfs_size.exit_code, &initramfs_size.output, cmd_start.elapsed());
+        let initramfs_size = executor.exec(
+            "stat -c '%s' /mnt/boot/initramfs.img",
+            Duration::from_secs(5),
+        )?;
+        result.log_command(
+            "stat -c '%s' /mnt/boot/initramfs.img",
+            initramfs_size.exit_code,
+            &initramfs_size.output,
+            cmd_start.elapsed(),
+        );
 
         let initramfs_bytes: u64 = initramfs_size.output.trim().parse().unwrap_or(0);
         let initramfs_mb = initramfs_bytes as f64 / 1024.0 / 1024.0;
 
         // SKEPTIC-PROOF: An initramfs under 10MB is suspiciously small
         if initramfs_bytes > 10_000_000 {
-            result.pass("initramfs on ESP", format!("{:.1}MB at /mnt/boot/initramfs.img", initramfs_mb));
+            result.pass(
+                "initramfs on ESP",
+                format!("{:.1}MB at /mnt/boot/initramfs.img", initramfs_mb),
+            );
         } else {
             result.fail(
                 "initramfs on ESP",
@@ -117,8 +157,12 @@ impl Step for GenerateInitramfs {
 pub struct InstallBootloader;
 
 impl Step for InstallBootloader {
-    fn num(&self) -> usize { 17 }
-    fn name(&self) -> &str { "Install Bootloader" }
+    fn num(&self) -> usize {
+        17
+    }
+    fn name(&self) -> &str {
+        "Install Bootloader"
+    }
     fn ensures(&self) -> &str {
         "System is bootable via systemd-boot with correct kernel and root"
     }
@@ -168,10 +212,15 @@ impl Step for InstallBootloader {
                     "Ignore EFI setup errors"
                 ],
                 consequence = "No bootloader, UEFI can't find boot entry, system won't start",
-                "bootctl install failed (exit {}): {}", bootctl_result.exit_code, bootctl_result.output
+                "bootctl install failed (exit {}): {}",
+                bootctl_result.exit_code,
+                bootctl_result.output
             );
 
-            result.add_check("systemd-boot installed", CheckResult::pass("bootctl install exit 0"));
+            result.add_check(
+                "systemd-boot installed",
+                CheckResult::pass("bootctl install exit 0"),
+            );
 
             // Create EFI boot entry using efibootmgr
             // Run from live environment (not chroot) since efibootmgr needs /sys/firmware/efi/efivars
@@ -201,30 +250,35 @@ impl Step for InstallBootloader {
                     "Skip efibootmgr entirely"
                 ],
                 consequence = "No EFI entry = depends on fallback = may not boot on real hardware",
-                "efibootmgr failed: {}", efi_entry.output.trim()
+                "efibootmgr failed: {}",
+                efi_entry.output.trim()
             );
 
-            result.add_check("EFI boot entry created", CheckResult::pass(format!("efibootmgr created {} entry", efi_label)));
+            result.add_check(
+                "EFI boot entry created",
+                CheckResult::pass(format!("efibootmgr created {} entry", efi_label)),
+            );
         }
 
         // Get root partition UUID for boot entry
-        let uuid_result = executor.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
+        let uuid_result =
+            executor.exec("blkid -s UUID -o value /dev/vda2", Duration::from_secs(5))?;
         let root_uuid = uuid_result.output.trim();
 
         // Create loader.conf (goes in ESP at /boot)
         let loader_config = LoaderConfig::with_defaults(ctx.id())
-            .disable_editor()  // Disable for security
+            .disable_editor() // Disable for security
             .with_console_mode("max");
-        executor.write_file("/mnt/boot/loader/loader.conf", &loader_config.to_loader_conf())?;
+        executor.write_file(
+            "/mnt/boot/loader/loader.conf",
+            &loader_config.to_loader_conf(),
+        )?;
 
         // Create boot entry with serial console output for testing
         // Production installs would use default_boot_entry().set_root() without console settings
-        let mut boot_entry = BootEntry::with_defaults(
-            ctx.id(),
-            ctx.name(),
-            "vmlinuz",
-            "initramfs.img",
-        ).set_root(format!("UUID={}", root_uuid));
+        let mut boot_entry =
+            BootEntry::with_defaults(ctx.id(), ctx.name(), "vmlinuz", "initramfs.img")
+                .set_root(format!("UUID={}", root_uuid));
         // Add console settings for QEMU serial output (required for test automation)
         // rd.debug enables initrd debug logging to show exactly what systemd/udev is doing
         // systemd.log_level=debug shows detailed systemd unit activation
@@ -237,10 +291,7 @@ impl Step for InstallBootloader {
         executor.write_file(&format!("/mnt{}", entry_path), &boot_entry.to_entry_file())?;
 
         // Verify boot entry exists and has correct content
-        let verify = executor.exec(
-            &format!("cat /mnt{}", entry_path),
-            Duration::from_secs(5),
-        )?;
+        let verify = executor.exec(&format!("cat /mnt{}", entry_path), Duration::from_secs(5))?;
 
         // CHEAT GUARD: Boot entry MUST have all required fields
         // Check for linux (kernel path)
@@ -254,7 +305,8 @@ impl Step for InstallBootloader {
                 "Accept any linux line"
             ],
             consequence = "Wrong kernel path = kernel not found = won't boot",
-            "Boot entry missing kernel path:\n{}", verify.output
+            "Boot entry missing kernel path:\n{}",
+            verify.output
         );
 
         // Check for initrd (initramfs path)
@@ -262,12 +314,10 @@ impl Step for InstallBootloader {
             verify.output.contains("initrd") && verify.output.contains("/initramfs"),
             protects = "Boot entry has correct initramfs path",
             severity = "CRITICAL",
-            cheats = [
-                "Only check file exists",
-                "Skip initramfs line check"
-            ],
+            cheats = ["Only check file exists", "Skip initramfs line check"],
             consequence = "Wrong initramfs path = no initramfs = kernel panic at mount",
-            "Boot entry missing initramfs path:\n{}", verify.output
+            "Boot entry missing initramfs path:\n{}",
+            verify.output
         );
 
         // Check for root UUID in options
@@ -281,12 +331,18 @@ impl Step for InstallBootloader {
                 "Only check if entry file exists"
             ],
             consequence = "Wrong root UUID in boot entry, VFS panic (cannot mount root)",
-            "Boot entry missing or has wrong UUID. Expected {}, got:\n{}", root_uuid, verify.output
+            "Boot entry missing or has wrong UUID. Expected {}, got:\n{}",
+            root_uuid,
+            verify.output
         );
 
-        result.add_check("Boot entry content verified", CheckResult::pass(
-            format!("linux=/vmlinuz, initrd=/initramfs.img, root=UUID={}", root_uuid)
-        ));
+        result.add_check(
+            "Boot entry content verified",
+            CheckResult::pass(format!(
+                "linux=/vmlinuz, initrd=/initramfs.img, root=UUID={}",
+                root_uuid
+            )),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -297,8 +353,12 @@ impl Step for InstallBootloader {
 pub struct EnableServices;
 
 impl Step for EnableServices {
-    fn num(&self) -> usize { 18 }
-    fn name(&self) -> &str { "Enable Services" }
+    fn num(&self) -> usize {
+        18
+    }
+    fn name(&self) -> &str {
+        "Enable Services"
+    }
     fn ensures(&self) -> &str {
         "Essential services (networkd, sshd, getty) start automatically on boot"
     }
@@ -336,16 +396,24 @@ impl Step for EnableServices {
 
             // Enable the service
             let enable_cmd = ctx.enable_service_cmd(service_name, target);
-            let enable_result = executor.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(10))?;
+            let enable_result =
+                executor.exec_chroot("/mnt", &enable_cmd, Duration::from_secs(10))?;
 
             if enable_result.success() {
-                result.add_check(&format!("{} enabled", service_name), CheckResult::pass("enabled"));
+                result.add_check(
+                    &format!("{} enabled", service_name),
+                    CheckResult::pass("enabled"),
+                );
             } else {
                 result.add_check(
                     &format!("{} enabled", service_name),
                     CheckResult::Fail {
                         expected: "enable success".to_string(),
-                        actual: format!("exit {}: {}", enable_result.exit_code, enable_result.output.trim()),
+                        actual: format!(
+                            "exit {}: {}",
+                            enable_result.exit_code,
+                            enable_result.output.trim()
+                        ),
                     },
                 );
             }
@@ -356,7 +424,10 @@ impl Step for EnableServices {
         let serial_result = executor.exec_chroot("/mnt", &serial_cmd, Duration::from_secs(10))?;
 
         if serial_result.success() {
-            result.add_check("serial getty enabled", CheckResult::pass("serial console configured"));
+            result.add_check(
+                "serial getty enabled",
+                CheckResult::pass("serial console configured"),
+            );
         } else {
             result.add_check(
                 "serial getty enabled",
@@ -382,10 +453,14 @@ impl Step for EnableServices {
             consequence = "System won't boot - no kernel",
             "Kernel not found at /mnt/boot/vmlinuz"
         );
-        result.add_check("Pre-reboot: kernel present", CheckResult::pass("/mnt/boot/vmlinuz exists"));
+        result.add_check(
+            "Pre-reboot: kernel present",
+            CheckResult::pass("/mnt/boot/vmlinuz exists"),
+        );
 
         // Verify initramfs exists
-        let initramfs_verify = executor.exec("test -f /mnt/boot/initramfs.img", Duration::from_secs(5))?;
+        let initramfs_verify =
+            executor.exec("test -f /mnt/boot/initramfs.img", Duration::from_secs(5))?;
         cheat_ensure!(
             initramfs_verify.success(),
             protects = "Initramfs exists on ESP before reboot",
@@ -394,7 +469,10 @@ impl Step for EnableServices {
             consequence = "System won't boot - no initramfs",
             "Initramfs not found at /mnt/boot/initramfs.img"
         );
-        result.add_check("Pre-reboot: initramfs present", CheckResult::pass("/mnt/boot/initramfs.img exists"));
+        result.add_check(
+            "Pre-reboot: initramfs present",
+            CheckResult::pass("/mnt/boot/initramfs.img exists"),
+        );
 
         // Verify root password is set (not locked)
         let password_verify = executor.exec(
@@ -409,13 +487,13 @@ impl Step for EnableServices {
             consequence = "Cannot login after reboot - account locked",
             "Root password not set in /mnt/etc/shadow"
         );
-        result.add_check("Pre-reboot: root password set", CheckResult::pass("root has hash in /etc/shadow"));
+        result.add_check(
+            "Pre-reboot: root password set",
+            CheckResult::pass("root has hash in /etc/shadow"),
+        );
 
         // Verify fstab has boot entry
-        let fstab_verify = executor.exec(
-            "grep '/boot' /mnt/etc/fstab",
-            Duration::from_secs(5),
-        )?;
+        let fstab_verify = executor.exec("grep '/boot' /mnt/etc/fstab", Duration::from_secs(5))?;
         cheat_ensure!(
             fstab_verify.success(),
             protects = "fstab has ESP mount entry before reboot",
@@ -424,7 +502,10 @@ impl Step for EnableServices {
             consequence = "ESP won't be mounted after reboot - kernel updates will fail",
             "No /boot entry in /mnt/etc/fstab"
         );
-        result.add_check("Pre-reboot: fstab has /boot", CheckResult::pass(fstab_verify.output.trim()));
+        result.add_check(
+            "Pre-reboot: fstab has /boot",
+            CheckResult::pass(fstab_verify.output.trim()),
+        );
 
         // Copy test instrumentation to installed system
         // This enables ___SHELL_READY___ and ___PROMPT___ markers after reboot
@@ -434,13 +515,19 @@ impl Step for EnableServices {
         let script_path = format!("/mnt/etc/profile.d/{}", script_name);
         executor.write_file(&script_path, test_script)?;
         executor.exec_ok(&format!("chmod +x {}", script_path), Duration::from_secs(5))?;
-        result.add_check("Test instrumentation installed", CheckResult::pass(format!("/etc/profile.d/{}", script_name)));
+        result.add_check(
+            "Test instrumentation installed",
+            CheckResult::pass(format!("/etc/profile.d/{}", script_name)),
+        );
 
         // Unmount partitions (EFI first, then root)
         let _ = executor.exec("umount /mnt/boot", Duration::from_secs(5));
         let _ = executor.exec("umount /mnt", Duration::from_secs(5));
 
-        result.add_check("Partitions unmounted", CheckResult::pass("umount /mnt/boot and /mnt"));
+        result.add_check(
+            "Partitions unmounted",
+            CheckResult::pass("umount /mnt/boot and /mnt"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)

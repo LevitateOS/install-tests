@@ -107,8 +107,10 @@ pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
     // Check install initramfs
     let install_path = iso_dir.join("initramfs-installed.img");
     if install_path.exists() {
-        result.install_initramfs =
-            Some(verify_artifact(&install_path, ChecklistType::InstallInitramfs)?);
+        result.install_initramfs = Some(verify_artifact(
+            &install_path,
+            ChecklistType::InstallInitramfs,
+        )?);
         if !result.install_initramfs.as_ref().unwrap().passed {
             result.overall_pass = false;
         }
@@ -190,7 +192,10 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
                 total_checks: 0,
                 passed_checks: 0,
                 failures: 0,
-                details: vec![format!("Checklist type {} not applicable for preflight", name)],
+                details: vec![format!(
+                    "Checklist type {} not applicable for preflight",
+                    name
+                )],
             });
         }
     };

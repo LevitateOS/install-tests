@@ -27,8 +27,12 @@ use std::time::{Duration, Instant};
 pub struct VerifySystemdBoot;
 
 impl Step for VerifySystemdBoot {
-    fn num(&self) -> usize { 19 }
-    fn name(&self) -> &str { "Verify Systemd Boot" }
+    fn num(&self) -> usize {
+        19
+    }
+    fn name(&self) -> &str {
+        "Verify Systemd Boot"
+    }
     fn ensures(&self) -> &str {
         "Installed system boots to multi-user target with systemd running"
     }
@@ -59,9 +63,13 @@ impl Step for VerifySystemdBoot {
             fstype.output.trim()
         );
 
-        result.add_check("Root is not overlay", CheckResult::pass(
-            format!("root fstype={} (installed, not live)", fstype.output.trim())
-        ));
+        result.add_check(
+            "Root is not overlay",
+            CheckResult::pass(format!(
+                "root fstype={} (installed, not live)",
+                fstype.output.trim()
+            )),
+        );
 
         // Flush any pending output from login
         let _ = executor.exec("true", Duration::from_secs(2))?;
@@ -81,7 +89,9 @@ impl Step for VerifySystemdBoot {
                 "Assume init is running"
             ],
             consequence = "System didn't boot properly, may be in emergency shell or wrong init",
-            "PID 1 is '{}', expected '{}'", pid1.output.trim(), expected_pid1
+            "PID 1 is '{}', expected '{}'",
+            pid1.output.trim(),
+            expected_pid1
         );
 
         result.add_check(
@@ -95,7 +105,10 @@ impl Step for VerifySystemdBoot {
         let target = executor.exec(target_cmd, Duration::from_secs(10))?;
 
         if target.output.contains(target_expected) {
-            result.add_check("boot target reached", CheckResult::pass(format!("{} target active", ctx.id())));
+            result.add_check(
+                "boot target reached",
+                CheckResult::pass(format!("{} target active", ctx.id())),
+            );
         } else {
             result.add_check(
                 "boot target reached",
@@ -110,7 +123,8 @@ impl Step for VerifySystemdBoot {
         let failed_cmd = ctx.count_failed_services_cmd();
         let failed = executor.exec(failed_cmd, Duration::from_secs(10))?;
 
-        let failed_count: i32 = failed.output
+        let failed_count: i32 = failed
+            .output
             .lines()
             .filter_map(|l| l.trim().parse().ok())
             .next()
@@ -140,8 +154,12 @@ impl Step for VerifySystemdBoot {
 pub struct VerifyHostname;
 
 impl Step for VerifyHostname {
-    fn num(&self) -> usize { 20 }
-    fn name(&self) -> &str { "Verify Hostname" }
+    fn num(&self) -> usize {
+        20
+    }
+    fn name(&self) -> &str {
+        "Verify Hostname"
+    }
     fn ensures(&self) -> &str {
         "Configured hostname persisted across reboot"
     }
@@ -155,7 +173,10 @@ impl Step for VerifyHostname {
 
         // Should contain the hostname pattern we set during installation
         if hostname.output.contains(expected_pattern) {
-            result.add_check("Hostname correct", CheckResult::pass(hostname.output.trim()));
+            result.add_check(
+                "Hostname correct",
+                CheckResult::pass(hostname.output.trim()),
+            );
         } else {
             result.add_check(
                 "Hostname correct",
@@ -175,8 +196,12 @@ impl Step for VerifyHostname {
 pub struct VerifyUserLogin;
 
 impl Step for VerifyUserLogin {
-    fn num(&self) -> usize { 21 }
-    fn name(&self) -> &str { "Verify User Login" }
+    fn num(&self) -> usize {
+        21
+    }
+    fn name(&self) -> &str {
+        "Verify User Login"
+    }
     fn ensures(&self) -> &str {
         "Created user account can authenticate and access home directory"
     }
@@ -200,7 +225,8 @@ impl Step for VerifyUserLogin {
                 "Assume user exists"
             ],
             consequence = "User account lost after reboot, cannot login as non-root user",
-            "User '{}' not found after reboot - user creation may have failed", username
+            "User '{}' not found after reboot - user creation may have failed",
+            username
         );
 
         result.add_check("User exists", CheckResult::pass(user_check.output.trim()));
@@ -212,7 +238,10 @@ impl Step for VerifyUserLogin {
         )?;
 
         if home_check.output.contains("HOME_OK") {
-            result.add_check("Home directory accessible", CheckResult::pass(format!("/home/{} accessible", username)));
+            result.add_check(
+                "Home directory accessible",
+                CheckResult::pass(format!("/home/{} accessible", username)),
+            );
         } else {
             result.add_check(
                 "Home directory accessible",
@@ -225,12 +254,18 @@ impl Step for VerifyUserLogin {
 
         // Check user can write to home
         let write_check = executor.exec(
-            &format!("su - {} -c 'touch ~/test_file && rm ~/test_file && echo WRITE_OK'", username),
+            &format!(
+                "su - {} -c 'touch ~/test_file && rm ~/test_file && echo WRITE_OK'",
+                username
+            ),
             Duration::from_secs(10),
         )?;
 
         if write_check.output.contains("WRITE_OK") {
-            result.add_check("User can write to home", CheckResult::pass("touch+rm ~/test_file succeeded"));
+            result.add_check(
+                "User can write to home",
+                CheckResult::pass("touch+rm ~/test_file succeeded"),
+            );
         } else {
             result.add_check(
                 "User can write to home",
@@ -250,8 +285,12 @@ impl Step for VerifyUserLogin {
 pub struct VerifyNetworking;
 
 impl Step for VerifyNetworking {
-    fn num(&self) -> usize { 22 }
-    fn name(&self) -> &str { "Verify Networking" }
+    fn num(&self) -> usize {
+        22
+    }
+    fn name(&self) -> &str {
+        "Verify Networking"
+    }
     fn ensures(&self) -> &str {
         "Network interface is up and has IP address (DHCP or static)"
     }
@@ -265,7 +304,10 @@ impl Step for VerifyNetworking {
         let networkd = executor.exec(network_cmd, Duration::from_secs(10))?;
 
         if networkd.output.contains("active") {
-            result.add_check("Network service running", CheckResult::pass("network service active"));
+            result.add_check(
+                "Network service running",
+                CheckResult::pass("network service active"),
+            );
         } else {
             result.add_check(
                 "Network service running",
@@ -293,21 +335,25 @@ impl Step for VerifyNetworking {
                 "Skip network verification",
                 "Convert to optional Skip"
             ],
-            consequence = "No network = can't install packages, can't reach internet on daily driver",
+            consequence =
+                "No network = can't install packages, can't reach internet on daily driver",
             "No IP address assigned. QEMU user network should provide DHCP. Output: {}",
             ip_check.output.trim()
         );
 
-        result.add_check("IP address assigned", CheckResult::pass(ip_check.output.trim()));
+        result.add_check(
+            "IP address assigned",
+            CheckResult::pass(ip_check.output.trim()),
+        );
 
         // Check DNS resolution (if we have network)
-        let dns_check = executor.exec(
-            "getent hosts localhost",
-            Duration::from_secs(10),
-        )?;
+        let dns_check = executor.exec("getent hosts localhost", Duration::from_secs(10))?;
 
         if dns_check.success() {
-            result.add_check("DNS resolution works", CheckResult::pass(dns_check.output.trim()));
+            result.add_check(
+                "DNS resolution works",
+                CheckResult::pass(dns_check.output.trim()),
+            );
         } else {
             result.add_check(
                 "DNS resolution works",
@@ -327,8 +373,12 @@ impl Step for VerifyNetworking {
 pub struct VerifySudo;
 
 impl Step for VerifySudo {
-    fn num(&self) -> usize { 23 }
-    fn name(&self) -> &str { "Verify Sudo" }
+    fn num(&self) -> usize {
+        23
+    }
+    fn name(&self) -> &str {
+        "Verify Sudo"
+    }
     fn ensures(&self) -> &str {
         "User can elevate privileges with sudo for system administration"
     }
@@ -350,17 +400,24 @@ impl Step for VerifySudo {
                 "Accept su as alternative",
                 "Assume sudo exists"
             ],
-            consequence = "No sudo = users must login as root or su, security and usability nightmare",
+            consequence =
+                "No sudo = users must login as root or su, security and usability nightmare",
             "sudo binary not found - base system missing sudo package"
         );
 
-        result.add_check("sudo installed", CheckResult::pass(sudo_check.output.trim()));
+        result.add_check(
+            "sudo installed",
+            CheckResult::pass(sudo_check.output.trim()),
+        );
 
         // Check if wheel group exists and user is in it
         // This is the standard sudo configuration on most Linux systems
         let username = ctx.default_username();
         let wheel_check = executor.exec(
-            &format!("getent group wheel && id {} | grep -q wheel && echo WHEEL_OK", username),
+            &format!(
+                "getent group wheel && id {} | grep -q wheel && echo WHEEL_OK",
+                username
+            ),
             Duration::from_secs(5),
         )?;
 
@@ -375,15 +432,23 @@ impl Step for VerifySudo {
                 "Convert to optional"
             ],
             consequence = "User not in wheel = sudo doesn't work = can't administer system",
-            "User '{}' not in wheel group. Output: {}", username, wheel_check.output.trim()
+            "User '{}' not in wheel group. Output: {}",
+            username,
+            wheel_check.output.trim()
         );
 
-        result.add_check("User in wheel group", CheckResult::pass(format!("{} in wheel group", username)));
+        result.add_check(
+            "User in wheel group",
+            CheckResult::pass(format!("{} in wheel group", username)),
+        );
 
         // Test sudo actually works (with password from stdin)
         let password = ctx.default_password();
         let sudo_test = executor.exec(
-            &format!("echo '{}' | su - {} -c 'sudo -S whoami'", password, username),
+            &format!(
+                "echo '{}' | su - {} -c 'sudo -S whoami'",
+                password, username
+            ),
             Duration::from_secs(15),
         )?;
 
@@ -398,10 +463,14 @@ impl Step for VerifySudo {
                 "Accept any sudo output"
             ],
             consequence = "User cannot administer system, stuck without root access",
-            "sudo elevation failed: {}", sudo_test.output.trim()
+            "sudo elevation failed: {}",
+            sudo_test.output.trim()
         );
 
-        result.add_check("sudo elevation works", CheckResult::pass("sudo whoami returned 'root'"));
+        result.add_check(
+            "sudo elevation works",
+            CheckResult::pass("sudo whoami returned 'root'"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -412,8 +481,12 @@ impl Step for VerifySudo {
 pub struct VerifyEssentialCommands;
 
 impl Step for VerifyEssentialCommands {
-    fn num(&self) -> usize { 24 }
-    fn name(&self) -> &str { "Verify Essential Commands" }
+    fn num(&self) -> usize {
+        24
+    }
+    fn name(&self) -> &str {
+        "Verify Essential Commands"
+    }
     fn ensures(&self) -> &str {
         "Core system utilities (coreutils, systemd tools) are functional"
     }
@@ -438,10 +511,8 @@ impl Step for VerifyEssentialCommands {
         let mut failed = 0;
 
         for (cmd, package) in essential_commands {
-            let check = executor.exec(
-                &format!("{} 2>&1 | head -1", cmd),
-                Duration::from_secs(5),
-            )?;
+            let check =
+                executor.exec(&format!("{} 2>&1 | head -1", cmd), Duration::from_secs(5))?;
 
             if !check.success() {
                 failed += 1;
@@ -466,10 +537,14 @@ impl Step for VerifyEssentialCommands {
                 "Skip missing command verification"
             ],
             consequence = "Missing core utilities, system unusable for daily tasks",
-            "{} essential commands missing", failed
+            "{} essential commands missing",
+            failed
         );
 
-        result.add_check("All essential commands", CheckResult::pass("9/9 commands working"));
+        result.add_check(
+            "All essential commands",
+            CheckResult::pass("9/9 commands working"),
+        );
 
         // Test file operations work
         let file_ops = executor.exec(
@@ -478,7 +553,10 @@ impl Step for VerifyEssentialCommands {
         )?;
 
         if file_ops.output.contains("FILE_OPS_OK") {
-            result.add_check("File operations work", CheckResult::pass("echo+cat+rm in /tmp succeeded"));
+            result.add_check(
+                "File operations work",
+                CheckResult::pass("echo+cat+rm in /tmp succeeded"),
+            );
         } else {
             result.add_check(
                 "File operations work",
@@ -496,7 +574,10 @@ impl Step for VerifyEssentialCommands {
         )?;
 
         if journal_check.success() && !journal_check.output.is_empty() {
-            result.add_check("Journal logging works", CheckResult::pass("journalctl -b shows entries"));
+            result.add_check(
+                "Journal logging works",
+                CheckResult::pass("journalctl -b shows entries"),
+            );
         } else {
             result.add_check(
                 "Journal logging works",

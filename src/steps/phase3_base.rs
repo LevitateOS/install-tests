@@ -18,16 +18,20 @@ use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
 use crate::executor::Executor;
 use anyhow::Result;
+use distro_spec::levitate::{ROOTFS_CDROM_PATH, ROOTFS_NAME};
 use leviso_cheat_guard::cheat_ensure;
-use distro_spec::levitate::{ROOTFS_NAME, ROOTFS_CDROM_PATH};
 use std::time::{Duration, Instant};
 
 /// Step 7: Mount installation media (CDROM)
 pub struct MountInstallMedia;
 
 impl Step for MountInstallMedia {
-    fn num(&self) -> usize { 7 }
-    fn name(&self) -> &str { "Mount Installation Media" }
+    fn num(&self) -> usize {
+        7
+    }
+    fn name(&self) -> &str {
+        "Mount Installation Media"
+    }
     fn ensures(&self) -> &str {
         "Installation media (ISO) is mounted and rootfs image is accessible"
     }
@@ -38,7 +42,10 @@ impl Step for MountInstallMedia {
 
         // The init script mounts the ISO at /media/cdrom
         // Verify it's mounted by checking if the directory has content
-        let mount_check = executor.exec("test -d /media/cdrom/live && echo MOUNTED", Duration::from_secs(5))?;
+        let mount_check = executor.exec(
+            "test -d /media/cdrom/live && echo MOUNTED",
+            Duration::from_secs(5),
+        )?;
 
         // CHEAT GUARD: ISO MUST be mounted - can't proceed without installation media
         cheat_ensure!(
@@ -73,7 +80,9 @@ impl Step for MountInstallMedia {
                 "Hardcode path without verification"
             ],
             consequence = "No base system to install, extraction fails, user stuck",
-            "Rootfs not found at {}. ISO must contain live/{}", ROOTFS_CDROM_PATH, ROOTFS_NAME
+            "Rootfs not found at {}. ISO must contain live/{}",
+            ROOTFS_CDROM_PATH,
+            ROOTFS_NAME
         );
 
         // Show rootfs size as evidence
@@ -92,8 +101,12 @@ impl Step for MountInstallMedia {
 pub struct ExtractRootfs;
 
 impl Step for ExtractRootfs {
-    fn num(&self) -> usize { 8 }
-    fn name(&self) -> &str { "Extract Base System (recstrap)" }
+    fn num(&self) -> usize {
+        8
+    }
+    fn name(&self) -> &str {
+        "Extract Base System (recstrap)"
+    }
     fn ensures(&self) -> &str {
         "Base system is extracted with all essential directories present"
     }
@@ -103,10 +116,7 @@ impl Step for ExtractRootfs {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check recstrap is available
-        let recstrap_check = executor.exec(
-            "which recstrap",
-            Duration::from_secs(5),
-        )?;
+        let recstrap_check = executor.exec("which recstrap", Duration::from_secs(5))?;
 
         // CHEAT GUARD: recstrap MUST be available
         cheat_ensure!(
@@ -122,7 +132,10 @@ impl Step for ExtractRootfs {
             "recstrap not found. ISO may be incomplete."
         );
 
-        result.add_check("recstrap available", CheckResult::pass(recstrap_check.output.trim()));
+        result.add_check(
+            "recstrap available",
+            CheckResult::pass(recstrap_check.output.trim()),
+        );
 
         // Run recstrap to extract base system
         // recstrap handles rootfs location automatically (/media/cdrom/live/filesystem.erofs)
@@ -143,7 +156,9 @@ impl Step for ExtractRootfs {
                 "Ignore extraction errors"
             ],
             consequence = "Empty /mnt, no system installed, boot fails",
-            "recstrap failed (exit {}): {}", extract.exit_code, extract.output
+            "recstrap failed (exit {}): {}",
+            extract.exit_code,
+            extract.output
         );
 
         result.add_check("recstrap completed", CheckResult::pass("exit 0"));
@@ -168,7 +183,10 @@ impl Step for ExtractRootfs {
             "Essential directories missing after recstrap. /bin, /usr, /etc must exist."
         );
 
-        result.add_check("Base system verified", CheckResult::pass("/mnt/{bin,usr,etc} exist"));
+        result.add_check(
+            "Base system verified",
+            CheckResult::pass("/mnt/{bin,usr,etc} exist"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -181,8 +199,12 @@ impl Step for ExtractRootfs {
 pub struct GenerateFstab;
 
 impl Step for GenerateFstab {
-    fn num(&self) -> usize { 9 }
-    fn name(&self) -> &str { "Generate fstab (recfstab)" }
+    fn num(&self) -> usize {
+        9
+    }
+    fn name(&self) -> &str {
+        "Generate fstab (recfstab)"
+    }
     fn ensures(&self) -> &str {
         "System has valid /etc/fstab with correct UUIDs for automatic mounting"
     }
@@ -192,10 +214,7 @@ impl Step for GenerateFstab {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check recfstab is available
-        let recfstab_check = executor.exec(
-            "which recfstab",
-            Duration::from_secs(5),
-        )?;
+        let recfstab_check = executor.exec("which recfstab", Duration::from_secs(5))?;
 
         // CHEAT GUARD: recfstab MUST be available
         cheat_ensure!(
@@ -211,14 +230,15 @@ impl Step for GenerateFstab {
             "recfstab not found. ISO may be incomplete."
         );
 
-        result.add_check("recfstab available", CheckResult::pass(recfstab_check.output.trim()));
+        result.add_check(
+            "recfstab available",
+            CheckResult::pass(recfstab_check.output.trim()),
+        );
 
         // Generate fstab using recfstab
         // recfstab reads mounted filesystems under /mnt and outputs fstab entries
-        let fstab_result = executor.exec(
-            "recfstab /mnt >> /mnt/etc/fstab",
-            Duration::from_secs(10),
-        )?;
+        let fstab_result =
+            executor.exec("recfstab /mnt >> /mnt/etc/fstab", Duration::from_secs(10))?;
 
         // CHEAT GUARD: recfstab MUST succeed
         cheat_ensure!(
@@ -231,7 +251,9 @@ impl Step for GenerateFstab {
                 "Use placeholder UUIDs"
             ],
             consequence = "No fstab or wrong UUIDs, system won't mount partitions at boot",
-            "recfstab failed (exit {}): {}", fstab_result.exit_code, fstab_result.output
+            "recfstab failed (exit {}): {}",
+            fstab_result.exit_code,
+            fstab_result.output
         );
 
         result.add_check("recfstab completed", CheckResult::pass("exit 0"));
@@ -250,11 +272,14 @@ impl Step for GenerateFstab {
                 "Skip content verification"
             ],
             consequence = "fstab without UUIDs may fail to mount after device changes",
-            "fstab doesn't contain UUID entries:\n{}", verify.output
+            "fstab doesn't contain UUID entries:\n{}",
+            verify.output
         );
 
         // Show actual UUIDs found
-        let uuid_line = verify.output.lines()
+        let uuid_line = verify
+            .output
+            .lines()
             .find(|l| l.contains("UUID="))
             .unwrap_or("UUID= found");
         result.add_check("fstab contains UUIDs", CheckResult::pass(uuid_line.trim()));
@@ -271,8 +296,12 @@ impl Step for GenerateFstab {
 pub struct VerifyChroot;
 
 impl Step for VerifyChroot {
-    fn num(&self) -> usize { 10 }
-    fn name(&self) -> &str { "Verify Chroot (recchroot)" }
+    fn num(&self) -> usize {
+        10
+    }
+    fn name(&self) -> &str {
+        "Verify Chroot (recchroot)"
+    }
     fn ensures(&self) -> &str {
         "recchroot can execute commands in the installed system"
     }
@@ -282,10 +311,7 @@ impl Step for VerifyChroot {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check recchroot is available
-        let recchroot_check = executor.exec(
-            "which recchroot",
-            Duration::from_secs(5),
-        )?;
+        let recchroot_check = executor.exec("which recchroot", Duration::from_secs(5))?;
 
         // CHEAT GUARD: recchroot MUST be available
         cheat_ensure!(
@@ -301,7 +327,10 @@ impl Step for VerifyChroot {
             "recchroot not found. ISO may be incomplete."
         );
 
-        result.add_check("recchroot available", CheckResult::pass(recchroot_check.output.trim()));
+        result.add_check(
+            "recchroot available",
+            CheckResult::pass(recchroot_check.output.trim()),
+        );
 
         // Verify recchroot can execute commands
         let verify = executor.exec_chroot("/mnt", "echo CHROOT_OK", Duration::from_secs(10))?;
@@ -317,10 +346,14 @@ impl Step for VerifyChroot {
                 "Pretend chroot works"
             ],
             consequence = "Configuration commands won't run in installed system",
-            "recchroot test failed: {}", verify.output
+            "recchroot test failed: {}",
+            verify.output
         );
 
-        result.add_check("recchroot functional", CheckResult::pass("echo CHROOT_OK returned CHROOT_OK"));
+        result.add_check(
+            "recchroot functional",
+            CheckResult::pass("echo CHROOT_OK returned CHROOT_OK"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)

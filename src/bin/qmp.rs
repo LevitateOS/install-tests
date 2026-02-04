@@ -28,12 +28,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use install_tests::qemu::qmp::QmpClient;
 use install_tests::{
     acquire_test_lock, all_steps, context_for_distro, create_disk, find_ovmf, find_ovmf_vars,
     kill_stale_qemu_processes, require_preflight, steps_for_phase, DistroContext, Executor,
     QemuBuilder, AVAILABLE_DISTROS,
 };
-use install_tests::qemu::qmp::QmpClient;
 
 #[derive(Parser)]
 #[command(name = "install-tests-qmp")]
@@ -132,8 +132,7 @@ fn smoke_test(iso_path: &PathBuf, vnc_display: u16) -> Result<()> {
     }
 
     // Find OVMF for UEFI boot
-    let ovmf =
-        find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
+    let ovmf = find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
     println!("  OVMF: {}", ovmf.display());
 
     // Find OVMF_VARS template
@@ -248,7 +247,10 @@ fn smoke_test(iso_path: &PathBuf, vnc_display: u16) -> Result<()> {
     println!("  - {}", screenshot_path);
     println!("  - {}", screenshot_path2);
     println!();
-    println!("Convert PPM to PNG: convert {} screenshot.png", screenshot_path);
+    println!(
+        "Convert PPM to PNG: convert {} screenshot.png",
+        screenshot_path
+    );
 
     Ok(())
 }
@@ -314,8 +316,7 @@ fn run_tests_qmp(
     require_preflight(iso_dir)?;
 
     // Find OVMF for UEFI boot
-    let ovmf =
-        find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
+    let ovmf = find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
     let ovmf_vars_template =
         find_ovmf_vars().context("OVMF_VARS not found - needed for EFI variable storage")?;
     let ovmf_vars_path = std::env::temp_dir().join("leviso-install-test-qmp-vars.fd");
@@ -374,7 +375,10 @@ fn run_tests_qmp(
         builder = builder.vnc_display(vnc);
     }
 
-    let mut child = builder.build_qmp().spawn().context("Failed to spawn QEMU")?;
+    let mut child = builder
+        .build_qmp()
+        .spawn()
+        .context("Failed to spawn QEMU")?;
     println!("{}", "QEMU started!".green());
 
     // Wait for QMP socket
@@ -417,12 +421,7 @@ fn run_tests_qmp(
     println!();
 
     for (i, step) in all_requested.iter().enumerate() {
-        print!(
-            "{} Step {:2}: {}... ",
-            ">>".cyan(),
-            step.num(),
-            step.name()
-        );
+        print!("{} Step {:2}: {}... ", ">>".cyan(), step.num(), step.name());
 
         // Execute step
         match step.execute(&mut qmp, &*ctx) {
@@ -432,7 +431,8 @@ fn run_tests_qmp(
                 } else {
                     println!("{}", "FAIL".red());
                     // Take screenshot on failure
-                    let fail_screenshot = screenshot_dir.join(format!("fail-step-{:02}.ppm", step.num()));
+                    let fail_screenshot =
+                        screenshot_dir.join(format!("fail-step-{:02}.ppm", step.num()));
                     let _ = qmp.screendump(fail_screenshot.to_str().unwrap());
                 }
             }

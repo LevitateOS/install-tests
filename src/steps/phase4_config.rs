@@ -27,15 +27,19 @@ fn shell_escape(s: &str) -> String {
 fn escape_for_sed(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('$', "\\$")
-        .replace('&', "\\&")  // & has special meaning in sed replacement
+        .replace('&', "\\&") // & has special meaning in sed replacement
 }
 
 /// Step 10: Set timezone
 pub struct SetTimezone;
 
 impl Step for SetTimezone {
-    fn num(&self) -> usize { 11 }
-    fn name(&self) -> &str { "Set Timezone" }
+    fn num(&self) -> usize {
+        11
+    }
+    fn name(&self) -> &str {
+        "Set Timezone"
+    }
     fn ensures(&self) -> &str {
         "System timezone is configured for correct local time display"
     }
@@ -48,26 +52,26 @@ impl Step for SetTimezone {
         let timezone = "UTC";
 
         // OPTIMIZATION: Check if timezone is already set correctly (rootfs default)
-        let check = executor.exec_chroot(
-            "/mnt",
-            "readlink /etc/localtime",
-            Duration::from_secs(5),
-        )?;
+        let check =
+            executor.exec_chroot("/mnt", "readlink /etc/localtime", Duration::from_secs(5))?;
 
         if check.success() && check.output.contains(timezone) {
             // Already correct, skip the write
-            result.add_check("Timezone already correct (skipped)", CheckResult::pass(format!("/etc/localtime → {}", timezone)));
+            result.add_check(
+                "Timezone already correct (skipped)",
+                CheckResult::pass(format!("/etc/localtime → {}", timezone)),
+            );
         } else {
             // Create symlink for timezone
-            let cmd = format!(
-                "ln -sf /usr/share/zoneinfo/{} /etc/localtime",
-                timezone
-            );
+            let cmd = format!("ln -sf /usr/share/zoneinfo/{} /etc/localtime", timezone);
 
             let tz_result = executor.exec_chroot("/mnt", &cmd, Duration::from_secs(5))?;
 
             if tz_result.success() {
-                result.add_check("Timezone symlink created", CheckResult::pass(format!("/etc/localtime → {}", timezone)));
+                result.add_check(
+                    "Timezone symlink created",
+                    CheckResult::pass(format!("/etc/localtime → {}", timezone)),
+                );
             } else {
                 result.add_check(
                     "Timezone symlink created",
@@ -88,8 +92,12 @@ impl Step for SetTimezone {
 pub struct ConfigureLocale;
 
 impl Step for ConfigureLocale {
-    fn num(&self) -> usize { 12 }
-    fn name(&self) -> &str { "Configure Locale" }
+    fn num(&self) -> usize {
+        12
+    }
+    fn name(&self) -> &str {
+        "Configure Locale"
+    }
     fn ensures(&self) -> &str {
         "System locale is set for proper character encoding and language"
     }
@@ -106,7 +114,10 @@ impl Step for ConfigureLocale {
 
         if check.success() && check.output.contains(locale) {
             // Already correct, skip the write
-            result.add_check("locale.conf already correct (skipped)", CheckResult::pass(format!("LANG={}", locale)));
+            result.add_check(
+                "locale.conf already correct (skipped)",
+                CheckResult::pass(format!("LANG={}", locale)),
+            );
         } else {
             // Write locale.conf
             executor.write_file("/mnt/etc/locale.conf", &format!("LANG={}\n", locale))?;
@@ -115,7 +126,10 @@ impl Step for ConfigureLocale {
             let verify = executor.exec("cat /mnt/etc/locale.conf", Duration::from_secs(5))?;
 
             if verify.output.contains(locale) {
-                result.add_check("locale.conf written", CheckResult::pass(format!("LANG={}", locale)));
+                result.add_check(
+                    "locale.conf written",
+                    CheckResult::pass(format!("LANG={}", locale)),
+                );
             } else {
                 result.add_check(
                     "locale.conf written",
@@ -136,8 +150,12 @@ impl Step for ConfigureLocale {
 pub struct SetHostname;
 
 impl Step for SetHostname {
-    fn num(&self) -> usize { 13 }
-    fn name(&self) -> &str { "Set Hostname" }
+    fn num(&self) -> usize {
+        13
+    }
+    fn name(&self) -> &str {
+        "Set Hostname"
+    }
     fn ensures(&self) -> &str {
         "System has a hostname configured for network identification"
     }
@@ -167,7 +185,8 @@ impl Step for SetHostname {
         let verify_hosts = executor.exec("cat /mnt/etc/hosts", Duration::from_secs(5))?;
 
         // Check if hostname appears as a separate line in output
-        let hostname_found = verify_hostname.output
+        let hostname_found = verify_hostname
+            .output
             .lines()
             .any(|line| line.trim() == hostname);
 
@@ -184,7 +203,10 @@ impl Step for SetHostname {
         }
 
         if verify_hosts.output.contains(hostname) {
-            result.add_check("Hosts file updated", CheckResult::pass(format!("127.0.1.1 → {}", hostname)));
+            result.add_check(
+                "Hosts file updated",
+                CheckResult::pass(format!("127.0.1.1 → {}", hostname)),
+            );
         }
 
         result.duration = start.elapsed();
@@ -196,8 +218,12 @@ impl Step for SetHostname {
 pub struct SetRootPassword;
 
 impl Step for SetRootPassword {
-    fn num(&self) -> usize { 14 }
-    fn name(&self) -> &str { "Set Root Password" }
+    fn num(&self) -> usize {
+        14
+    }
+    fn name(&self) -> &str {
+        "Set Root Password"
+    }
     fn ensures(&self) -> &str {
         "Root account has a password for emergency system recovery"
     }
@@ -217,7 +243,10 @@ impl Step for SetRootPassword {
         // Generate SHA-512 password hash using openssl (available on all systems)
         // The -6 option uses SHA-512 (same as yescrypt in terms of security)
         // Use -stdin to avoid shell escaping issues with special characters in password
-        let hash_cmd = format!("printf '%s' '{}' | openssl passwd -6 -stdin", shell_escape(password));
+        let hash_cmd = format!(
+            "printf '%s' '{}' | openssl passwd -6 -stdin",
+            shell_escape(password)
+        );
         let hash_result = executor.exec(&hash_cmd, Duration::from_secs(10))?;
 
         cheat_ensure!(
@@ -230,7 +259,9 @@ impl Step for SetRootPassword {
                 "Hardcode a known hash"
             ],
             consequence = "No valid password hash = no login possible",
-            "openssl passwd failed (exit {}): {}", hash_result.exit_code, hash_result.output
+            "openssl passwd failed (exit {}): {}",
+            hash_result.exit_code,
+            hash_result.output
         );
 
         let hash = hash_result.output.trim();
@@ -240,12 +271,10 @@ impl Step for SetRootPassword {
             hash.starts_with("$6$"),
             protects = "Password hash is valid SHA-512 format",
             severity = "CRITICAL",
-            cheats = [
-                "Accept any string as hash",
-                "Skip format validation"
-            ],
+            cheats = ["Accept any string as hash", "Skip format validation"],
             consequence = "Invalid hash format = login will fail",
-            "Invalid hash format: expected $6$..., got: {}", hash
+            "Invalid hash format: expected $6$..., got: {}",
+            hash
         );
 
         // Edit /etc/shadow directly using sed to replace root's password field
@@ -262,12 +291,11 @@ impl Step for SetRootPassword {
             sed_result.success(),
             protects = "Shadow file can be modified",
             severity = "CRITICAL",
-            cheats = [
-                "Skip shadow modification",
-                "Accept sed failure"
-            ],
+            cheats = ["Skip shadow modification", "Accept sed failure"],
             consequence = "Password not written = no login possible",
-            "sed failed (exit {}): {}", sed_result.exit_code, sed_result.output
+            "sed failed (exit {}): {}",
+            sed_result.exit_code,
+            sed_result.output
         );
 
         // Verify password was actually set (not still locked with ! or *)
@@ -289,7 +317,10 @@ impl Step for SetRootPassword {
             "Password not set in /etc/shadow - account still locked"
         );
 
-        result.add_check("Root password set", CheckResult::pass("root has SHA-512 hash in /etc/shadow"));
+        result.add_check(
+            "Root password set",
+            CheckResult::pass("root has SHA-512 hash in /etc/shadow"),
+        );
 
         result.duration = start.elapsed();
         Ok(result)
@@ -300,8 +331,12 @@ impl Step for SetRootPassword {
 pub struct CreateUser;
 
 impl Step for CreateUser {
-    fn num(&self) -> usize { 15 }
-    fn name(&self) -> &str { "Create User Account" }
+    fn num(&self) -> usize {
+        15
+    }
+    fn name(&self) -> &str {
+        "Create User Account"
+    }
     fn ensures(&self) -> &str {
         "Primary user account exists with proper groups for daily use"
     }
@@ -335,15 +370,14 @@ impl Step for CreateUser {
         let useradd_cmd = if available_groups.is_empty() {
             format!("useradd -m -s {} {}", user_shell, username)
         } else {
-            format!("useradd -m -s {} -G {} {}", user_shell, groups_str, username)
+            format!(
+                "useradd -m -s {} -G {} {}",
+                user_shell, groups_str, username
+            )
         };
 
         // Create user with home directory
-        let useradd_result = executor.exec_chroot(
-            "/mnt",
-            &useradd_cmd,
-            Duration::from_secs(10),
-        )?;
+        let useradd_result = executor.exec_chroot("/mnt", &useradd_cmd, Duration::from_secs(10))?;
 
         // CHEAT GUARD: User account MUST be created for daily use
         cheat_ensure!(
@@ -356,29 +390,37 @@ impl Step for CreateUser {
                 "Only check if command was attempted"
             ],
             consequence = "No user account, must login as root (dangerous), or locked out entirely",
-            "useradd failed (exit {}): {}", useradd_result.exit_code, useradd_result.output
+            "useradd failed (exit {}): {}",
+            useradd_result.exit_code,
+            useradd_result.output
         );
 
-        result.add_check("User created", CheckResult::pass(format!("user '{}' with groups: {}", username, groups_str)));
+        result.add_check(
+            "User created",
+            CheckResult::pass(format!("user '{}' with groups: {}", username, groups_str)),
+        );
 
         // Set user password using direct shadow manipulation (same workaround as root password)
         // chpasswd via PAM silently fails in chroot environments
         let password = ctx.default_password();
 
         // Generate SHA-512 password hash using stdin to avoid shell escaping issues
-        let hash_cmd = format!("printf '%s' '{}' | openssl passwd -6 -stdin", shell_escape(password));
+        let hash_cmd = format!(
+            "printf '%s' '{}' | openssl passwd -6 -stdin",
+            shell_escape(password)
+        );
         let hash_result = executor.exec(&hash_cmd, Duration::from_secs(10))?;
 
         cheat_ensure!(
             hash_result.success() && hash_result.output.trim().starts_with("$6$"),
             protects = "User password hash can be generated",
             severity = "CRITICAL",
-            cheats = [
-                "Skip password hashing",
-                "Use invalid hash format"
-            ],
+            cheats = ["Skip password hashing", "Use invalid hash format"],
             consequence = "No valid password hash = user cannot login",
-            "openssl passwd failed for user '{}' (exit {}): {}", username, hash_result.exit_code, hash_result.output
+            "openssl passwd failed for user '{}' (exit {}): {}",
+            username,
+            hash_result.exit_code,
+            hash_result.output
         );
 
         let hash = hash_result.output.trim();
@@ -404,17 +446,20 @@ impl Step for CreateUser {
                 "Leave user with empty password"
             ],
             consequence = "User cannot login, or security vulnerability with empty password",
-            "Failed to set password for '{}' (exit {}): {}", username, sed_result.exit_code, sed_result.output
+            "Failed to set password for '{}' (exit {}): {}",
+            username,
+            sed_result.exit_code,
+            sed_result.output
         );
 
-        result.add_check("User password set", CheckResult::pass(format!("'{}' has SHA-512 hash", username)));
+        result.add_check(
+            "User password set",
+            CheckResult::pass(format!("'{}' has SHA-512 hash", username)),
+        );
 
         // Verify user exists
-        let verify = executor.exec_chroot(
-            "/mnt",
-            &format!("id {}", username),
-            Duration::from_secs(5),
-        )?;
+        let verify =
+            executor.exec_chroot("/mnt", &format!("id {}", username), Duration::from_secs(5))?;
 
         if verify.success() && verify.output.contains(username) {
             // Show actual id output as evidence
