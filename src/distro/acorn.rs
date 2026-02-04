@@ -211,7 +211,7 @@ impl DistroContext for AcornContext {
     // ═══════════════════════════════════════════════════════════════════════════
 
     fn default_iso_path(&self) -> PathBuf {
-        PathBuf::from("AcornOS/output/acornos.iso")
+        PathBuf::from("../../AcornOS/output/acornos.iso")
     }
 
     fn chroot_shell(&self) -> &str {
