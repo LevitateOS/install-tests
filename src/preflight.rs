@@ -77,6 +77,19 @@ impl PreflightCheck {
 /// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)
 /// * `Err` - Could not run verification (missing files, etc.)
 pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
+    run_preflight_with_iso(iso_dir, None)
+}
+
+/// Run preflight verification with a specific ISO filename.
+///
+/// # Arguments
+/// * `iso_dir` - Directory containing ISO artifacts
+/// * `iso_filename` - Optional specific ISO filename. If None, searches for any .iso file.
+///
+/// # Returns
+/// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)
+/// * `Err` - Could not run verification (missing files, etc.)
+pub fn run_preflight_with_iso(iso_dir: &Path, iso_filename: Option<&str>) -> Result<PreflightResult> {
     println!();
     println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
     println!("Verifying ISO artifacts before starting QEMU...");
@@ -123,8 +136,23 @@ pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
     }
 
     // Check ISO with full content verification
-    use distro_spec::levitate::ISO_FILENAME;
-    let iso_path = iso_dir.join(ISO_FILENAME);
+    // Support multi-distro by trying specified filename first, then searching
+    let iso_path = if let Some(filename) = iso_filename {
+        iso_dir.join(filename)
+    } else {
+        // Fallback: try to find any .iso file in the directory
+        match find_iso_file(iso_dir) {
+            Some(path) => path,
+            None => {
+                println!("  {} No .iso file found in {}", "✗".red(), iso_dir.display());
+                result.overall_pass = false;
+                println!();
+                print_summary(&result);
+                return Ok(result);
+            }
+        }
+    };
+
     if iso_path.exists() {
         result.iso = Some(verify_artifact(&iso_path, ChecklistType::Iso)?);
         if !result.iso.as_ref().unwrap().passed {
@@ -141,6 +169,25 @@ pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
     print_summary(&result);
 
     Ok(result)
+}
+
+/// Find any .iso file in the given directory.
+///
+/// Returns the first .iso file found (for multi-distro support).
+fn find_iso_file(dir: &Path) -> Option<std::path::PathBuf> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if let Ok(path) = entry.path().canonicalize() {
+                    if path.extension().and_then(|s| s.to_str()) == Some("iso") {
+                        return Some(path);
+                    }
+                }
+            }
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 /// Verify an artifact against its checklist.
