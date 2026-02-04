@@ -20,7 +20,7 @@ pub mod steps;
 // Re-export commonly used items
 pub use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
 pub use executor::{ExecResult, Executor};
-pub use preflight::{require_preflight, run_preflight, run_preflight_with_iso, PreflightCheck, PreflightResult};
+pub use preflight::{require_preflight, require_preflight_for_distro, run_preflight, run_preflight_for_distro, run_preflight_with_iso, run_preflight_with_iso_distro, PreflightCheck, PreflightResult};
 pub use qemu::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, Console,
     QemuBuilder, SerialExecutorExt,

@@ -80,6 +80,11 @@ pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
     run_preflight_with_iso(iso_dir, None)
 }
 
+/// Run preflight verification for a specific distro.
+pub fn run_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<PreflightResult> {
+    run_preflight_with_iso_distro(iso_dir, None, distro_id)
+}
+
 /// Run preflight verification with a specific ISO filename.
 ///
 /// # Arguments
@@ -169,6 +174,150 @@ pub fn run_preflight_with_iso(iso_dir: &Path, iso_filename: Option<&str>) -> Res
     print_summary(&result);
 
     Ok(result)
+}
+
+/// Run preflight verification with a specific ISO filename and distro context.
+pub fn run_preflight_with_iso_distro(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+    distro_id: &str,
+) -> Result<PreflightResult> {
+    println!();
+    println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
+    println!(
+        "Verifying ISO artifacts for {} before starting QEMU...",
+        distro_id
+    );
+    println!();
+
+    let mut result = PreflightResult {
+        live_initramfs: None,
+        install_initramfs: None,
+        iso: None,
+        overall_pass: true,
+    };
+
+    // Check live initramfs (skip for non-levitate — different naming/format)
+    let live_path = iso_dir.join("initramfs-live.cpio.gz");
+    if live_path.exists() {
+        result.live_initramfs =
+            Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
+        if !result.live_initramfs.as_ref().unwrap().passed {
+            result.overall_pass = false;
+        }
+    } else {
+        println!(
+            "  {} Live initramfs not found at {}",
+            "SKIP".yellow(),
+            live_path.display()
+        );
+    }
+
+    // Check install initramfs (only LevitateOS builds this)
+    if distro_id == "levitate" {
+        let install_path = iso_dir.join("initramfs-installed.img");
+        if install_path.exists() {
+            result.install_initramfs = Some(verify_artifact(
+                &install_path,
+                ChecklistType::InstallInitramfs,
+            )?);
+            if !result.install_initramfs.as_ref().unwrap().passed {
+                result.overall_pass = false;
+            }
+        } else {
+            println!(
+                "  {} Install initramfs not found at {}",
+                "SKIP".yellow(),
+                install_path.display()
+            );
+        }
+    }
+
+    // Check ISO with distro-aware content verification
+    let iso_path = if let Some(filename) = iso_filename {
+        iso_dir.join(filename)
+    } else {
+        match find_iso_file(iso_dir) {
+            Some(path) => path,
+            None => {
+                println!(
+                    "  {} No .iso file found in {}",
+                    "✗".red(),
+                    iso_dir.display()
+                );
+                result.overall_pass = false;
+                println!();
+                print_summary(&result);
+                return Ok(result);
+            }
+        }
+    };
+
+    if iso_path.exists() {
+        result.iso = Some(verify_iso_distro(&iso_path, distro_id)?);
+        if !result.iso.as_ref().unwrap().passed {
+            result.overall_pass = false;
+        }
+    } else {
+        println!("  {} ISO not found at {}", "✗".red(), iso_path.display());
+        result.overall_pass = false;
+    }
+
+    println!();
+    print_summary(&result);
+
+    Ok(result)
+}
+
+/// Verify an ISO using distro-specific checklist.
+fn verify_iso_distro(path: &Path, distro_id: &str) -> Result<PreflightCheck> {
+    let name = "Live ISO";
+    print!("  Checking {}... ", name);
+
+    let reader = match IsoReader::open(path) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("{}", "FAIL".red().bold());
+            println!("    Failed to read ISO: {}", e);
+            return Ok(PreflightCheck {
+                name: name.to_string(),
+                passed: false,
+                total_checks: 0,
+                passed_checks: 0,
+                failures: 1,
+                details: vec![format!("Failed to read ISO: {}", e)],
+            });
+        }
+    };
+    let report = fsdbg::checklist::iso::verify_distro(&reader, distro_id);
+
+    let check = PreflightCheck::from_report(name, &report);
+
+    // Print inline result
+    if check.passed {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let size_mb = size / (1024 * 1024);
+        println!(
+            "{} ({}/{} checks, {} MB)",
+            "PASS".green(),
+            check.passed_checks,
+            check.total_checks,
+            size_mb
+        );
+    } else {
+        println!(
+            "{} ({}/{} checks, {} failed)",
+            "FAIL".red().bold(),
+            check.passed_checks,
+            check.total_checks,
+            check.failures
+        );
+        for detail in &check.details {
+            println!("    {}", detail.red());
+        }
+    }
+
+    Ok(check)
 }
 
 /// Find any .iso file in the given directory.
@@ -316,7 +465,12 @@ fn print_summary(result: &PreflightResult) {
 ///
 /// This is a convenience function for tests that should abort on preflight failure.
 pub fn require_preflight(iso_dir: &Path) -> Result<()> {
-    let result = run_preflight(iso_dir)?;
+    require_preflight_for_distro(iso_dir, "levitate")
+}
+
+/// Run preflight for a distro and fail if critical issues found.
+pub fn require_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<()> {
+    let result = run_preflight_for_distro(iso_dir, distro_id)?;
 
     if !result.overall_pass {
         // Collect all failures for the error message
