@@ -417,6 +417,11 @@ fn run_tests(
         let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
         let mut console = Console::new(&mut child)?;
 
+        // Larger delay to allow QEMU to start producing output
+        // The reader thread needs time to connect and QEMU needs time to initialize
+        // TCG emulation (no KVM) can be very slow
+        std::thread::sleep(Duration::from_secs(2));
+
         // Wait for boot - fail-fast detection, timeout only if detection broken
         println!("{}", "Waiting for boot...".cyan());
         console.wait_for_live_boot_with_context(Duration::from_secs(30), &*ctx)?;
@@ -487,6 +492,11 @@ fn run_tests(
             .spawn()
             .context("Failed to spawn QEMU for installed system")?;
         let mut console = Console::new(&mut child)?;
+
+        // Larger delay to allow QEMU to start producing output
+        // The reader thread needs time to connect and QEMU needs time to initialize
+        // TCG emulation (no KVM) can be very slow
+        std::thread::sleep(Duration::from_secs(2));
 
         // Wait for the installed system to boot
         // Uses fail-fast detection - timeout only triggers if detection is broken
