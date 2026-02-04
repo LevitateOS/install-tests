@@ -5,6 +5,7 @@
 //! and bootloader differences.
 
 pub mod acorn;
+pub mod iuppiter;
 pub mod levitate;
 
 use std::path::PathBuf;
@@ -161,9 +162,10 @@ pub fn context_for_distro(id: &str) -> Option<Box<dyn DistroContext>> {
     match id {
         "levitate" | "levitateos" => Some(Box::new(levitate::LevitateContext)),
         "acorn" | "acornos" => Some(Box::new(acorn::AcornContext)),
+        "iuppiter" | "iuppiteros" => Some(Box::new(iuppiter::IuppiterContext)),
         _ => None,
     }
 }
 
 /// Available distro IDs for CLI help.
-pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn"];
+pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn", "iuppiter"];
