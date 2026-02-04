@@ -212,7 +212,7 @@ impl DistroContext for IuppiterContext {
     // ═══════════════════════════════════════════════════════════════════════════
 
     fn default_iso_path(&self) -> PathBuf {
-        PathBuf::from("../../IuppiterOS/output/iuppiter-x86_64.iso")
+        PathBuf::from("IuppiterOS/output/iuppiter-x86_64.iso")
     }
 
     fn chroot_shell(&self) -> &str {
