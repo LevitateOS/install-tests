@@ -94,7 +94,10 @@ pub fn run_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<Prefl
 /// # Returns
 /// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)
 /// * `Err` - Could not run verification (missing files, etc.)
-pub fn run_preflight_with_iso(iso_dir: &Path, iso_filename: Option<&str>) -> Result<PreflightResult> {
+pub fn run_preflight_with_iso(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+) -> Result<PreflightResult> {
     println!();
     println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
     println!("Verifying ISO artifacts before starting QEMU...");
@@ -149,7 +152,11 @@ pub fn run_preflight_with_iso(iso_dir: &Path, iso_filename: Option<&str>) -> Res
         match find_iso_file(iso_dir) {
             Some(path) => path,
             None => {
-                println!("  {} No .iso file found in {}", "✗".red(), iso_dir.display());
+                println!(
+                    "  {} No .iso file found in {}",
+                    "✗".red(),
+                    iso_dir.display()
+                );
                 result.overall_pass = false;
                 println!();
                 print_summary(&result);
@@ -200,8 +207,7 @@ pub fn run_preflight_with_iso_distro(
     // Check live initramfs (skip for non-levitate — different naming/format)
     let live_path = iso_dir.join("initramfs-live.cpio.gz");
     if live_path.exists() {
-        result.live_initramfs =
-            Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
+        result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
         if !result.live_initramfs.as_ref().unwrap().passed {
             result.overall_pass = false;
         }
@@ -289,7 +295,9 @@ fn verify_iso_distro(path: &Path, distro_id: &str) -> Result<PreflightCheck> {
             });
         }
     };
-    let report = fsdbg::checklist::iso::verify_distro(&reader, distro_id);
+    // TODO: pass distro_id once verify_distro is implemented in fsdbg
+    let _ = distro_id;
+    let report = fsdbg::checklist::iso::verify(&reader);
 
     let check = PreflightCheck::from_report(name, &report);
 

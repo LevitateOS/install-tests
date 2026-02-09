@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 
 use install_tests::{
     acquire_test_lock, all_steps, context_for_distro, create_disk, find_ovmf, find_ovmf_vars,
-    kill_stale_qemu_processes, require_preflight_for_distro, steps_for_phase, CheckResult, CommandLog,
-    Console, DistroContext, QemuBuilder, SerialExecutorExt, Step, StepResult, AVAILABLE_DISTROS,
+    kill_stale_qemu_processes, require_preflight_for_distro, steps_for_phase, CheckResult,
+    CommandLog, Console, DistroContext, QemuBuilder, SerialExecutorExt, Step, StepResult,
+    AVAILABLE_DISTROS,
 };
 
 #[derive(Parser)]
@@ -571,8 +572,7 @@ fn run_tests(
                 // Try to extract service name (e.g., "sshd.service")
                 if let Some(start) = failure_line.find("start ") {
                     let after_start = &failure_line[start + 6..];
-                    if let Some(end) = after_start.find(|c: char| c == ' ' || c == '-' || c == '.')
-                    {
+                    if let Some(end) = after_start.find([' ', '-', '.']) {
                         let service = &after_start[..end];
                         // Try getting status for common service patterns
                         for suffix in ["", ".service"] {

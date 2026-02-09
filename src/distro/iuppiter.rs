@@ -229,7 +229,9 @@ impl DistroContext for IuppiterContext {
 
     fn test_instrumentation_source(&self) -> &str {
         // IuppiterOS test instrumentation - ash-compatible version
-        include_str!("../../../../IuppiterOS/profile/live-overlay/etc/profile.d/00-iuppiter-test.sh")
+        include_str!(
+            "../../../../IuppiterOS/profile/live-overlay/etc/profile.d/00-iuppiter-test.sh"
+        )
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

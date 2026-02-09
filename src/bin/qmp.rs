@@ -24,7 +24,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,7 +123,7 @@ fn main() -> Result<()> {
 }
 
 /// Smoke test: boot ISO, type a command, capture screenshot
-fn smoke_test(iso_path: &PathBuf, vnc_display: u16) -> Result<()> {
+fn smoke_test(iso_path: &Path, vnc_display: u16) -> Result<()> {
     println!("{}", "QMP Smoke Test".bold());
     println!();
 
@@ -165,7 +165,7 @@ fn smoke_test(iso_path: &PathBuf, vnc_display: u16) -> Result<()> {
     // Build QEMU command for QMP mode
     println!("{}", "Starting QEMU with QMP...".cyan());
     let mut cmd = QemuBuilder::new()
-        .cdrom(iso_path.clone())
+        .cdrom(iso_path.to_path_buf())
         .disk(disk_path.clone())
         .uefi(ovmf)
         .uefi_vars(ovmf_vars_path.clone())
