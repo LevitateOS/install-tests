@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use install_tests::{
-    acquire_test_lock, all_steps, context_for_distro, create_disk, find_ovmf, find_ovmf_vars,
-    kill_stale_qemu_processes, require_preflight_for_distro, steps_for_phase, CheckResult,
-    CommandLog, Console, DistroContext, QemuBuilder, SerialExecutorExt, Step, StepResult,
-    AVAILABLE_DISTROS,
+    acquire_test_lock, all_steps, all_steps_with_experimental, context_for_distro, create_disk,
+    find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, require_preflight_for_distro,
+    steps_for_phase, steps_for_phase_experimental, CheckResult, CommandLog, Console, DistroContext,
+    QemuBuilder, SerialExecutorExt, Step, StepResult, AVAILABLE_DISTROS,
 };
 
 #[derive(Parser)]
@@ -62,6 +62,10 @@ enum Commands {
         /// Keep VM running after tests (for debugging)
         #[arg(long)]
         keep_vm: bool,
+
+        /// Include experimental Phase 6 (post-reboot verification, known broken)
+        #[arg(long)]
+        experimental: bool,
     },
 
     /// List all test steps
@@ -84,6 +88,7 @@ fn main() -> Result<()> {
             iso,
             disk_size,
             keep_vm,
+            experimental,
         } => {
             let ctx = context_for_distro(&distro).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -100,6 +105,7 @@ fn main() -> Result<()> {
                 iso,
                 &disk_size,
                 keep_vm,
+                experimental,
             )
         }
         Commands::List { distro } => {
@@ -131,7 +137,7 @@ fn list_steps(ctx: &dyn DistroContext) {
     );
     println!();
 
-    let steps = all_steps();
+    let steps = all_steps_with_experimental();
     let mut current_phase = 0;
 
     for step in steps {
@@ -279,6 +285,7 @@ fn run_single_step(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_tests(
     step_num: Option<usize>,
     phase_num: Option<usize>,
@@ -287,6 +294,7 @@ fn run_tests(
     iso_path: Option<PathBuf>,
     disk_size: &str,
     _keep_vm: bool,
+    experimental: bool,
 ) -> Result<()> {
     println!(
         "{}",
@@ -362,10 +370,21 @@ fn run_tests(
     println!();
 
     // Determine which steps to run
+    let get_all = if experimental {
+        all_steps_with_experimental
+    } else {
+        all_steps
+    };
     let all_requested: Vec<Box<dyn Step>> = match (step_num, phase_num) {
-        (Some(n), _) => all_steps().into_iter().filter(|s| s.num() == n).collect(),
-        (_, Some(p)) => steps_for_phase(p),
-        (None, None) => all_steps(),
+        (Some(n), _) => get_all().into_iter().filter(|s| s.num() == n).collect(),
+        (_, Some(p)) => {
+            if experimental {
+                steps_for_phase_experimental(p)
+            } else {
+                steps_for_phase(p)
+            }
+        }
+        (None, None) => get_all(),
     };
 
     if all_requested.is_empty() {
@@ -430,7 +449,7 @@ fn run_tests(
         println!();
 
         // Run pre-reboot steps
-        let steps: Vec<Box<dyn Step>> = all_steps()
+        let steps: Vec<Box<dyn Step>> = get_all()
             .into_iter()
             .filter(|s| pre_reboot_steps.contains(&s.num()))
             .collect();
@@ -661,7 +680,7 @@ fn run_tests(
         }
 
         // Run post-reboot verification steps
-        let steps: Vec<Box<dyn Step>> = all_steps()
+        let steps: Vec<Box<dyn Step>> = get_all()
             .into_iter()
             .filter(|s| post_reboot_steps.contains(&s.num()))
             .collect();

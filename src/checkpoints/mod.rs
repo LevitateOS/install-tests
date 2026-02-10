@@ -15,7 +15,8 @@
 pub mod state;
 
 use crate::distro::{context_for_distro, DistroContext};
-use crate::qemu::{Console, QemuBuilder, SerialExecutorExt};
+use crate::qemu::session;
+use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use state::CheckpointState;
@@ -189,7 +190,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     console.wait_for_live_boot_with_context(Duration::from_secs(60), ctx)?;
 
     // Check for key tools expected in the live environment
-    let tools = live_tools_for(ctx.id());
+    let tools: Vec<&str> = ctx.live_tools().to_vec();
     let mut missing = Vec::new();
     let mut found = Vec::new();
 
@@ -231,28 +232,10 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     }
     recqemu::create_disk(&disk_path, "20G")?;
 
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
-    let ovmf_vars_template = recqemu::find_ovmf_vars().context("OVMF_VARS not found")?;
-    let ovmf_vars = temp_ovmf_vars_path(ctx.id());
-    if ovmf_vars.exists() {
-        std::fs::remove_file(&ovmf_vars)?;
-    }
-    std::fs::copy(&ovmf_vars_template, &ovmf_vars)?;
+    let (ovmf, ovmf_vars) = session::setup_ovmf_vars(ctx.id())?;
 
-    let mut cmd = QemuBuilder::new()
-        .cdrom(iso_path.to_path_buf())
-        .disk(disk_path.clone())
-        .uefi(ovmf.clone())
-        .uefi_vars(ovmf_vars.clone())
-        .boot_order("dc")
-        .with_user_network()
-        .nographic()
-        .no_reboot()
-        .build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let mut console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
+    let (mut child, mut console) =
+        session::spawn_live_with_disk(iso_path, &disk_path, &ovmf, &ovmf_vars)?;
 
     console.wait_for_live_boot_with_context(Duration::from_secs(60), ctx)?;
 
@@ -313,20 +296,7 @@ fn run_installed_boot(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Strin
         bail!("No OVMF vars found. Checkpoint 3 (Installation) must pass first.");
     }
 
-    // Boot from disk only — no ISO
-    let mut cmd = QemuBuilder::new()
-        .disk(disk_path.clone())
-        .uefi(ovmf)
-        .uefi_vars(ovmf_vars)
-        .boot_order("c")
-        .with_user_network()
-        .nographic()
-        .no_reboot()
-        .build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let mut console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
+    let (mut child, mut console) = session::spawn_installed(&disk_path, &ovmf, &ovmf_vars)?;
 
     let result = console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx);
 
@@ -350,19 +320,7 @@ fn run_automated_login(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Stri
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
     let ovmf_vars = temp_ovmf_vars_path(ctx.id());
 
-    let mut cmd = QemuBuilder::new()
-        .disk(disk_path)
-        .uefi(ovmf)
-        .uefi_vars(ovmf_vars)
-        .boot_order("c")
-        .with_user_network()
-        .nographic()
-        .no_reboot()
-        .build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let mut console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
+    let (mut child, mut console) = session::spawn_installed(&disk_path, &ovmf, &ovmf_vars)?;
 
     console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
 
@@ -390,24 +348,12 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<S
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
     let ovmf_vars = temp_ovmf_vars_path(ctx.id());
 
-    let mut cmd = QemuBuilder::new()
-        .disk(disk_path)
-        .uefi(ovmf)
-        .uefi_vars(ovmf_vars)
-        .boot_order("c")
-        .with_user_network()
-        .nographic()
-        .no_reboot()
-        .build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let mut console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
+    let (mut child, mut console) = session::spawn_installed(&disk_path, &ovmf, &ovmf_vars)?;
 
     console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
     console.login("root", ctx.default_password(), Duration::from_secs(15))?;
 
-    let tools = installed_tools_for(ctx.id());
+    let tools: Vec<&str> = ctx.installed_tools().to_vec();
     let mut missing = Vec::new();
     let mut found = Vec::new();
 
@@ -454,88 +400,22 @@ fn checkpoint_name(n: u32) -> &'static str {
 }
 
 fn resolve_iso_path(ctx: &dyn DistroContext) -> Result<PathBuf> {
-    let default = ctx.default_iso_path();
-    let iso_path = if default.is_relative() {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(default)
-    } else {
-        default
-    };
-    if !iso_path.exists() {
-        bail!(
-            "ISO not found at {}. Build {} first: cd {} && cargo run -- build",
-            iso_path.display(),
-            ctx.name(),
-            ctx.id()
-        );
-    }
-    Ok(iso_path)
+    session::resolve_iso(ctx)
 }
 
 fn spawn_live_qemu(
-    _ctx: &dyn DistroContext,
+    ctx: &dyn DistroContext,
     iso_path: &Path,
 ) -> Result<(std::process::Child, Console)> {
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
-
-    let mut cmd = QemuBuilder::new()
-        .cdrom(iso_path.to_path_buf())
-        .uefi(ovmf)
-        .nographic()
-        .no_reboot()
-        .build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
-    Ok((child, console))
+    session::spawn_live(ctx, iso_path)
 }
 
 fn temp_disk_path(distro_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("checkpoint-{}-disk.qcow2", distro_id))
+    session::temp_disk_path(distro_id)
 }
 
 fn temp_ovmf_vars_path(distro_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("checkpoint-{}-vars.fd", distro_id))
-}
-
-/// Tools expected in the live ISO environment.
-fn live_tools_for(distro_id: &str) -> Vec<&'static str> {
-    match distro_id {
-        "acorn" | "acornos" => vec![
-            "recstrap",
-            "recfstab",
-            "recchroot",
-            "sfdisk",
-            "mkfs.ext4",
-            "mount",
-        ],
-        "iuppiter" | "iuppiteros" => vec![
-            "recstrap",
-            "recfstab",
-            "recchroot",
-            "sfdisk",
-            "mkfs.ext4",
-            "mount",
-            "smartctl",
-            "hdparm",
-        ],
-        _ => vec!["recstrap", "recfstab", "recchroot", "sfdisk", "mkfs.ext4"],
-    }
-}
-
-/// Tools expected on the installed system.
-fn installed_tools_for(distro_id: &str) -> Vec<&'static str> {
-    match distro_id {
-        "acorn" | "acornos" => vec![
-            "sudo", "ip", "ssh", "ash", "mount", "umount", "dmesg", "ps", "ls", "cat",
-        ],
-        "iuppiter" | "iuppiteros" => vec![
-            "sudo", "ip", "ssh", "ash", "smartctl", "hdparm", "sg_inq", "mount", "umount", "dmesg",
-        ],
-        _ => vec!["sudo", "ip", "ssh", "mount", "umount", "dmesg"],
-    }
+    session::temp_ovmf_vars_path(distro_id)
 }
 
 /// Installation commands for a distro. Returns (description, command) pairs.

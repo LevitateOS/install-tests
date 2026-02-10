@@ -16,6 +16,7 @@ mod builder;
 pub mod patterns;
 pub mod qmp;
 pub mod serial;
+pub mod session;
 
 pub use builder::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes,

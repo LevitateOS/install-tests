@@ -5,12 +5,14 @@ edition = "2021"
 description = "E2E test runner for LevitateOS installation process"
 license = "MIT OR Apache-2.0"
 
+default-run = "checkpoints"
+
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "serial"
-path = "src/bin/serial.rs"
+name = "install-tests"
+path = "src/bin/install-tests.rs"
 
 [[bin]]
 name = "qmp"

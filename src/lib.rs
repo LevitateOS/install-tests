@@ -29,4 +29,7 @@ pub use qemu::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, Console,
     QemuBuilder, SerialExecutorExt,
 };
-pub use steps::{all_steps, steps_for_phase, CheckResult, CommandLog, Step, StepResult};
+pub use steps::{
+    all_steps, all_steps_with_experimental, steps_for_phase, steps_for_phase_experimental,
+    CheckResult, CommandLog, Step, StepResult,
+};

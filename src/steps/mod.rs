@@ -235,7 +235,10 @@ pub trait Step {
     }
 }
 
-/// Get all steps in order
+/// Get all steps in order (Phases 1-5 only).
+///
+/// Phase 6 (post-reboot verification) is excluded by default because it has
+/// been broken for a long time. Use `all_steps_with_experimental()` to include it.
 pub fn all_steps() -> Vec<Box<dyn Step>> {
     vec![
         // Phase 1: Boot
@@ -261,19 +264,41 @@ pub fn all_steps() -> Vec<Box<dyn Step>> {
         Box::new(phase5_boot::GenerateInitramfs),
         Box::new(phase5_boot::InstallBootloader),
         Box::new(phase5_boot::EnableServices),
-        // Phase 6: Post-reboot verification (runs AFTER booting installed system)
-        Box::new(phase6_verify::VerifySystemdBoot),
+    ]
+}
+
+/// Get all steps including experimental Phase 6 (post-reboot verification).
+///
+/// Phase 6 has been broken for a long time. Use `--experimental` flag to opt in.
+pub fn all_steps_with_experimental() -> Vec<Box<dyn Step>> {
+    let mut steps = all_steps();
+    steps.extend(vec![
+        Box::new(phase6_verify::VerifySystemdBoot) as Box<dyn Step>,
         Box::new(phase6_verify::VerifyHostname),
         Box::new(phase6_verify::VerifyUserLogin),
         Box::new(phase6_verify::VerifyNetworking),
         Box::new(phase6_verify::VerifySudo),
         Box::new(phase6_verify::VerifyEssentialCommands),
-    ]
+    ]);
+    steps
 }
 
-/// Get steps for a specific phase
+/// Get steps for a specific phase.
+///
+/// Returns empty for phase 6 unless `experimental` is true.
 pub fn steps_for_phase(phase: usize) -> Vec<Box<dyn Step>> {
+    if phase == 6 {
+        return Vec::new(); // Phase 6 requires --experimental
+    }
     all_steps()
+        .into_iter()
+        .filter(|s| s.phase() == phase)
+        .collect()
+}
+
+/// Get steps for a specific phase, including experimental phases.
+pub fn steps_for_phase_experimental(phase: usize) -> Vec<Box<dyn Step>> {
+    all_steps_with_experimental()
         .into_iter()
         .filter(|s| s.phase() == phase)
         .collect()

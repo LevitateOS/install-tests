@@ -282,4 +282,12 @@ impl DistroContext for LevitateContext {
     fn boot_target_name(&self) -> &str {
         "multi-user.target"
     }
+
+    fn live_tools(&self) -> &[&str] {
+        &["recstrap", "recfstab", "recchroot", "sfdisk", "mkfs.ext4"]
+    }
+
+    fn installed_tools(&self) -> &[&str] {
+        &["sudo", "ip", "ssh", "mount", "umount", "dmesg"]
+    }
 }

@@ -7,6 +7,7 @@
 pub mod acorn;
 pub mod iuppiter;
 pub mod levitate;
+mod openrc_base;
 
 use std::path::PathBuf;
 
@@ -155,6 +156,16 @@ pub trait DistroContext: Send + Sync {
 
     /// Boot target name for display (e.g., "multi-user.target", "default runlevel").
     fn boot_target_name(&self) -> &str;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Tool Expectations (Checkpoints)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Tools expected to be present in the live ISO environment.
+    fn live_tools(&self) -> &[&str];
+
+    /// Tools expected to be present on the installed system.
+    fn installed_tools(&self) -> &[&str];
 }
 
 /// Create a DistroContext based on the distro ID string.
