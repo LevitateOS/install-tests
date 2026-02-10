@@ -16,6 +16,10 @@ path = "src/bin/serial.rs"
 name = "qmp"
 path = "src/bin/qmp.rs"
 
+[[bin]]
+name = "checkpoints"
+path = "src/bin/checkpoints.rs"
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
