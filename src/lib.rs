@@ -14,6 +14,7 @@
 pub mod checkpoints;
 pub mod distro;
 pub mod executor;
+pub mod interactive;
 pub mod preflight;
 pub mod qemu;
 pub mod steps;

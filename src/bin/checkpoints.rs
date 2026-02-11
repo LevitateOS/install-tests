@@ -7,6 +7,7 @@
 //!   cargo run --bin checkpoints -- --distro acorn --up-to 3
 //!   cargo run --bin checkpoints -- --distro acorn --status
 //!   cargo run --bin checkpoints -- --distro acorn --reset
+//!   cargo run --bin checkpoints -- --distro acorn --checkpoint 2 --interactive
 
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -36,6 +37,10 @@ struct Cli {
     /// Reset checkpoint state (forces re-run)
     #[arg(long)]
     reset: bool,
+
+    /// Interactive mode: run checkpoint test and drop to shell (like loading a video game save)
+    #[arg(long)]
+    interactive: bool,
 }
 
 fn main() -> Result<()> {
