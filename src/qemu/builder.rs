@@ -97,6 +97,12 @@ impl QemuBuilder {
         self
     }
 
+    /// Send serial output to stdio.
+    pub fn serial_stdio(mut self) -> Self {
+        self.inner = self.inner.serial_stdio();
+        self
+    }
+
     /// Don't reboot on exit.
     pub fn no_reboot(mut self) -> Self {
         self.inner = self.inner.no_reboot();

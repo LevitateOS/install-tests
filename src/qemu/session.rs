@@ -60,6 +60,7 @@ pub fn spawn_live(_ctx: &dyn DistroContext, iso_path: &Path) -> Result<(Child, C
         .cdrom(iso_path.to_path_buf())
         .uefi(ovmf)
         .nographic()
+        .serial_stdio()
         .no_reboot()
         .build_piped();
 
@@ -84,6 +85,7 @@ pub fn spawn_live_with_disk(
         .boot_order("dc")
         .with_user_network()
         .nographic()
+        .serial_stdio()
         .no_reboot()
         .build_piped();
 
@@ -106,6 +108,7 @@ pub fn spawn_installed(
         .boot_order("c")
         .with_user_network()
         .nographic()
+        .serial_stdio()
         .no_reboot()
         .build_piped();
 
