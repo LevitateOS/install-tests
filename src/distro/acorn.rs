@@ -147,12 +147,29 @@ impl DistroContext for AcornContext {
 
     fn live_tools(&self) -> &[&str] {
         &[
+            // === Core Installation Tools ===
             "recstrap",
             "recfstab",
             "recchroot",
             "sfdisk",
             "mkfs.ext4",
             "mount",
+            // === Network & Connectivity (daily driver) ===
+            "ip",   // iproute2
+            "ping", // iputils
+            "curl", // curl
+            // === Hardware Diagnostics (daily driver) ===
+            "lspci",    // pciutils
+            "lsusb",    // usbutils
+            "smartctl", // smartmontools
+            "hdparm",   // hdparm
+            // === Editors & Viewers (daily driver) ===
+            "vim",  // vim
+            "less", // less
+            // === System Utilities (daily driver) ===
+            "htop", // htop
+            "grep", // grep
+            "find", // findutils
         ]
     }
 

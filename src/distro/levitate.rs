@@ -272,7 +272,27 @@ impl DistroContext for LevitateContext {
     }
 
     fn live_tools(&self) -> &[&str] {
-        &["recstrap", "recfstab", "recchroot", "sfdisk", "mkfs.ext4"]
+        &[
+            // === Core Installation Tools ===
+            "recstrap",
+            "recfstab",
+            "recchroot",
+            "sfdisk",
+            "mkfs.ext4",
+            // === Network & Connectivity (daily driver) ===
+            "ip",   // iproute2
+            "ping", // iputils
+            "curl", // curl
+            // === Hardware Diagnostics (daily driver) ===
+            "lspci", // pciutils
+            "lsusb", // usbutils
+            // === Editors & Viewers (daily driver) ===
+            "vi",   // vim-minimal (Rocky default)
+            "less", // less
+            // === System Utilities (daily driver) ===
+            "grep", // grep (coreutils)
+            "find", // findutils
+        ]
     }
 
     fn installed_tools(&self) -> &[&str] {

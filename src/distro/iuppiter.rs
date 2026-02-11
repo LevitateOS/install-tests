@@ -152,14 +152,24 @@ impl DistroContext for IuppiterContext {
 
     fn live_tools(&self) -> &[&str] {
         &[
+            // === Core Installation Tools ===
             "recstrap",
             "recfstab",
             "recchroot",
             "sfdisk",
             "mkfs.ext4",
             "mount",
-            "smartctl",
-            "hdparm",
+            // === Appliance HDD Tools (critical) ===
+            "smartctl", // smartmontools - disk health
+            "hdparm",   // hdparm - disk parameters
+            "sg_inq",   // sg3_utils - SCSI inquiry
+            // === Network & Connectivity (essential) ===
+            "ip",   // iproute2
+            "ping", // iputils
+            // === System Utilities (essential) ===
+            "less", // less - pager for logs
+            "grep", // grep - text search
+            "find", // findutils - file search
         ]
     }
 
