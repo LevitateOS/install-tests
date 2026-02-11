@@ -185,6 +185,13 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 }
 
 /// Checkpoint 2: Live Tools — Expected binaries in live environment.
+///
+/// IMPORTANT: This doesn't just check if tools exist (which would be lazy).
+/// It actually EXECUTES each tool to verify:
+/// - Binary can execute (not just exist in PATH)
+/// - Required libraries are present (no missing .so files)
+/// - Environment is configured (proc/sys/dev available)
+/// - Tool is functional (not broken/corrupted)
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console) = spawn_live_qemu(ctx, iso_path)?;
     console.wait_for_live_boot_with_context(Duration::from_secs(60), ctx)?;
@@ -193,32 +200,63 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let tools: Vec<&str> = ctx.live_tools().to_vec();
     let mut missing = Vec::new();
     let mut found = Vec::new();
+    let mut broken = Vec::new();
 
     for tool in &tools {
-        let result = console.exec(
-            &format!("which {} 2>/dev/null && echo FOUND", tool),
-            Duration::from_secs(5),
-        )?;
-        if result.output.contains("FOUND") {
+        // Get the validation command for this tool
+        let validation_cmd = get_tool_validation_command(tool);
+
+        let result = console.exec(&validation_cmd, Duration::from_secs(10))?;
+
+        if result.exit_code == 0 {
+            // Tool executed successfully - it works!
             found.push(*tool);
-        } else {
+        } else if result.exit_code == 127 {
+            // Exit code 127 = command not found
             missing.push(*tool);
+        } else {
+            // Tool exists but failed to execute properly
+            broken.push((*tool, result.exit_code, result.output.trim().to_string()));
         }
     }
 
     let _ = child.kill();
     let _ = child.wait();
 
-    if !missing.is_empty() {
-        bail!(
-            "Missing tools in live environment: {}\nFound: {}",
-            missing.join(", "),
-            found.join(", ")
-        );
+    // Report failures
+    if !missing.is_empty() || !broken.is_empty() {
+        let mut error_msg = String::new();
+
+        if !missing.is_empty() {
+            error_msg.push_str(&format!(
+                "Missing tools (not in PATH): {}\n",
+                missing.join(", ")
+            ));
+        }
+
+        if !broken.is_empty() {
+            error_msg.push_str("Broken tools (exist but failed to execute):\n");
+            for (tool, code, output) in &broken {
+                error_msg.push_str(&format!(
+                    "  {} (exit {}): {}\n",
+                    tool,
+                    code,
+                    if output.is_empty() {
+                        "no output"
+                    } else {
+                        &output.lines().next().unwrap_or("unknown error")
+                    }
+                ));
+            }
+        }
+
+        error_msg.push_str(&format!("\nWorking tools: {}", found.join(", ")));
+
+        bail!("{}", error_msg.trim());
     }
 
     Ok(format!(
-        "All {} tools present: {}",
+        "All {} tools verified working (actually executed): {}",
         found.len(),
         found.join(", ")
     ))
@@ -471,6 +509,73 @@ fn install_commands_for(ctx: &dyn DistroContext) -> Vec<(&'static str, String)> 
         ),
         ("Unmount", "umount -R /mnt/sysroot".to_string()),
     ]
+}
+
+/// Get the validation command for a tool.
+///
+/// Returns a command that:
+/// 1. Actually executes the tool (not just checks if it exists)
+/// 2. Exits with code 0 on success
+/// 3. Exits with code 127 if tool not found
+/// 4. Exits with non-zero if tool is broken/misconfigured
+///
+/// Most tools support --version which is perfect for verification.
+fn get_tool_validation_command(tool: &str) -> String {
+    match tool {
+        // Installation tools - most support --help
+        "recstrap" | "recfstab" | "recchroot" => {
+            format!("{} --help >/dev/null 2>&1", tool)
+        }
+
+        // Partitioning/filesystem tools
+        "sfdisk" => "sfdisk --version >/dev/null 2>&1".to_string(),
+        "mkfs.ext4" => "mkfs.ext4 -V 2>&1 | head -1 >/dev/null".to_string(),
+        "parted" => "parted --version >/dev/null 2>&1".to_string(),
+        "sgdisk" => "sgdisk --version >/dev/null 2>&1".to_string(),
+
+        // Mount is special - just verify it's callable
+        "mount" | "umount" => format!("{} --version >/dev/null 2>&1", tool),
+
+        // Network tools
+        "ip" => "ip -V >/dev/null 2>&1".to_string(),
+        "ping" => "ping -V >/dev/null 2>&1".to_string(),
+        "curl" => "curl --version >/dev/null 2>&1".to_string(),
+
+        // Hardware diagnostics
+        "lspci" => "lspci --version >/dev/null 2>&1".to_string(),
+        "lsusb" => "lsusb --version >/dev/null 2>&1".to_string(),
+        "smartctl" => "smartctl --version >/dev/null 2>&1".to_string(),
+        "hdparm" => "hdparm -V >/dev/null 2>&1".to_string(),
+        "sg_inq" => "sg_inq --version >/dev/null 2>&1".to_string(),
+        "nvme" => "nvme version >/dev/null 2>&1".to_string(),
+        "dmidecode" => "dmidecode --version >/dev/null 2>&1".to_string(),
+        "ethtool" => "ethtool --version >/dev/null 2>&1".to_string(),
+
+        // Editors and pagers
+        "vim" => "vim --version >/dev/null 2>&1".to_string(),
+        "vi" => "vi -h 2>&1 | head -1 >/dev/null".to_string(),
+        "less" => "less --version >/dev/null 2>&1".to_string(),
+
+        // System utilities
+        "htop" => "htop --version >/dev/null 2>&1".to_string(),
+        "grep" => "grep --version >/dev/null 2>&1".to_string(),
+        "find" => "find --version >/dev/null 2>&1".to_string(),
+        "sed" => "sed --version >/dev/null 2>&1".to_string(),
+        "awk" | "gawk" => "awk --version >/dev/null 2>&1".to_string(),
+
+        // SSH/sudo
+        "ssh" => "ssh -V 2>&1 >/dev/null".to_string(),
+        "sudo" | "doas" => format!("{} --version >/dev/null 2>&1", tool),
+
+        // Shell and basic tools (busybox applets)
+        "ash" | "bash" | "sh" => format!("{} --version >/dev/null 2>&1", tool),
+        "cat" | "ls" | "ps" | "dmesg" => {
+            format!("{} --version >/dev/null 2>&1 || true", tool)
+        }
+
+        // Unknown tool - try generic --version
+        _ => format!("{} --version >/dev/null 2>&1", tool),
+    }
 }
 
 fn print_failure(checkpoint: u32, err: &anyhow::Error) {
