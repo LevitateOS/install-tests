@@ -180,6 +180,10 @@ These scripts are automatically installed on every ISO during the build process:
 
 See `AcornOS/src/component/definitions.rs` (CHECKPOINT_TESTS component) for build integration.
 
+Other build integrations:
+- `IuppiterOS/src/component/definitions.rs` (CHECKPOINT_TESTS component)
+- `leviso/src/component/definitions.rs` (FINAL component installs via `CustomOp::InstallCheckpointTests`)
+
 ## CI/Automation
 
 For CI and automated testing, the Rust-based test harness in `testing/install-tests/` can:
@@ -204,7 +208,7 @@ This provides the best of both worlds:
 ## Next Steps
 
 1. ✅ Phase 1: Test scripts created (this directory)
-2. ⏳ Phase 2: Integrate into ISO builds
+2. ✅ Phase 2: Integrate into ISO builds
 3. ⏳ Phase 3: Add interactive checkpoint mode
 4. ⏳ Phase 4: Update justfile commands
 5. ⏳ Phase 5: Add auto-run support
