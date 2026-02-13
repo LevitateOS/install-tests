@@ -117,7 +117,10 @@ fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, checkpoint: u3
     println!("{}", "━".repeat(60).cyan());
     println!();
 
-    // Keep QEMU running - wait for user to kill it
+    // Hand control to the user by proxying stdio to the QEMU serial console.
+    // This returns when QEMU exits (or its stdout closes).
+    console.attach_stdio()?;
+
     let status = child.wait()?;
 
     if status.success() {

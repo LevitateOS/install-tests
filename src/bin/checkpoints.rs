@@ -13,6 +13,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 
 use install_tests::checkpoints;
+use install_tests::interactive;
 
 #[derive(Parser)]
 #[command(name = "checkpoints")]
@@ -52,6 +53,19 @@ fn main() -> Result<()> {
 
     if cli.status {
         return checkpoints::print_status(&cli.distro);
+    }
+
+    if cli.interactive {
+        if cli.up_to.is_some() {
+            bail!("--interactive cannot be used with --up-to");
+        }
+        let Some(cp) = cli.checkpoint else {
+            bail!("--interactive requires --checkpoint N");
+        };
+        if !(1..=6).contains(&cp) {
+            bail!("Checkpoint must be 1-6, got {}", cp);
+        }
+        return interactive::run_interactive_checkpoint(&cli.distro, cp);
     }
 
     if let Some(cp) = cli.checkpoint {
