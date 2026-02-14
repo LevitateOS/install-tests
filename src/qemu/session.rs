@@ -12,20 +12,43 @@ use std::time::Duration;
 /// Resolve the ISO path for a distro context.
 pub fn resolve_iso(ctx: &dyn DistroContext) -> Result<PathBuf> {
     let default = ctx.default_iso_path();
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let iso_path = if default.is_relative() {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(default)
+        workspace_root.join(default)
     } else {
         default
     };
     if !iso_path.exists() {
-        // ISO paths are consistently `<DistroDir>/output/<iso>`. Use that to
+        // ISO paths are consistently `.artifacts/out/<DistroDir>/<iso>`. Use that to
         // provide a helpful build hint without requiring DistroContext to
         // know its directory name.
         let build_dir_hint = iso_path
-            .parent()
-            .and_then(|p| p.parent())
+            .strip_prefix(&workspace_root)
+            .ok()
+            .and_then(|rel| {
+                // Expected default layout:
+                //   .artifacts/out/<DistroDir>/<iso>
+                let mut comps = rel.components();
+                let c1 = comps.next()?.as_os_str();
+                let c2 = comps.next()?.as_os_str();
+                let distro = comps.next()?.as_os_str();
+                if c1 == std::ffi::OsStr::new(".artifacts")
+                    && c2 == std::ffi::OsStr::new("out")
+                    && !distro.is_empty()
+                {
+                    Some(workspace_root.join(distro))
+                } else {
+                    None
+                }
+            })
+            // Legacy layout:
+            //   <DistroDir>/output/<iso>
+            .or_else(|| {
+                iso_path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+            })
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<DistroDir>".to_string());
         bail!(

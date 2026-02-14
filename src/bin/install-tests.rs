@@ -320,8 +320,10 @@ fn run_tests(
         // Use distro-specific default path
         let default = ctx.default_iso_path();
         if default.is_relative() {
-            // Resolve relative to current directory (where install-tests is run from)
-            std::env::current_dir().unwrap_or_default().join(default)
+            // Resolve relative to workspace root (stable regardless of CWD)
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(default)
         } else {
             default
         }

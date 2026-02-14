@@ -111,7 +111,7 @@ impl DistroContext for IuppiterContext {
     fn default_iso_path(&self) -> PathBuf {
         // Relative to repo root; session::resolve_iso() prefixes with workspace root.
         PathBuf::from(format!(
-            "IuppiterOS/output/{}",
+            ".artifacts/out/IuppiterOS/{}",
             distro_spec::iuppiter::ISO_FILENAME
         ))
     }

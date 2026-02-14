@@ -71,7 +71,7 @@ impl PreflightCheck {
 /// This should be called BEFORE starting QEMU to catch issues early.
 ///
 /// # Arguments
-/// * `iso_dir` - Directory containing ISO artifacts (leviso/output/)
+/// * `iso_dir` - Directory containing ISO artifacts (e.g. `.artifacts/out/leviso/`)
 ///
 /// # Returns
 /// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)

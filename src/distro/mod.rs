@@ -118,7 +118,7 @@ pub trait DistroContext: Send + Sync {
     // Paths
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Default ISO path (relative to leviso_dir or AcornOS dir).
+    /// Default ISO path (relative to workspace root).
     fn default_iso_path(&self) -> PathBuf;
 
     /// Shell to use in chroot.

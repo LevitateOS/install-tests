@@ -224,7 +224,7 @@ impl DistroContext for LevitateContext {
 
         // Path is relative to workspace root (CARGO_MANIFEST_DIR/../..)
         // resolve_iso() in session.rs joins this with the workspace root
-        PathBuf::from(format!("leviso/output/{}", ISO_FILENAME))
+        PathBuf::from(format!(".artifacts/out/leviso/{}", ISO_FILENAME))
     }
 
     fn chroot_shell(&self) -> &str {
