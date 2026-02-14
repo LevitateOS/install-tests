@@ -109,7 +109,11 @@ impl DistroContext for IuppiterContext {
     }
 
     fn default_iso_path(&self) -> PathBuf {
-        PathBuf::from("../../IuppiterOS/output/iuppiter-x86_64.iso")
+        // Relative to repo root; session::resolve_iso() prefixes with workspace root.
+        PathBuf::from(format!(
+            "IuppiterOS/output/{}",
+            distro_spec::iuppiter::ISO_FILENAME
+        ))
     }
 
     fn chroot_shell(&self) -> &str {

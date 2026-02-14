@@ -106,7 +106,11 @@ impl DistroContext for AcornContext {
     }
 
     fn default_iso_path(&self) -> PathBuf {
-        PathBuf::from("../../AcornOS/output/acornos.iso")
+        // Relative to repo root; session::resolve_iso() prefixes with workspace root.
+        PathBuf::from(format!(
+            "AcornOS/output/{}",
+            distro_spec::acorn::ISO_FILENAME
+        ))
     }
 
     fn chroot_shell(&self) -> &str {

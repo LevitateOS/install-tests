@@ -20,11 +20,19 @@ pub fn resolve_iso(ctx: &dyn DistroContext) -> Result<PathBuf> {
         default
     };
     if !iso_path.exists() {
+        // ISO paths are consistently `<DistroDir>/output/<iso>`. Use that to
+        // provide a helpful build hint without requiring DistroContext to
+        // know its directory name.
+        let build_dir_hint = iso_path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<DistroDir>".to_string());
         bail!(
             "ISO not found at {}. Build {} first: cd {} && cargo run -- build",
             iso_path.display(),
             ctx.name(),
-            ctx.id()
+            build_dir_hint
         );
     }
     Ok(iso_path)
