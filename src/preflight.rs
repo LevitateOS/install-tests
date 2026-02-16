@@ -17,7 +17,10 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use distro_contract::run_preflight as run_contract_preflight;
+use distro_contract::{
+    load_cp0_contract_bundle_for_distro_from, run_preflight as run_declaration_preflight,
+    validate_cp0_runtime,
+};
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
 use fsdbg::iso::IsoReader;
@@ -125,7 +128,7 @@ pub fn run_preflight_with_iso_distro(
         overall_pass: true,
     };
 
-    result.conformance = Some(verify_conformance_contract(distro_id)?);
+    result.conformance = Some(verify_conformance_contract(iso_dir, distro_id)?);
     if !result.conformance.as_ref().unwrap().passed {
         result.overall_pass = false;
     }
@@ -205,73 +208,67 @@ pub fn run_preflight_with_iso_distro(
     Ok(result)
 }
 
-fn verify_conformance_contract(distro_id: &str) -> Result<PreflightCheck> {
+fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<PreflightCheck> {
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
-    let Some(contract) = distro_spec::conformance::contract_for_distro(distro_id) else {
-        println!("{}", "FAIL".red().bold());
-        return Ok(PreflightCheck {
-            name: name.to_string(),
-            passed: false,
-            total_checks: 1,
-            passed_checks: 0,
-            failures: 1,
-            details: vec![format!(
-                "No conformance contract declaration found for distro '{}'",
-                distro_id
-            )],
-        });
-    };
-
-    match run_contract_preflight(&contract) {
-        Ok(report) => {
-            println!(
-                "{} ({} violations)",
-                "PASS".green(),
-                report.violations.len()
-            );
-            Ok(PreflightCheck {
-                name: name.to_string(),
-                passed: true,
-                total_checks: 1,
-                passed_checks: 1,
-                failures: 0,
-                details: Vec::new(),
-            })
-        }
+    let bundle = match load_cp0_contract_bundle_for_distro_from(iso_dir, distro_id) {
+        Ok(bundle) => bundle,
         Err(err) => {
-            println!(
-                "{} ({} violations)",
-                "FAIL".red().bold(),
-                err.report.violations.len()
-            );
-
-            let details = err
-                .report
-                .violations
-                .into_iter()
-                .map(|v| {
-                    format!(
-                        "{:?}.{} [{:?}] {}",
-                        v.checkpoint, v.field, v.code, v.message
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            for detail in &details {
-                println!("    {}", detail.red());
-            }
-
-            Ok(PreflightCheck {
+            println!("{}", "FAIL".red().bold());
+            return Ok(PreflightCheck {
                 name: name.to_string(),
                 passed: false,
-                total_checks: details.len(),
+                total_checks: 1,
                 passed_checks: 0,
-                failures: details.len(),
-                details,
-            })
+                failures: 1,
+                details: vec![err.to_string()],
+            });
         }
+    };
+
+    let mut details = Vec::new();
+
+    if let Err(err) = run_declaration_preflight(&bundle.contract) {
+        details.extend(err.report.violations.into_iter().map(|v| {
+            format!(
+                "{:?}.{} [{:?}] {}",
+                v.checkpoint, v.field, v.code, v.message
+            )
+        }));
+    }
+
+    let runtime_report = validate_cp0_runtime(&bundle.contract, &bundle.variant_dir, iso_dir);
+    details.extend(runtime_report.violations.into_iter().map(|v| {
+        format!(
+            "{:?}.{} [{:?}] {}",
+            v.checkpoint, v.field, v.code, v.message
+        )
+    }));
+
+    if details.is_empty() {
+        println!("{} (declaration + runtime)", "PASS".green());
+        Ok(PreflightCheck {
+            name: name.to_string(),
+            passed: true,
+            total_checks: 2,
+            passed_checks: 2,
+            failures: 0,
+            details: Vec::new(),
+        })
+    } else {
+        println!("{} ({} violations)", "FAIL".red().bold(), details.len());
+        for detail in &details {
+            println!("    {}", detail.red());
+        }
+        Ok(PreflightCheck {
+            name: name.to_string(),
+            passed: false,
+            total_checks: details.len(),
+            passed_checks: 0,
+            failures: details.len(),
+            details,
+        })
     }
 }
 
