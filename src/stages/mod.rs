@@ -1,16 +1,16 @@
-//! Checkpoint-based development loop.
+//! Stage-based development loop.
 //!
-//! Lightweight, incremental checkpoints that gate progression and give fast
-//! feedback during development. Each checkpoint validates one thing.
+//! Lightweight, incremental stages that gate progression and give fast
+//! feedback during development. Each stage validates one thing.
 //!
-//! # Checkpoints
+//! # Stages
 //!
-//! 1. **Live Boot** — ISO boots in QEMU (login prompt or `___SHELL_READY___`)
-//! 2. **Live Tools** — Expected binaries present in live environment
-//! 3. **Installation** — Scripted install to disk succeeds
-//! 4. **Installed Boot** — System boots from disk after install
-//! 5. **Automated Login** — Harness can login and run commands
-//! 6. **Daily Driver Tools** — All expected tools present on installed system
+//! 01. **Live Boot** — ISO boots in QEMU (login prompt or `___SHELL_READY___`)
+//! 02. **Live Tools** — Expected binaries present in live environment
+//! 03. **Installation** — Scripted install to disk succeeds
+//! 04. **Installed Boot** — System boots from disk after install
+//! 05. **Automated Login** — Harness can login and run commands
+//! 06. **Daily Driver Tools** — All expected tools present on installed system
 
 pub mod state;
 
@@ -20,12 +20,12 @@ use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use state::CheckpointState;
+use state::StageState;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Run a single checkpoint for a distro.
-pub fn run_checkpoint(distro_id: &str, checkpoint: u32) -> Result<bool> {
+/// Run a single stage for a distro.
+pub fn run_stage(distro_id: &str, stage: u32) -> Result<bool> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let iso_path = resolve_iso_path(&*ctx)?;
@@ -37,119 +37,119 @@ pub fn run_checkpoint(distro_id: &str, checkpoint: u32) -> Result<bool> {
     })?;
 
     // Hard gate: declaration conformance + artifact integrity must pass
-    // before checkpoint execution is allowed.
+    // before stage execution is allowed.
     require_preflight_for_distro(iso_dir, distro_id)?;
 
-    let mut state = CheckpointState::load(distro_id);
+    let mut state = StageState::load(distro_id);
     if !state.is_valid_for_iso(&iso_path) {
         println!(
             "{}",
-            "ISO rebuilt since last run — resetting checkpoints.".yellow()
+            "ISO rebuilt since last run — resetting stages.".yellow()
         );
         state.reset_for_iso(&iso_path);
         state.save(distro_id)?;
     }
 
-    // Gating: checkpoint N requires N-1 to have passed
-    if checkpoint > 1 && !state.has_passed(checkpoint - 1) {
+    // Gating: stage N requires N-1 to have passed
+    if stage > 1 && !state.has_passed(stage - 1) {
         bail!(
-            "Checkpoint {} is blocked: checkpoint {} has not passed yet.\n\
-             Run: cargo run --bin checkpoints -- --distro {} --checkpoint {}",
-            checkpoint,
-            checkpoint - 1,
+            "Stage {:02} is blocked: Stage {:02} has not passed yet.\n\
+             Run: cargo run --bin stages -- --distro {} --stage {}",
+            stage,
+            stage - 1,
             distro_id,
-            checkpoint - 1
+            stage - 1
         );
     }
 
     // Already passed?
-    if state.has_passed(checkpoint) {
+    if state.has_passed(stage) {
         println!(
-            "{} Checkpoint {} already passed (use --reset to clear).",
+            "{} Stage {:02} already passed (use --reset to clear).",
             "[SKIP]".green(),
-            checkpoint
+            stage
         );
         return Ok(true);
     }
 
     println!(
-        "{} Checkpoint {}: {}",
+        "{} Stage {:02}: {}",
         ">>".cyan(),
-        checkpoint,
-        checkpoint_name(checkpoint)
+        stage,
+        stage_name(stage)
     );
 
-    let result = match checkpoint {
+    let result = match stage {
         1 => run_live_boot(&*ctx, &iso_path),
         2 => run_live_tools(&*ctx, &iso_path),
         3 => run_installation(&*ctx, &iso_path),
         4 => run_installed_boot(&*ctx, &iso_path),
         5 => run_automated_login(&*ctx, &iso_path),
         6 => run_daily_driver_tools(&*ctx, &iso_path),
-        _ => bail!("Invalid checkpoint number: {} (valid: 1-6)", checkpoint),
+        _ => bail!("Invalid stage number: {} (valid: 01-06)", stage),
     };
 
     match &result {
         Ok(evidence) => {
-            state.record(checkpoint, true, evidence);
+            state.record(stage, true, evidence);
             state.save(distro_id)?;
             println!(
-                "{} Checkpoint {} passed: {}",
+                "{} Stage {:02} passed: {}",
                 "[PASS]".green().bold(),
-                checkpoint,
+                stage,
                 evidence
             );
             Ok(true)
         }
         Err(e) => {
-            state.record(checkpoint, false, &format!("{:#}", e));
+            state.record(stage, false, &format!("{:#}", e));
             state.save(distro_id)?;
-            print_failure(checkpoint, e);
+            print_failure(stage, e);
             Ok(false)
         }
     }
 }
 
-/// Run all checkpoints up to `target` (inclusive).
+/// Run all stages up to `target` (inclusive).
 pub fn run_up_to(distro_id: &str, target: u32) -> Result<bool> {
-    for cp in 1..=target {
-        if !run_checkpoint(distro_id, cp)? {
+    for stage_n in 1..=target {
+        if !run_stage(distro_id, stage_n)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-/// Print checkpoint status for a distro.
+/// Print stage status for a distro.
 pub fn print_status(distro_id: &str) -> Result<()> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let iso_path = resolve_iso_path(&*ctx);
 
-    let state = CheckpointState::load(distro_id);
+    let state = StageState::load(distro_id);
     let valid = iso_path
         .as_ref()
         .map(|p| state.is_valid_for_iso(p))
         .unwrap_or(false);
 
-    println!("{} Checkpoint Status", ctx.name().bold());
+    println!("{} Stage Status", ctx.name().bold());
     if !valid {
         println!(
             "{}",
-            "  (stale — ISO rebuilt or missing, checkpoints will reset on next run)".yellow()
+            "  (stale — ISO rebuilt or missing, stages will reset on next run)".yellow()
         );
     }
     println!();
 
-    for cp in 1..=6u32 {
-        let status = if state.has_passed(cp) {
+    for stage_n in 1..=6u32 {
+        let status = if state.has_passed(stage_n) {
             "[PASS]".green()
-        } else if state.results.contains_key(&cp) {
+        } else if state.results.contains_key(&stage_n) {
             "[FAIL]".red()
         } else {
             "[    ]".dimmed()
         };
-        println!("  {} {}: {}", status, cp, checkpoint_name(cp));
+        println!("  {} {:02}: {}", status, stage_n, stage_name(stage_n));
     }
     println!();
     println!(
@@ -159,23 +159,23 @@ pub fn print_status(distro_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reset all checkpoint state for a distro.
+/// Reset all stage state for a distro.
 pub fn reset_state(distro_id: &str) -> Result<()> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.checkpoints")
+        .join("../../.stages")
         .join(format!("{}.json", distro_id));
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
-    println!("Checkpoints reset for {}.", distro_id);
+    println!("Stages reset for {}.", distro_id);
     Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Checkpoint implementations
+// Stage implementations
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Checkpoint 1: Live Boot — ISO boots in QEMU.
+/// Stage 01: Live Boot — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console) = spawn_live_qemu(ctx, iso_path)?;
 
@@ -195,7 +195,7 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     Ok(evidence)
 }
 
-/// Checkpoint 2: Live Tools — Expected binaries in live environment.
+/// Stage 02: Live Tools — Expected binaries in live environment.
 ///
 /// IMPORTANT: This doesn't just check if tools exist (which would be lazy).
 /// It actually EXECUTES each tool to verify:
@@ -273,7 +273,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     ))
 }
 
-/// Checkpoint 3: Installation — Scripted install to disk.
+/// Stage 03: Installation — Scripted install to disk.
 fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let disk_path = temp_disk_path(ctx.id());
     if disk_path.exists() {
@@ -329,12 +329,12 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     Ok(format!("{} install steps completed + verified", step_count))
 }
 
-/// Checkpoint 4: Installed Boot — Boot from disk after install.
+/// Stage 04: Installed Boot — Boot from disk after install.
 fn run_installed_boot(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<String> {
     let disk_path = temp_disk_path(ctx.id());
     if !disk_path.exists() {
         bail!(
-            "No disk image found at {}. Checkpoint 3 (Installation) must pass first.",
+            "No disk image found at {}. Stage 03 (Installation) must pass first.",
             disk_path.display()
         );
     }
@@ -342,7 +342,7 @@ fn run_installed_boot(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Strin
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
     let ovmf_vars = temp_ovmf_vars_path(ctx.id());
     if !ovmf_vars.exists() {
-        bail!("No OVMF vars found. Checkpoint 3 (Installation) must pass first.");
+        bail!("No OVMF vars found. Stage 03 (Installation) must pass first.");
     }
 
     let (mut child, mut console) = session::spawn_installed(&disk_path, &ovmf, &ovmf_vars)?;
@@ -363,7 +363,7 @@ fn run_installed_boot(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Strin
     }
 }
 
-/// Checkpoint 5: Automated Login — Harness can login and execute commands.
+/// Stage 05: Automated Login — Harness can login and execute commands.
 fn run_automated_login(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<String> {
     let disk_path = temp_disk_path(ctx.id());
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
@@ -377,11 +377,11 @@ fn run_automated_login(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Stri
     console.login("root", ctx.default_password(), Duration::from_secs(15))?;
 
     // Verify shell works
-    let result = console.exec("echo CHECKPOINT_LOGIN_OK", Duration::from_secs(5))?;
+    let result = console.exec("echo STAGE_LOGIN_OK", Duration::from_secs(5))?;
     let _ = child.kill();
     let _ = child.wait();
 
-    if result.output.contains("CHECKPOINT_LOGIN_OK") {
+    if result.output.contains("STAGE_LOGIN_OK") {
         Ok("Login succeeded, shell functional".to_string())
     } else {
         bail!(
@@ -391,7 +391,7 @@ fn run_automated_login(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Stri
     }
 }
 
-/// Checkpoint 6: Daily Driver Tools — All expected tools present.
+/// Stage 06: Daily Driver Tools — All expected tools present.
 fn run_daily_driver_tools(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<String> {
     let disk_path = temp_disk_path(ctx.id());
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
@@ -436,7 +436,7 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<S
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn checkpoint_name(n: u32) -> &'static str {
+fn stage_name(n: u32) -> &'static str {
     match n {
         1 => "Live Boot",
         2 => "Live Tools",
@@ -589,19 +589,19 @@ fn get_tool_validation_command(tool: &str) -> String {
     }
 }
 
-fn print_failure(checkpoint: u32, err: &anyhow::Error) {
+fn print_failure(stage: u32, err: &anyhow::Error) {
     eprintln!();
     eprintln!(
-        "{} Checkpoint {} FAILED: {}",
+        "{} Stage {:02} FAILED: {}",
         "[FAIL]".red().bold(),
-        checkpoint,
-        checkpoint_name(checkpoint)
+        stage,
+        stage_name(stage)
     );
     eprintln!();
     eprintln!("  Error: {:#}", err);
     eprintln!();
 
-    match checkpoint {
+    match stage {
         1 => {
             eprintln!("  Common causes:");
             eprintln!("    - ISO not built or corrupted");

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Checkpoint 2: Live Tools Validation
+# Stage 02: Live Tools Validation
 #
 # Verifies that all expected tools are present and functional in the
 # live environment. This actually EXECUTES each tool to ensure:
@@ -18,13 +18,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Try multiple locations for common.sh
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
     source "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/checkpoint-tests/common.sh" ]; then
-    source "/usr/local/lib/checkpoint-tests/common.sh"
+elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
+    source "/usr/local/lib/stage-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     echo "Tried:" >&2
     echo "  - $SCRIPT_DIR/lib/common.sh" >&2
-    echo "  - /usr/local/lib/checkpoint-tests/common.sh" >&2
+    echo "  - /usr/local/lib/stage-tests/common.sh" >&2
     exit 1
 fi
 
@@ -32,9 +32,9 @@ fi
 # Main Test
 # ═══════════════════════════════════════════════════════════════════════════
 
-checkpoint_header 2 "Live Tools Validation"
+stage_header 2 "Live Tools Validation"
 
-info "This checkpoint verifies that all daily driver tools are present"
+info "This stage verifies that all daily driver tools are present"
 info "and FUNCTIONAL (actually executes them, not just checks existence)"
 echo
 

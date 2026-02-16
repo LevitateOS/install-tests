@@ -18,8 +18,8 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use distro_contract::{
-    load_cp0_contract_bundle_for_distro_from, run_preflight as run_declaration_preflight,
-    validate_cp0_runtime,
+    load_stage_00_contract_bundle_for_distro_from, require_valid_contract,
+    validate_stage_00_runtime,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
@@ -212,7 +212,7 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
-    let bundle = match load_cp0_contract_bundle_for_distro_from(iso_dir, distro_id) {
+    let bundle = match load_stage_00_contract_bundle_for_distro_from(iso_dir, distro_id) {
         Ok(bundle) => bundle,
         Err(err) => {
             println!("{}", "FAIL".red().bold());
@@ -229,22 +229,22 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
 
     let mut details = Vec::new();
 
-    if let Err(err) = run_declaration_preflight(&bundle.contract) {
-        details.extend(err.report.violations.into_iter().map(|v| {
-            format!(
-                "{:?}.{} [{:?}] {}",
-                v.checkpoint, v.field, v.code, v.message
-            )
-        }));
+    if let Err(err) = require_valid_contract(&bundle.contract) {
+        details.extend(
+            err.report
+                .violations
+                .into_iter()
+                .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
+        );
     }
 
-    let runtime_report = validate_cp0_runtime(&bundle.contract, &bundle.variant_dir, iso_dir);
-    details.extend(runtime_report.violations.into_iter().map(|v| {
-        format!(
-            "{:?}.{} [{:?}] {}",
-            v.checkpoint, v.field, v.code, v.message
-        )
-    }));
+    let runtime_report = validate_stage_00_runtime(&bundle.contract, &bundle.variant_dir, iso_dir);
+    details.extend(
+        runtime_report
+            .violations
+            .into_iter()
+            .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
+    );
 
     if details.is_empty() {
         println!("{} (declaration + runtime)", "PASS".green());

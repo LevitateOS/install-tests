@@ -1,6 +1,6 @@
 //! Shared QEMU session helpers for spawning live and installed system VMs.
 //!
-//! Eliminates duplicated QEMU setup code across checkpoints and install-tests binaries.
+//! Eliminates duplicated QEMU setup code across stages and install-tests binaries.
 
 use crate::distro::DistroContext;
 use crate::qemu::{Console, QemuBuilder};
@@ -41,14 +41,6 @@ pub fn resolve_iso(ctx: &dyn DistroContext) -> Result<PathBuf> {
                     None
                 }
             })
-            // Legacy layout:
-            //   <DistroDir>/output/<iso>
-            .or_else(|| {
-                iso_path
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .map(|p| p.to_path_buf())
-            })
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<DistroDir>".to_string());
         bail!(
@@ -73,14 +65,14 @@ pub fn setup_ovmf_vars(distro_id: &str) -> Result<(PathBuf, PathBuf)> {
     Ok((ovmf, ovmf_vars))
 }
 
-/// Temp disk path for a distro's checkpoint testing.
+/// Temp disk path for a distro's stage testing.
 pub fn temp_disk_path(distro_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("checkpoint-{}-disk.qcow2", distro_id))
+    std::env::temp_dir().join(format!("stage-{}-disk.qcow2", distro_id))
 }
 
-/// Temp OVMF vars path for a distro's checkpoint testing.
+/// Temp OVMF vars path for a distro's stage testing.
 pub fn temp_ovmf_vars_path(distro_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("checkpoint-{}-vars.fd", distro_id))
+    std::env::temp_dir().join(format!("stage-{}-vars.fd", distro_id))
 }
 
 /// Spawn a QEMU VM booting from a live ISO (no disk attached).

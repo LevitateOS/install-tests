@@ -11,12 +11,12 @@
 //! This is the CORRECT location for E2E installation tests.
 //! NOT `leviso/tests/`. THIS crate. Read before writing.
 
-pub mod checkpoints;
 pub mod distro;
 pub mod executor;
 pub mod interactive;
 pub mod preflight;
 pub mod qemu;
+pub mod stages;
 pub mod steps;
 
 // Re-export commonly used items

@@ -1,15 +1,15 @@
-# Checkpoint Test Scripts
+# Stage Test Scripts
 
-This directory contains **checkpoint test scripts** that validate each stage of the installation and boot process. These scripts are **pre-installed on every ISO** and can be run both manually and automatically.
+This directory contains **stage test scripts** that validate each stage of the installation and boot process. These scripts are **pre-installed on every ISO** and can be run both manually and automatically.
 
 ## Philosophy: Video Game Savepoints
 
-Like savepoints in video games, each checkpoint represents a verified state you can "load" and inspect:
+Like savepoints in video games, each stage represents a verified state you can "load" and inspect:
 
 ```
-Checkpoint 1: Fresh boot          → [SAVE] → interactive shell
-Checkpoint 2: Boot + tool tests   → [SAVE] → interactive shell
-Checkpoint 3: Boot + installation → [SAVE] → interactive shell
+Stage 01: Fresh boot          → [SAVE] → interactive shell
+Stage 02: Boot + tool tests   → [SAVE] → interactive shell
+Stage 03: Boot + installation → [SAVE] → interactive shell
 ```
 
 ## Directory Structure
@@ -18,12 +18,12 @@ Checkpoint 3: Boot + installation → [SAVE] → interactive shell
 test-scripts/
 ├── lib/
 │   └── common.sh                      # Shared testing functions
-├── checkpoint-1-live-boot.sh          # Verify live boot works
-├── checkpoint-2-live-tools.sh         # Verify all tools functional
-├── checkpoint-3-installation.sh       # Verify installation completed
-├── checkpoint-4-installed-boot.sh     # Verify boots from disk
-├── checkpoint-5-automated-login.sh    # Verify login works
-├── checkpoint-6-daily-driver.sh       # Verify daily driver tools
+├── stage-01-live-boot.sh          # Verify live boot works
+├── stage-02-live-tools.sh         # Verify all tools functional
+├── stage-03-installation.sh       # Verify installation completed
+├── stage-04-installed-boot.sh     # Verify boots from disk
+├── stage-05-automated-login.sh    # Verify login works
+├── stage-06-daily-driver.sh       # Verify daily driver tools
 └── README.md                          # This file
 ```
 
@@ -33,33 +33,33 @@ test-scripts/
 
 ```bash
 # Inside QEMU or on real hardware
-checkpoint-2-live-tools.sh
+stage-02-live-tools.sh
 
 # Debug mode (see every command)
-bash -x checkpoint-2-live-tools.sh
+bash -x stage-02-live-tools.sh
 
 # Read the script
-cat /usr/local/bin/checkpoint-2-live-tools.sh
+cat /usr/local/bin/stage-02-live-tools.sh
 ```
 
 ### Automated Testing (From Host)
 
 ```bash
 # Interactive mode - drops you at shell after test
-just checkpoint 2 acorn
+just stage 2 acorn
 
 # Automated mode - runs test, reports result, exits
 just test 2 acorn
 ```
 
-## Checkpoint Descriptions
+## Stage Descriptions
 
-### Checkpoint 1: Live Boot
+### Stage 01: Live Boot
 **Purpose:** Verify the live ISO boots successfully
 **Tests:** Basic filesystem checks, shell functionality
 **Environment:** Live ISO
 
-### Checkpoint 2: Live Tools
+### Stage 02: Live Tools
 **Purpose:** Verify all daily driver tools work in live environment
 **Tests:** EXECUTES each tool (not just checks existence)
 **Environment:** Live ISO
@@ -70,22 +70,22 @@ just test 2 acorn
 - Editors (vim, less)
 - System utilities (htop, grep, find)
 
-### Checkpoint 3: Installation
+### Stage 03: Installation
 **Purpose:** Verify scripted installation to disk succeeds
 **Tests:** Root filesystem extracted, bootloader installed, fstab created
 **Environment:** Live ISO (post-installation)
 
-### Checkpoint 4: Installed Boot
+### Stage 04: Installed Boot
 **Purpose:** Verify system boots from disk after installation
 **Tests:** Basic boot checks, filesystems mounted
 **Environment:** Installed system
 
-### Checkpoint 5: Automated Login
+### Stage 05: Automated Login
 **Purpose:** Verify automated login works
 **Tests:** Can login as root, run commands
 **Environment:** Installed system
 
-### Checkpoint 6: Daily Driver Tools
+### Stage 06: Daily Driver Tools
 **Purpose:** Verify all tools work on installed system
 **Tests:** sudo, ssh, networking, shell, etc.
 **Environment:** Installed system
@@ -100,10 +100,10 @@ set -euo pipefail
 
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/common.sh" || source "/usr/local/lib/checkpoint-tests/common.sh"
+source "$SCRIPT_DIR/lib/common.sh" || source "/usr/local/lib/stage-tests/common.sh"
 
 # Header
-checkpoint_header N "Checkpoint Name"
+stage_header N "Stage Name"
 
 # Tests
 section_header "Test Category"
@@ -124,13 +124,13 @@ exit $?
 - `test_command <description> <command>` - Test arbitrary command succeeds
 
 #### Output Functions
-- `checkpoint_header <number> <name>` - Print checkpoint header
+- `stage_header <number> <name>` - Print stage header
 - `section_header <name>` - Print section header
 - `info <message>` - Print info message
 - `warn <message>` - Print warning
 - `error <message>` - Print error
 - `success <message>` - Print success message
-- `report_results <checkpoint>` - Print final results (pass/fail)
+- `report_results <stage>` - Print final results (pass/fail)
 
 #### State Variables
 - `PASSED_TESTS[]` - Array of tests that passed
@@ -147,7 +147,7 @@ Scripts exit with:
 
 ```
 ═══════════════════════════════════════════════════════════
-  Checkpoint 2: Live Tools Validation
+  Stage 02: Live Tools Validation
 ═══════════════════════════════════════════════════════════
 
 Core Installation Tools:
@@ -157,7 +157,7 @@ Core Installation Tools:
   [TEST] htop... ✗ NOT FOUND
 
 ═══════════════════════════════════════════════════════════
-  Checkpoint 2 Results
+  Stage 02 Results
 ═══════════════════════════════════════════════════════════
 Passed: 17/18 tests
 
@@ -165,7 +165,7 @@ Missing (not in PATH): 1 tests
   • htop
 
 ═══════════════════════════════════════════════════════════
-✗ CHECKPOINT 2 FAILED
+✗ STAGE 02 FAILED
 
 Some tools are missing from PATH. Check package installation.
 ```
@@ -175,14 +175,14 @@ Some tools are missing from PATH. Check package installation.
 These scripts are automatically installed on every ISO during the build process:
 
 - **Source:** `testing/install-tests/test-scripts/`
-- **Destination (on ISO):** `/usr/local/bin/checkpoint-*.sh`
-- **Libraries:** `/usr/local/lib/checkpoint-tests/`
+- **Destination (on ISO):** `/usr/local/bin/stage-*.sh`
+- **Libraries:** `/usr/local/lib/stage-tests/`
 
-See `AcornOS/src/component/definitions.rs` (CHECKPOINT_TESTS component) for build integration.
+See `AcornOS/src/component/definitions.rs` (STAGE_TESTS component) for build integration.
 
 Other build integrations:
-- `IuppiterOS/src/component/definitions.rs` (CHECKPOINT_TESTS component)
-- `leviso/src/component/definitions.rs` (FINAL component installs via `CustomOp::InstallCheckpointTests`)
+- `IuppiterOS/src/component/definitions.rs` (STAGE_TESTS component)
+- `leviso/src/component/definitions.rs` (FINAL component installs via `CustomOp::InstallStageTests`)
 
 ## CI/Automation
 
@@ -209,7 +209,7 @@ This provides the best of both worlds:
 
 1. ✅ Phase 1: Test scripts created (this directory)
 2. ✅ Phase 2: Integrate into ISO builds
-3. ⏳ Phase 3: Add interactive checkpoint mode
+3. ⏳ Phase 3: Add interactive stage mode
 4. ⏳ Phase 4: Update justfile commands
 5. ⏳ Phase 5: Add auto-run support
 6. ⏳ Phase 6: Documentation and testing

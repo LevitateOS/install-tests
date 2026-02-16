@@ -158,7 +158,7 @@ pub trait DistroContext: Send + Sync {
     fn boot_target_name(&self) -> &str;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Tool Expectations (Checkpoints)
+    // Tool Expectations (Stages)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Tools expected to be present in the live ISO environment.

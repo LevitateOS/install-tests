@@ -1,5 +1,5 @@
 #!/bin/bash
-# Checkpoint 6: Daily Driver Tools Validation
+# Stage 06: Daily Driver Tools Validation
 #
 # Verifies that all daily driver tools are present and functional
 # on the INSTALLED system (not live ISO).
@@ -10,14 +10,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
     source "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/checkpoint-tests/common.sh" ]; then
-    source "/usr/local/lib/checkpoint-tests/common.sh"
+elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
+    source "/usr/local/lib/stage-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     exit 1
 fi
 
-checkpoint_header 6 "Daily Driver Tools Validation"
+stage_header 6 "Daily Driver Tools Validation"
 
 info "Testing daily driver tools on installed system"
 echo

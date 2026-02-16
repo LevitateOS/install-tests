@@ -1,24 +1,24 @@
-//! Interactive checkpoint mode.
+//! Interactive stage mode.
 //!
-//! Like "loading a video game save" - boots to a checkpoint state and drops
+//! Like "loading a video game save" - boots to a stage state and drops
 //! you into an interactive shell to inspect and debug.
 //!
 //! # Usage
 //!
 //! ```bash
-//! just checkpoint 2 acorn
+//! just stage 2 acorn
 //! ```
 //!
 //! This will:
 //! 1. Boot QEMU with the live ISO
 //! 2. Wait for boot completion
-//! 3. Auto-run the checkpoint test script (e.g., checkpoint-2-live-tools.sh)
+//! 3. Auto-run the stage test script (e.g., stage-02-live-tools.sh)
 //! 4. Drop you into an interactive shell to inspect the state
 //!
 //! # Philosophy
 //!
 //! Traditional testing: Test → Pass/Fail → Exit
-//! Interactive checkpoints: Test → Pass/Fail → **Interactive Shell**
+//! Interactive stages: Test → Pass/Fail → **Interactive Shell**
 //!
 //! This lets you:
 //! - Inspect why a test failed
@@ -36,11 +36,11 @@ use colored::Colorize;
 use std::path::Path;
 use std::time::Duration;
 
-/// Run an interactive checkpoint session.
+/// Run an interactive stage session.
 ///
-/// This boots QEMU, optionally runs a checkpoint test script, and leaves
+/// This boots QEMU, optionally runs a stage test script, and leaves
 /// the system running for manual interaction.
-pub fn run_interactive_checkpoint(distro_id: &str, checkpoint: u32) -> Result<()> {
+pub fn run_interactive_stage(distro_id: &str, stage: u32) -> Result<()> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
 
@@ -56,22 +56,22 @@ pub fn run_interactive_checkpoint(distro_id: &str, checkpoint: u32) -> Result<()
 
     println!();
     println!(
-        "{} Interactive Checkpoint {} - {}",
+        "{} Interactive Stage {} - {}",
         ">>>".cyan().bold(),
-        checkpoint,
+        stage,
         ctx.name()
     );
     println!();
 
-    match checkpoint {
-        1 | 2 => run_live_interactive(&*ctx, &iso_path, checkpoint),
-        3..=6 => run_installed_interactive(&*ctx, checkpoint),
-        _ => bail!("Invalid checkpoint number: {} (valid: 1-6)", checkpoint),
+    match stage {
+        1 | 2 => run_live_interactive(&*ctx, &iso_path, stage),
+        3..=6 => run_installed_interactive(&*ctx, stage),
+        _ => bail!("Invalid stage number: {} (valid: 1-6)", stage),
     }
 }
 
-/// Run an interactive session in the live environment (checkpoints 1-2).
-fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, checkpoint: u32) -> Result<()> {
+/// Run an interactive session in the live environment (stages 1-2).
+fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, stage: u32) -> Result<()> {
     println!("  Booting live ISO in QEMU...");
     let (mut child, mut console) = session::spawn_live(ctx, iso_path)?;
 
@@ -80,18 +80,14 @@ fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, checkpoint: u3
     println!("  {}", "Boot successful!".green().bold());
     println!();
 
-    // If checkpoint > 1, run the checkpoint test script
-    if checkpoint > 1 {
-        let script = format!(
-            "checkpoint-{}-{}.sh",
-            checkpoint,
-            checkpoint_name_slug(checkpoint)
-        );
-        println!("  Running checkpoint test script: {}", script);
+    // If stage > 1, run the stage test script
+    if stage > 1 {
+        let script = format!("stage-{stage:02}-{}.sh", stage_name_slug(stage));
+        println!("  Running stage test script: {}", script);
         println!("  {}", "─".repeat(60));
         println!();
 
-        // Execute the checkpoint script
+        // Execute the stage script
         let result = console.exec(&script, Duration::from_secs(120))?;
 
         // Print the script output (colored test results)
@@ -100,9 +96,9 @@ fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, checkpoint: u3
         println!("  {}", "─".repeat(60));
 
         if result.success() {
-            println!("  {}", "Checkpoint test PASSED ✓".green().bold());
+            println!("  {}", "Stage test PASSED ✓".green().bold());
         } else {
-            println!("  {}", "Checkpoint test FAILED ✗".red().bold());
+            println!("  {}", "Stage test FAILED ✗".red().bold());
         }
         println!();
     }
@@ -113,13 +109,13 @@ fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, checkpoint: u3
     println!();
     println!("  You can now:");
     println!("    - Inspect the environment");
-    println!("    - Run checkpoint tests manually: checkpoint-N-*.sh");
+    println!("    - Run stage tests manually: stage-N-*.sh");
     println!("    - Verify tools work: <tool> --version");
     println!("    - Debug failures");
     println!();
-    println!("  Available checkpoint scripts:");
-    println!("    checkpoint-1-live-boot.sh");
-    println!("    checkpoint-2-live-tools.sh");
+    println!("  Available stage scripts:");
+    println!("    stage-01-live-boot.sh");
+    println!("    stage-02-live-tools.sh");
     println!();
     println!("  Press Ctrl+A, then X to exit QEMU");
     println!();
@@ -141,16 +137,16 @@ fn run_live_interactive(ctx: &dyn DistroContext, iso_path: &Path, checkpoint: u3
     Ok(())
 }
 
-/// Run an interactive session in the installed environment (checkpoints 3-6).
-fn run_installed_interactive(_ctx: &dyn DistroContext, checkpoint: u32) -> Result<()> {
+/// Run an interactive session in the installed environment (stages 3-6).
+fn run_installed_interactive(_ctx: &dyn DistroContext, stage: u32) -> Result<()> {
     bail!(
-        "Interactive mode for checkpoint {} not yet implemented.\n\
-         Currently only checkpoints 1-2 (live environment) are supported in interactive mode.",
-        checkpoint
+        "Interactive mode for stage {} not yet implemented.\n\
+         Currently only stages 1-2 (live environment) are supported in interactive mode.",
+        stage
     );
 }
 
-fn checkpoint_name_slug(n: u32) -> &'static str {
+fn stage_name_slug(n: u32) -> &'static str {
     match n {
         1 => "live-boot",
         2 => "live-tools",

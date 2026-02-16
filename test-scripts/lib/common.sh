@@ -1,7 +1,7 @@
 #!/bin/bash
-# Common functions for checkpoint test scripts
+# Common functions for stage test scripts
 #
-# This library provides shared testing infrastructure used by all checkpoint
+# This library provides shared testing infrastructure used by all stage
 # scripts. It handles test execution, result tracking, and reporting.
 
 # Colors (if terminal supports it)
@@ -115,15 +115,15 @@ test_command() {
 }
 
 # Report final results
-# Usage: report_results <checkpoint_number>
+# Usage: report_results <stage_number>
 report_results() {
-    local checkpoint=$1
+    local stage=$1
 
     local total_tests=$((${#PASSED_TESTS[@]} + ${#FAILED_TESTS[@]} + ${#BROKEN_TESTS[@]}))
 
     echo
     echo "═══════════════════════════════════════════════════════════"
-    echo -e "  ${BOLD}Checkpoint $checkpoint Results${NC}"
+    echo -e "  ${BOLD}Stage $stage Results${NC}"
     echo "═══════════════════════════════════════════════════════════"
     echo -e "${GREEN}Passed:${NC} ${#PASSED_TESTS[@]}/$total_tests tests"
 
@@ -148,12 +148,12 @@ report_results() {
     echo "═══════════════════════════════════════════════════════════"
 
     if [ ${#FAILED_TESTS[@]} -eq 0 ] && [ ${#BROKEN_TESTS[@]} -eq 0 ]; then
-        echo -e "${GREEN}${BOLD}✓ CHECKPOINT $checkpoint PASSED${NC}"
+        echo -e "${GREEN}${BOLD}✓ STAGE $stage PASSED${NC}"
         echo
         echo "All tools are present and functional in this environment."
         return 0
     else
-        echo -e "${RED}${BOLD}✗ CHECKPOINT $checkpoint FAILED${NC}"
+        echo -e "${RED}${BOLD}✗ STAGE $stage FAILED${NC}"
         echo
         if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
             echo "Some tools are missing from PATH. Check package installation."
@@ -165,15 +165,15 @@ report_results() {
     fi
 }
 
-# Print checkpoint header
-# Usage: checkpoint_header <number> <name>
-checkpoint_header() {
+# Print stage header
+# Usage: stage_header <number> <name>
+stage_header() {
     local number=$1
     local name=$2
 
     echo
     echo "═══════════════════════════════════════════════════════════"
-    echo -e "  ${CYAN}${BOLD}Checkpoint $number: $name${NC}"
+    echo -e "  ${CYAN}${BOLD}Stage $number: $name${NC}"
     echo "═══════════════════════════════════════════════════════════"
     echo
 }

@@ -1,6 +1,6 @@
-//! Checkpoint state persistence.
+//! Stage state persistence.
 //!
-//! Tracks which checkpoints passed per distro, with ISO mtime-based invalidation.
+//! Tracks which stages passed per distro, with ISO mtime-based invalidation.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,23 +8,23 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Persisted state for a single distro's checkpoints.
+/// Persisted state for a single distro's stages.
 #[derive(Debug, Serialize, Deserialize, Default)]
-pub struct CheckpointState {
-    /// ISO file mtime (as seconds since epoch) when checkpoints were run.
+pub struct StageState {
+    /// ISO file mtime (as seconds since epoch) when stages were run.
     pub iso_mtime_secs: u64,
-    /// Map of checkpoint number -> result.
-    pub results: HashMap<u32, CheckpointResult>,
+    /// Map of stage number -> result.
+    pub results: HashMap<u32, StageResult>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CheckpointResult {
+pub struct StageResult {
     pub passed: bool,
     pub timestamp: String,
     pub evidence: String,
 }
 
-impl CheckpointState {
+impl StageState {
     /// Load state from disk, or return default if missing/corrupt.
     pub fn load(distro_id: &str) -> Self {
         let path = state_path(distro_id);
@@ -61,12 +61,12 @@ impl CheckpointState {
         self.results.clear();
     }
 
-    /// Record a checkpoint result.
-    pub fn record(&mut self, checkpoint: u32, passed: bool, evidence: &str) {
+    /// Record a stage result.
+    pub fn record(&mut self, stage: u32, passed: bool, evidence: &str) {
         let now = chrono_now();
         self.results.insert(
-            checkpoint,
-            CheckpointResult {
+            stage,
+            StageResult {
                 passed,
                 timestamp: now,
                 evidence: evidence.to_string(),
@@ -74,15 +74,15 @@ impl CheckpointState {
         );
     }
 
-    /// Check if a checkpoint has already passed.
-    pub fn has_passed(&self, checkpoint: u32) -> bool {
+    /// Check if a stage has already passed.
+    pub fn has_passed(&self, stage: u32) -> bool {
         self.results
-            .get(&checkpoint)
+            .get(&stage)
             .map(|r| r.passed)
             .unwrap_or(false)
     }
 
-    /// Highest checkpoint that passed.
+    /// Highest stage that passed.
     pub fn highest_passed(&self) -> u32 {
         // Must be contiguous from 1
         let mut n = 0;
@@ -94,9 +94,9 @@ impl CheckpointState {
 }
 
 fn state_path(distro_id: &str) -> PathBuf {
-    // Find the repo root by looking for .checkpoints/ relative to the workspace
+    // Find the repo root by looking for .stages/ relative to the workspace
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.checkpoints")
+        .join("../../.stages")
         .join(format!("{}.json", distro_id))
 }
 
