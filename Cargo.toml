@@ -29,6 +29,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 colored = "2.0"
 distro-spec = { path = "../../distro-spec" }
+distro-contract = { path = "../../distro-contract" }
 leviso-cheat-guard = { path = "../cheat-guard" }
 recqemu = { path = "../../tools/recqemu" }
 fsdbg = { path = "../fsdbg" }

@@ -15,6 +15,7 @@
 pub mod state;
 
 use crate::distro::{context_for_distro, DistroContext};
+use crate::preflight::require_preflight_for_distro;
 use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
@@ -28,6 +29,16 @@ pub fn run_checkpoint(distro_id: &str, checkpoint: u32) -> Result<bool> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let iso_path = resolve_iso_path(&*ctx)?;
+    let iso_dir = iso_path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not resolve ISO parent directory for '{}'",
+            iso_path.display()
+        )
+    })?;
+
+    // Hard gate: declaration conformance + artifact integrity must pass
+    // before checkpoint execution is allowed.
+    require_preflight_for_distro(iso_dir, distro_id)?;
 
     let mut state = CheckpointState::load(distro_id);
     if !state.is_valid_for_iso(&iso_path) {

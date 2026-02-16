@@ -17,6 +17,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use distro_contract::run_preflight as run_contract_preflight;
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
 use fsdbg::iso::IsoReader;
@@ -26,6 +27,7 @@ use std::path::Path;
 /// Result of preflight verification
 #[derive(Debug)]
 pub struct PreflightResult {
+    pub conformance: Option<PreflightCheck>,
     pub live_initramfs: Option<PreflightCheck>,
     pub install_initramfs: Option<PreflightCheck>,
     pub iso: Option<PreflightCheck>,
@@ -98,89 +100,7 @@ pub fn run_preflight_with_iso(
     iso_dir: &Path,
     iso_filename: Option<&str>,
 ) -> Result<PreflightResult> {
-    println!();
-    println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
-    println!("Verifying ISO artifacts before starting QEMU...");
-    println!();
-
-    let mut result = PreflightResult {
-        live_initramfs: None,
-        install_initramfs: None,
-        iso: None,
-        overall_pass: true,
-    };
-
-    // Check live initramfs
-    let live_path = iso_dir.join("initramfs-live.cpio.gz");
-    if live_path.exists() {
-        result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
-        if !result.live_initramfs.as_ref().unwrap().passed {
-            result.overall_pass = false;
-        }
-    } else {
-        println!(
-            "  {} Live initramfs not found at {}",
-            "SKIP".yellow(),
-            live_path.display()
-        );
-    }
-
-    // Check install initramfs
-    let install_path = iso_dir.join("initramfs-installed.img");
-    if install_path.exists() {
-        result.install_initramfs = Some(verify_artifact(
-            &install_path,
-            ChecklistType::InstallInitramfs,
-        )?);
-        if !result.install_initramfs.as_ref().unwrap().passed {
-            result.overall_pass = false;
-        }
-    } else {
-        println!(
-            "  {} Install initramfs not found at {}",
-            "SKIP".yellow(),
-            install_path.display()
-        );
-    }
-
-    // Check ISO with full content verification
-    // Support multi-distro by trying specified filename first, then searching
-    let iso_path = if let Some(filename) = iso_filename {
-        iso_dir.join(filename)
-    } else {
-        // Fallback: try to find any .iso file in the directory
-        match find_iso_file(iso_dir) {
-            Some(path) => path,
-            None => {
-                println!(
-                    "  {} No .iso file found in {}",
-                    "✗".red(),
-                    iso_dir.display()
-                );
-                result.overall_pass = false;
-                println!();
-                print_summary(&result);
-                return Ok(result);
-            }
-        }
-    };
-
-    if iso_path.exists() {
-        result.iso = Some(verify_artifact(&iso_path, ChecklistType::Iso)?);
-        if !result.iso.as_ref().unwrap().passed {
-            result.overall_pass = false;
-        }
-    } else {
-        println!("  {} ISO not found at {}", "✗".red(), iso_path.display());
-        result.overall_pass = false;
-    }
-
-    println!();
-
-    // Print summary
-    print_summary(&result);
-
-    Ok(result)
+    run_preflight_with_iso_distro(iso_dir, iso_filename, "levitate")
 }
 
 /// Run preflight verification with a specific ISO filename and distro context.
@@ -192,19 +112,25 @@ pub fn run_preflight_with_iso_distro(
     println!();
     println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
     println!(
-        "Verifying ISO artifacts for {} before starting QEMU...",
+        "Verifying contract + ISO artifacts for {} before starting QEMU...",
         distro_id
     );
     println!();
 
     let mut result = PreflightResult {
+        conformance: None,
         live_initramfs: None,
         install_initramfs: None,
         iso: None,
         overall_pass: true,
     };
 
-    // Check live initramfs (skip for non-levitate — different naming/format)
+    result.conformance = Some(verify_conformance_contract(distro_id)?);
+    if !result.conformance.as_ref().unwrap().passed {
+        result.overall_pass = false;
+    }
+
+    // Check live initramfs
     let live_path = iso_dir.join("initramfs-live.cpio.gz");
     if live_path.exists() {
         result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
@@ -239,10 +165,12 @@ pub fn run_preflight_with_iso_distro(
         }
     }
 
-    // Check ISO with distro-aware content verification
+    // Check ISO with full content verification
+    // Support multi-distro by trying specified filename first, then searching
     let iso_path = if let Some(filename) = iso_filename {
         iso_dir.join(filename)
     } else {
+        // Fallback: try to find any .iso file in the directory
         match find_iso_file(iso_dir) {
             Some(path) => path,
             None => {
@@ -270,9 +198,81 @@ pub fn run_preflight_with_iso_distro(
     }
 
     println!();
+
+    // Print summary
     print_summary(&result);
 
     Ok(result)
+}
+
+fn verify_conformance_contract(distro_id: &str) -> Result<PreflightCheck> {
+    let name = "Contract conformance";
+    print!("  Checking {}... ", name);
+
+    let Some(contract) = distro_spec::conformance::contract_for_distro(distro_id) else {
+        println!("{}", "FAIL".red().bold());
+        return Ok(PreflightCheck {
+            name: name.to_string(),
+            passed: false,
+            total_checks: 1,
+            passed_checks: 0,
+            failures: 1,
+            details: vec![format!(
+                "No conformance contract declaration found for distro '{}'",
+                distro_id
+            )],
+        });
+    };
+
+    match run_contract_preflight(&contract) {
+        Ok(report) => {
+            println!(
+                "{} ({} violations)",
+                "PASS".green(),
+                report.violations.len()
+            );
+            Ok(PreflightCheck {
+                name: name.to_string(),
+                passed: true,
+                total_checks: 1,
+                passed_checks: 1,
+                failures: 0,
+                details: Vec::new(),
+            })
+        }
+        Err(err) => {
+            println!(
+                "{} ({} violations)",
+                "FAIL".red().bold(),
+                err.report.violations.len()
+            );
+
+            let details = err
+                .report
+                .violations
+                .into_iter()
+                .map(|v| {
+                    format!(
+                        "{:?}.{} [{:?}] {}",
+                        v.checkpoint, v.field, v.code, v.message
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            for detail in &details {
+                println!("    {}", detail.red());
+            }
+
+            Ok(PreflightCheck {
+                name: name.to_string(),
+                passed: false,
+                total_checks: details.len(),
+                passed_checks: 0,
+                failures: details.len(),
+                details,
+            })
+        }
+    }
 }
 
 /// Verify an ISO using distro-specific checklist.
@@ -483,6 +483,11 @@ pub fn require_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<(
     if !result.overall_pass {
         // Collect all failures for the error message
         let mut all_failures = Vec::new();
+        if let Some(ref check) = result.conformance {
+            if !check.passed {
+                all_failures.extend(check.details.iter().cloned());
+            }
+        }
         if let Some(ref check) = result.live_initramfs {
             if !check.passed {
                 all_failures.extend(check.details.iter().cloned());

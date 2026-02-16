@@ -28,6 +28,7 @@
 //! - Debug interactively
 
 use crate::distro::{context_for_distro, DistroContext};
+use crate::preflight::require_preflight_for_distro;
 use crate::qemu::session;
 use crate::qemu::SerialExecutorExt;
 use anyhow::{bail, Result};
@@ -44,6 +45,14 @@ pub fn run_interactive_checkpoint(distro_id: &str, checkpoint: u32) -> Result<()
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
 
     let iso_path = session::resolve_iso(&*ctx)?;
+    let iso_dir = iso_path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not resolve ISO parent directory for '{}'",
+            iso_path.display()
+        )
+    })?;
+
+    require_preflight_for_distro(iso_dir, distro_id)?;
 
     println!();
     println!(
