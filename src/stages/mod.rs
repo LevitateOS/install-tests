@@ -72,12 +72,7 @@ pub fn run_stage(distro_id: &str, stage: u32) -> Result<bool> {
         return Ok(true);
     }
 
-    println!(
-        "{} Stage {:02}: {}",
-        ">>".cyan(),
-        stage,
-        stage_name(stage)
-    );
+    println!("{} Stage {:02}: {}", ">>".cyan(), stage, stage_name(stage));
 
     let result = match stage {
         1 => run_live_boot(&*ctx, &iso_path),

@@ -76,10 +76,7 @@ impl StageState {
 
     /// Check if a stage has already passed.
     pub fn has_passed(&self, stage: u32) -> bool {
-        self.results
-            .get(&stage)
-            .map(|r| r.passed)
-            .unwrap_or(false)
+        self.results.get(&stage).map(|r| r.passed).unwrap_or(false)
     }
 
     /// Highest stage that passed.
