@@ -23,13 +23,15 @@ use distro_builder::stages::s00_build::{
 };
 use distro_contract::{
     load_stage_00_contract_bundle_for_distro_from, require_valid_contract,
-    validate_stage_00_runtime,
+    validate_stage_00_runtime_with_stage_dirs,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
 use fsdbg::iso::IsoReader;
 use leviso_cheat_guard::cheat_bail;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const STAGE00_ARTIFACT_TAG: &str = "s00";
 
 /// Result of preflight verification
 #[derive(Debug)]
@@ -131,14 +133,19 @@ pub fn run_preflight_with_iso_distro(
         iso: None,
         overall_pass: true,
     };
+    let stage_artifact_tag = detect_stage_artifact_tag(iso_dir, iso_filename);
 
-    result.conformance = Some(verify_conformance_contract(iso_dir, distro_id)?);
+    result.conformance = Some(verify_conformance_contract(
+        iso_dir,
+        iso_filename,
+        distro_id,
+    )?);
     if !result.conformance.as_ref().unwrap().passed {
         result.overall_pass = false;
     }
 
     // Check live initramfs
-    let live_path = iso_dir.join("initramfs-live.cpio.gz");
+    let live_path = iso_dir.join(format!("{stage_artifact_tag}-initramfs-live.cpio.gz"));
     if live_path.exists() {
         result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
         if !result.live_initramfs.as_ref().unwrap().passed {
@@ -154,7 +161,7 @@ pub fn run_preflight_with_iso_distro(
 
     // Check install initramfs (only LevitateOS builds this)
     if distro_id == "levitate" {
-        let install_path = iso_dir.join("initramfs-installed.img");
+        let install_path = iso_dir.join(format!("{stage_artifact_tag}-initramfs-installed.img"));
         if install_path.exists() {
             result.install_initramfs = Some(verify_artifact(
                 &install_path,
@@ -212,7 +219,11 @@ pub fn run_preflight_with_iso_distro(
     Ok(result)
 }
 
-fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<PreflightCheck> {
+fn verify_conformance_contract(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+    distro_id: &str,
+) -> Result<PreflightCheck> {
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
@@ -232,6 +243,8 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
     };
 
     let mut details = Vec::new();
+    let kernel_output_dir = kernel_output_dir_for_iso_dir(iso_dir, distro_id);
+    let stage_artifact_tag = detect_stage_artifact_tag(iso_dir, iso_filename);
 
     if let Err(err) = require_valid_contract(&bundle.contract) {
         details.extend(
@@ -242,7 +255,13 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
         );
     }
 
-    let runtime_report = validate_stage_00_runtime(&bundle.contract, &bundle.variant_dir, iso_dir);
+    let runtime_contract = contract_for_stage_artifact_tag(&bundle.contract, &stage_artifact_tag);
+    let runtime_report = validate_stage_00_runtime_with_stage_dirs(
+        &runtime_contract,
+        &bundle.variant_dir,
+        &kernel_output_dir,
+        iso_dir,
+    );
     details.extend(
         runtime_report
             .violations
@@ -250,10 +269,12 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
             .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
     );
 
-    if let Err(err) = verify_kernel_recipe_is_installed(&bundle, iso_dir) {
+    if let Err(err) = verify_kernel_recipe_is_installed(&bundle, &kernel_output_dir, distro_id) {
         details.push(err);
     }
-    if let Err(err) = verify_stage_00_evidence_script(&bundle, iso_dir) {
+    if let Err(err) =
+        verify_stage_00_evidence_script(&bundle, &kernel_output_dir, iso_dir, iso_filename)
+    {
         details.push(err);
     }
 
@@ -285,7 +306,8 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
 
 fn verify_kernel_recipe_is_installed(
     bundle: &distro_contract::LoadedVariantContract,
-    iso_dir: &Path,
+    kernel_output_dir: &Path,
+    distro_id: &str,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
     let spec = S00BuildKernelSpec {
@@ -296,17 +318,20 @@ fn verify_kernel_recipe_is_installed(
         module_install_path: stage_00.module_install_path.clone(),
     };
 
-    check_kernel_installed_via_recipe(&bundle.repo_root, iso_dir, &spec).map_err(|e| {
-        format!(
-            "Stage00.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
-            e
-        )
-    })
+    check_kernel_installed_via_recipe(&bundle.repo_root, distro_id, kernel_output_dir, &spec)
+        .map_err(|e| {
+            format!(
+                "Stage00.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
+                e
+            )
+        })
 }
 
 fn verify_stage_00_evidence_script(
     bundle: &distro_contract::LoadedVariantContract,
-    iso_dir: &Path,
+    kernel_output_dir: &Path,
+    stage_output_dir: &Path,
+    iso_filename: Option<&str>,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
     let spec = S00BuildEvidenceSpec {
@@ -314,11 +339,114 @@ fn verify_stage_00_evidence_script(
         pass_marker: stage_00.evidence.pass_marker.clone(),
         kernel_release_path: stage_00.kernel_release_path.clone(),
         kernel_image_path: stage_00.kernel_image_path.clone(),
-        iso_filename: bundle.contract.artifacts.iso_filename.clone(),
+        iso_filename: iso_filename
+            .unwrap_or(bundle.contract.artifacts.iso_filename.as_str())
+            .to_string(),
     };
 
-    run_00build_evidence_script(&bundle.repo_root, &bundle.variant_dir, iso_dir, &spec)
-        .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))
+    run_00build_evidence_script(
+        &bundle.repo_root,
+        &bundle.variant_dir,
+        kernel_output_dir,
+        stage_output_dir,
+        &spec,
+    )
+    .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))
+}
+
+fn kernel_output_dir_for_iso_dir(iso_dir: &Path, distro_id: &str) -> PathBuf {
+    let expected_leaf = match distro_id {
+        "levitate" => "levitate",
+        "acorn" => "acorn",
+        "iuppiter" => "iuppiter",
+        "ralph" => "ralph",
+        _ => return iso_dir.to_path_buf(),
+    };
+
+    let iso_leaf = iso_dir.file_name().and_then(|s| s.to_str());
+    if iso_leaf == Some(expected_leaf) {
+        return iso_dir.to_path_buf();
+    }
+
+    if let Some(parent) = iso_dir.parent() {
+        let parent_leaf = parent.file_name().and_then(|s| s.to_str());
+        if parent_leaf == Some(expected_leaf) {
+            return parent.to_path_buf();
+        }
+    }
+
+    iso_dir.to_path_buf()
+}
+
+fn detect_stage_artifact_tag(iso_dir: &Path, iso_filename: Option<&str>) -> String {
+    if let Some(leaf) = iso_dir.file_name().and_then(|s| s.to_str()) {
+        if let Some(tag) = parse_stage_artifact_tag(leaf) {
+            return tag.to_string();
+        }
+    }
+
+    if let Some(name) = iso_filename {
+        if let Some(tag) = parse_stage_artifact_tag(name) {
+            return tag.to_string();
+        }
+    }
+
+    STAGE00_ARTIFACT_TAG.to_string()
+}
+
+fn parse_stage_artifact_tag(value: &str) -> Option<&str> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+    for idx in 0..=(bytes.len() - 3) {
+        if bytes[idx] == b's' && bytes[idx + 1].is_ascii_digit() && bytes[idx + 2].is_ascii_digit()
+        {
+            return value.get(idx..idx + 3);
+        }
+    }
+    None
+}
+
+fn contract_for_stage_artifact_tag(
+    base: &distro_contract::ConformanceContract,
+    stage_artifact_tag: &str,
+) -> distro_contract::ConformanceContract {
+    let mut contract = base.clone();
+    contract.artifacts.rootfs_name =
+        rewrite_stage_artifact_name(&contract.artifacts.rootfs_name, stage_artifact_tag);
+    contract.artifacts.initramfs_live_output = rewrite_stage_artifact_name(
+        &contract.artifacts.initramfs_live_output,
+        stage_artifact_tag,
+    );
+
+    let non_kernel = &mut contract.stages.stage_00_build.non_kernel_inputs;
+    rewrite_stage_artifact_names(&mut non_kernel.required_for_00build, stage_artifact_tag);
+    rewrite_stage_artifact_names(&mut non_kernel.deferred_to_01boot, stage_artifact_tag);
+    rewrite_stage_artifact_names(&mut non_kernel.deferred_to_02livetools, stage_artifact_tag);
+    rewrite_stage_artifact_names(
+        &mut non_kernel.deferred_to_03install_plus,
+        stage_artifact_tag,
+    );
+    contract
+}
+
+fn rewrite_stage_artifact_names(values: &mut [String], stage_artifact_tag: &str) {
+    for value in values {
+        *value = rewrite_stage_artifact_name(value, stage_artifact_tag);
+    }
+}
+
+fn rewrite_stage_artifact_name(value: &str, stage_artifact_tag: &str) -> String {
+    if let Some(current_tag) = parse_stage_artifact_tag(value) {
+        if current_tag.len() == 3 && value.starts_with(current_tag) {
+            let mut rewritten = String::with_capacity(value.len());
+            rewritten.push_str(stage_artifact_tag);
+            rewritten.push_str(&value[current_tag.len()..]);
+            return rewritten;
+        }
+    }
+    format!("{stage_artifact_tag}-{value}")
 }
 
 /// Verify an ISO using distro-specific checklist.

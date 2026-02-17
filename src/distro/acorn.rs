@@ -25,7 +25,7 @@ impl DistroContext for AcornContext {
     }
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        &["___SHELL_READY___", "[autologin]", "login:"]
+        &["___SHELL_READY___", "___PROMPT___"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {
@@ -108,8 +108,8 @@ impl DistroContext for AcornContext {
     fn default_iso_path(&self) -> PathBuf {
         // Relative to repo root; session::resolve_iso() prefixes with workspace root.
         PathBuf::from(format!(
-            ".artifacts/out/acorn/{}",
-            distro_spec::acorn::ISO_FILENAME
+            ".artifacts/out/acorn/s01-boot/{}",
+            distro_spec::acorn::ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
         ))
     }
 
@@ -126,7 +126,9 @@ impl DistroContext for AcornContext {
     }
 
     fn test_instrumentation_source(&self) -> &str {
-        include_str!("../../../../AcornOS/profile/live-overlay/etc/profile.d/00-acorn-test.sh")
+        include_str!(
+            "../../../../distro-variants/acorn/profile/live-overlay/etc/profile.d/00-acorn-test.sh"
+        )
     }
 
     fn default_username(&self) -> &str {

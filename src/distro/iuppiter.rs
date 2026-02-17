@@ -26,7 +26,7 @@ impl DistroContext for IuppiterContext {
     }
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        &["___SHELL_READY___", "___PROMPT___", "login:"]
+        &["___SHELL_READY___", "___PROMPT___"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {
@@ -111,8 +111,8 @@ impl DistroContext for IuppiterContext {
     fn default_iso_path(&self) -> PathBuf {
         // Relative to repo root; session::resolve_iso() prefixes with workspace root.
         PathBuf::from(format!(
-            ".artifacts/out/iuppiter/{}",
-            distro_spec::iuppiter::ISO_FILENAME
+            ".artifacts/out/iuppiter/s01-boot/{}",
+            distro_spec::iuppiter::ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
         ))
     }
 
@@ -130,7 +130,7 @@ impl DistroContext for IuppiterContext {
 
     fn test_instrumentation_source(&self) -> &str {
         include_str!(
-            "../../../../IuppiterOS/profile/live-overlay/etc/profile.d/00-iuppiter-test.sh"
+            "../../../../distro-variants/iuppiter/profile/live-overlay/etc/profile.d/00-iuppiter-test.sh"
         )
     }
 

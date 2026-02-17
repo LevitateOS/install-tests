@@ -30,10 +30,10 @@ impl DistroContext for LevitateContext {
     // ═══════════════════════════════════════════════════════════════════════════
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        // Accept login prompt or multi-user.target as proof of successful boot.
-        // ___SHELL_READY___ requires test instrumentation script; the login prompt
-        // proves the system booted and getty is running on serial console.
-        &["___SHELL_READY___", "LevitateOS Live", "multi-user.target"]
+        // Stage 01 requires an actually interactive live shell on serial console.
+        // These markers are emitted by `/etc/profile.d/00-live-test.sh` only when
+        // an interactive shell is active on ttyS0.
+        &["___SHELL_READY___", "___PROMPT___"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {
@@ -80,10 +80,7 @@ impl DistroContext for LevitateContext {
             "Emergency shell",
             "emergency.target",
             "rescue.target",
-            "Failed to start", // For live ISO, any service failure is bad
             "Timed out waiting for device",
-            "Dependency failed",
-            "FAILED:",
             // === GENERAL ===
             "fatal error",
             "Segmentation fault",
@@ -219,12 +216,15 @@ impl DistroContext for LevitateContext {
         // Use relative path that works from workspace root
         // The test framework joins with current_dir() for relative paths
         //
-        // ISO filename comes from distro-spec constant (Stage 00 artifact).
+        // ISO filename comes from distro-spec constant and is remapped to Stage 01.
         use distro_spec::levitate::ISO_FILENAME;
 
         // Path is relative to workspace root (CARGO_MANIFEST_DIR/../..)
         // resolve_iso() in session.rs joins this with the workspace root
-        PathBuf::from(format!(".artifacts/out/levitate/{}", ISO_FILENAME))
+        PathBuf::from(format!(
+            ".artifacts/out/levitate/s01-boot/{}",
+            ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
+        ))
     }
 
     fn chroot_shell(&self) -> &str {

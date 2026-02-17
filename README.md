@@ -51,7 +51,7 @@ cargo run --bin boot-test
 --step <N>              Run only step N (1-24)
 --phase <N>             Run only phase N (1-6)
 --leviso-dir <PATH>     Path to leviso directory (default: ../../leviso)
---iso <PATH>            Path to ISO file (default: .artifacts/out/levitate/levitateos-x86_64-s00_build.iso)
+--iso <PATH>            Path to ISO file (default: .artifacts/out/levitate/s00-build/levitateos-x86_64-s00_build.iso)
 --disk-size <SIZE>      Virtual disk size (default: 8G)
 --keep-vm               Keep VM running after tests (for debugging)
 ```
@@ -61,8 +61,8 @@ cargo run --bin boot-test
 - QEMU with KVM support
 - OVMF (UEFI firmware)
 - OVMF_VARS (writable EFI variable storage)
-- Built LevitateOS ISO (`.artifacts/out/levitate/levitateos-x86_64-s00_build.iso`)
-- Built initramfs (`.artifacts/out/levitate/initramfs-live.cpio.gz`)
+- Built LevitateOS ISO (`.artifacts/out/levitate/s00-build/levitateos-x86_64-s00_build.iso`)
+- Built initramfs (`.artifacts/out/levitate/s00-build/s00-initramfs-live.cpio.gz`)
 - Built kernel (`.artifacts/out/levitate/staging/boot/vmlinuz`)
 
 ## Code Structure

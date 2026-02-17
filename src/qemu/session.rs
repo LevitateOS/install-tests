@@ -20,8 +20,8 @@ pub fn resolve_iso(ctx: &dyn DistroContext) -> Result<PathBuf> {
     };
     if !iso_path.exists() {
         bail!(
-            "ISO not found at {}. Build {} Stage 00 first: \
-             cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build",
+            "ISO not found at {}. Build {} Stage 01 first: \
+             cargo run -p distro-builder --bin distro-builder -- iso build {} 01Boot",
             iso_path.display(),
             ctx.name(),
             ctx.id()

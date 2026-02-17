@@ -11,8 +11,13 @@ use std::time::SystemTime;
 /// Persisted state for a single distro's stages.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct StageState {
-    /// ISO file mtime (as seconds since epoch) when stages were run.
-    pub iso_mtime_secs: u64,
+    /// Stage 00 (build-only) ISO file mtime.
+    /// `alias = "iso_mtime_secs"` preserves compatibility with old state files.
+    #[serde(default, alias = "iso_mtime_secs")]
+    pub stage00_iso_mtime_secs: u64,
+    /// Runtime ISO mtime used for Stage 01+ checks.
+    #[serde(default)]
+    pub runtime_iso_mtime_secs: u64,
     /// Map of stage number -> result.
     pub results: HashMap<u32, StageResult>,
 }
@@ -46,19 +51,36 @@ impl StageState {
         Ok(())
     }
 
-    /// Check if state is still valid for the given ISO.
-    /// Returns false if ISO was rebuilt (mtime changed).
-    pub fn is_valid_for_iso(&self, iso_path: &Path) -> bool {
+    /// Check if state is still valid for the given stage ISO.
+    /// Stage 00 uses the build-only ISO mtime.
+    /// Stage 01+ uses runtime ISO mtime.
+    pub fn is_valid_for_stage_iso(&self, stage: u32, iso_path: &Path) -> bool {
         match iso_mtime_secs(iso_path) {
-            Some(mtime) => self.iso_mtime_secs == mtime,
+            Some(mtime) => {
+                if stage == 0 {
+                    self.stage00_iso_mtime_secs == mtime
+                } else {
+                    self.runtime_iso_mtime_secs == mtime
+                }
+            }
             None => false,
         }
     }
 
-    /// Update the ISO mtime and clear all results (rebuild detected).
-    pub fn reset_for_iso(&mut self, iso_path: &Path) {
-        self.iso_mtime_secs = iso_mtime_secs(iso_path).unwrap_or(0);
-        self.results.clear();
+    /// Update stage ISO mtime and clear affected stage results.
+    /// Stage 00 rebuild invalidates all stage results.
+    /// Stage 01+ rebuild invalidates Stage 01+ results while preserving Stage 00.
+    pub fn reset_for_stage_iso(&mut self, stage: u32, iso_path: &Path) {
+        let mtime = iso_mtime_secs(iso_path).unwrap_or(0);
+        if stage == 0 {
+            self.stage00_iso_mtime_secs = mtime;
+            self.runtime_iso_mtime_secs = 0;
+            self.results.clear();
+            return;
+        }
+
+        self.runtime_iso_mtime_secs = mtime;
+        self.results.retain(|s, _| *s < 1);
     }
 
     /// Record a stage result.
@@ -77,6 +99,11 @@ impl StageState {
     /// Check if a stage has already passed.
     pub fn has_passed(&self, stage: u32) -> bool {
         self.results.get(&stage).map(|r| r.passed).unwrap_or(false)
+    }
+
+    /// Returns true if state contains any result at or above `stage`.
+    pub fn has_any_results_from(&self, stage: u32) -> bool {
+        self.results.keys().any(|s| *s >= stage)
     }
 
     /// Highest stage that passed.

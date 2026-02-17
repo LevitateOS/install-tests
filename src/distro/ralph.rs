@@ -19,7 +19,7 @@ impl DistroContext for RalphContext {
     }
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        &["___SHELL_READY___", "RalphOS Live", "multi-user.target"]
+        &["___SHELL_READY___", "___PROMPT___"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {
@@ -160,8 +160,8 @@ impl DistroContext for RalphContext {
 
     fn default_iso_path(&self) -> PathBuf {
         PathBuf::from(format!(
-            ".artifacts/out/ralph/{}",
-            distro_spec::ralph::ISO_FILENAME
+            ".artifacts/out/ralph/s01-boot/{}",
+            distro_spec::ralph::ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
         ))
     }
 

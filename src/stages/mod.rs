@@ -26,6 +26,11 @@ use state::StageState;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+const STAGE00_SLUG: &str = "s00_build";
+const STAGE01_SLUG: &str = "s01_boot";
+const STAGE00_DIRNAME: &str = "s00-build";
+const STAGE01_DIRNAME: &str = "s01-boot";
+
 struct StageIsoTarget {
     path: PathBuf,
     filename: String,
@@ -36,7 +41,8 @@ pub fn run_stage(distro_id: &str, stage: u32) -> Result<bool> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let canonical_distro_id = ctx.id();
-    let iso_target = resolve_stage_00_iso_target(canonical_distro_id, &*ctx)?;
+    let stage00_iso_target = resolve_iso_target_for_stage(canonical_distro_id, 0, &*ctx)?;
+    let iso_target = resolve_iso_target_for_stage(canonical_distro_id, stage, &*ctx)?;
     let iso_path = iso_target.path.clone();
     let iso_dir = iso_path.parent().ok_or_else(|| {
         anyhow::anyhow!(
@@ -53,12 +59,19 @@ pub fn run_stage(distro_id: &str, stage: u32) -> Result<bool> {
     )?;
 
     let mut state = StageState::load(canonical_distro_id);
-    if !state.is_valid_for_iso(&iso_path) {
+    if !state.is_valid_for_stage_iso(0, &stage00_iso_target.path) {
         println!(
             "{}",
             "ISO rebuilt since last run — resetting stages.".yellow()
         );
-        state.reset_for_iso(&iso_path);
+        state.reset_for_stage_iso(0, &stage00_iso_target.path);
+        state.save(canonical_distro_id)?;
+    } else if stage > 0 && !state.is_valid_for_stage_iso(stage, &iso_target.path) {
+        println!(
+            "{}",
+            "Runtime ISO rebuilt since last run — resetting Stage 01+ results.".yellow()
+        );
+        state.reset_for_stage_iso(stage, &iso_target.path);
         state.save(canonical_distro_id)?;
     }
 
@@ -133,14 +146,25 @@ pub fn print_status(distro_id: &str) -> Result<()> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let canonical_distro_id = ctx.id();
-    let iso_path =
-        resolve_stage_00_iso_target(canonical_distro_id, &*ctx).map(|target| target.path);
+    let stage00_iso_path =
+        resolve_iso_target_for_stage(canonical_distro_id, 0, &*ctx).map(|target| target.path);
+    let runtime_iso_path =
+        resolve_iso_target_for_stage(canonical_distro_id, 1, &*ctx).map(|target| target.path);
 
     let state = StageState::load(canonical_distro_id);
-    let valid = iso_path
+    let build_iso_valid = stage00_iso_path
         .as_ref()
-        .map(|p| state.is_valid_for_iso(p))
+        .map(|p| state.is_valid_for_stage_iso(0, p))
         .unwrap_or(false);
+    let runtime_iso_valid = if state.has_any_results_from(1) {
+        runtime_iso_path
+            .as_ref()
+            .map(|p| state.is_valid_for_stage_iso(1, p))
+            .unwrap_or(false)
+    } else {
+        true
+    };
+    let valid = build_iso_valid && runtime_iso_valid;
 
     println!("{} Stage Status", ctx.name().bold());
     if !valid {
@@ -465,27 +489,58 @@ fn stage_name(n: u32) -> &'static str {
     }
 }
 
-fn resolve_stage_00_iso_target(distro_id: &str, ctx: &dyn DistroContext) -> Result<StageIsoTarget> {
+fn resolve_iso_target_for_stage(
+    distro_id: &str,
+    stage: u32,
+    ctx: &dyn DistroContext,
+) -> Result<StageIsoTarget> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root, distro_id)
         .with_context(|| format!("loading 00Build contract bundle for '{}'", distro_id))?;
-    let filename = bundle.contract.artifacts.iso_filename.clone();
+    let stage00_filename = bundle.contract.artifacts.iso_filename.clone();
+    let filename = if stage == 0 {
+        stage00_filename.clone()
+    } else {
+        derive_s01_iso_filename(&stage00_filename)
+    };
     let path = workspace_root
         .join(".artifacts/out")
         .join(distro_id)
+        .join(stage_output_dir_for_stage(stage))
         .join(&filename);
 
     if !path.exists() {
+        let build_stage = if stage == 0 { "00Build" } else { "01Boot" };
         bail!(
-            "ISO not found at {}. Build {} Stage 00 first: \
-             cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build",
+            "ISO not found at {}. Build {} {} first: \
+             cargo run -p distro-builder --bin distro-builder -- iso build {} {}",
             path.display(),
             ctx.name(),
-            distro_id
+            build_stage,
+            distro_id,
+            build_stage
         );
     }
 
     Ok(StageIsoTarget { path, filename })
+}
+
+fn stage_output_dir_for_stage(stage: u32) -> &'static str {
+    if stage == 0 {
+        STAGE00_DIRNAME
+    } else {
+        STAGE01_DIRNAME
+    }
+}
+
+fn derive_s01_iso_filename(stage00_iso_filename: &str) -> String {
+    if stage00_iso_filename.contains(STAGE00_SLUG) {
+        return stage00_iso_filename.replacen(STAGE00_SLUG, STAGE01_SLUG, 1);
+    }
+    if let Some(base) = stage00_iso_filename.strip_suffix(".iso") {
+        return format!("{base}-{STAGE01_SLUG}.iso");
+    }
+    format!("{stage00_iso_filename}-{STAGE01_SLUG}.iso")
 }
 
 fn spawn_live_qemu(
@@ -665,7 +720,7 @@ fn print_failure(stage: u32, err: &anyhow::Error) {
             eprintln!("  Try:");
             eprintln!("    - Manual boot: just stage 1 <distro>");
             eprintln!(
-                "    - Rebuild Stage 00 ISO: cargo run -p distro-builder --bin distro-builder -- iso build <distro> 00Build"
+                "    - Rebuild Stage 01 ISO: cargo run -p distro-builder --bin distro-builder -- iso build <distro> 01Boot"
             );
         }
         2 => {
