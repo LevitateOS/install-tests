@@ -19,35 +19,12 @@ pub fn resolve_iso(ctx: &dyn DistroContext) -> Result<PathBuf> {
         default
     };
     if !iso_path.exists() {
-        // ISO paths are consistently `.artifacts/out/<DistroDir>/<iso>`. Use that to
-        // provide a helpful build hint without requiring DistroContext to
-        // know its directory name.
-        let build_dir_hint = iso_path
-            .strip_prefix(&workspace_root)
-            .ok()
-            .and_then(|rel| {
-                // Expected default layout:
-                //   .artifacts/out/<DistroDir>/<iso>
-                let mut comps = rel.components();
-                let c1 = comps.next()?.as_os_str();
-                let c2 = comps.next()?.as_os_str();
-                let distro = comps.next()?.as_os_str();
-                if c1 == std::ffi::OsStr::new(".artifacts")
-                    && c2 == std::ffi::OsStr::new("out")
-                    && !distro.is_empty()
-                {
-                    Some(workspace_root.join(distro))
-                } else {
-                    None
-                }
-            })
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<DistroDir>".to_string());
         bail!(
-            "ISO not found at {}. Build {} first: cd {} && cargo run -- build",
+            "ISO not found at {}. Build {} Stage 00 first: \
+             cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build",
             iso_path.display(),
             ctx.name(),
-            build_dir_hint
+            ctx.id()
         );
     }
     Ok(iso_path)

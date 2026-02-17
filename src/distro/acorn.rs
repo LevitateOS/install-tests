@@ -108,7 +108,7 @@ impl DistroContext for AcornContext {
     fn default_iso_path(&self) -> PathBuf {
         // Relative to repo root; session::resolve_iso() prefixes with workspace root.
         PathBuf::from(format!(
-            ".artifacts/out/AcornOS/{}",
+            ".artifacts/out/acorn/{}",
             distro_spec::acorn::ISO_FILENAME
         ))
     }

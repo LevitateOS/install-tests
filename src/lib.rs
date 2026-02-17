@@ -1,4 +1,4 @@
-//! E2E Installation Test Library for LevitateOS and AcornOS.
+//! E2E Installation Test Library for LevitateOS variants.
 //!
 //! This library provides the shared infrastructure for installation testing:
 //! - QEMU backends (serial and QMP)
@@ -23,8 +23,9 @@ pub mod steps;
 pub use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
 pub use executor::{ExecResult, Executor};
 pub use preflight::{
-    require_preflight, require_preflight_for_distro, run_preflight, run_preflight_for_distro,
-    run_preflight_with_iso, run_preflight_with_iso_distro, PreflightCheck, PreflightResult,
+    require_preflight, require_preflight_for_distro, require_preflight_with_iso_for_distro,
+    run_preflight, run_preflight_for_distro, run_preflight_with_iso, run_preflight_with_iso_distro,
+    PreflightCheck, PreflightResult,
 };
 pub use qemu::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, Console,

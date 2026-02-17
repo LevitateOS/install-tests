@@ -219,12 +219,12 @@ impl DistroContext for LevitateContext {
         // Use relative path that works from workspace root
         // The test framework joins with current_dir() for relative paths
         //
-        // ISO filename comes from distro-spec constant: levitateos-x86_64.iso
+        // ISO filename comes from distro-spec constant (Stage 00 artifact).
         use distro_spec::levitate::ISO_FILENAME;
 
         // Path is relative to workspace root (CARGO_MANIFEST_DIR/../..)
         // resolve_iso() in session.rs joins this with the workspace root
-        PathBuf::from(format!(".artifacts/out/leviso/{}", ISO_FILENAME))
+        PathBuf::from(format!(".artifacts/out/levitate/{}", ISO_FILENAME))
     }
 
     fn chroot_shell(&self) -> &str {

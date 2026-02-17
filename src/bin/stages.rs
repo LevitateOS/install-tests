@@ -3,6 +3,7 @@
 //! Lightweight, incremental stages for verifying OS builds.
 //!
 //! Usage:
+//!   cargo run --bin stages -- --distro acorn --stage 0
 //!   cargo run --bin stages -- --distro acorn --stage 1
 //!   cargo run --bin stages -- --distro acorn --up-to 3
 //!   cargo run --bin stages -- --distro acorn --status
@@ -19,15 +20,15 @@ use install_tests::stages;
 #[command(name = "stages")]
 #[command(about = "Stage-based development loop for LevitateOS variants")]
 struct Cli {
-    /// Distro to test (acorn, iuppiter, levitate)
+    /// Distro to test (levitate, acorn, iuppiter, ralph)
     #[arg(long)]
     distro: String,
 
-    /// Run a specific stage (1-6)
+    /// Run a specific stage (0-6)
     #[arg(long)]
     stage: Option<u32>,
 
-    /// Run all stages up to N (inclusive)
+    /// Run all stages up to N (inclusive, 0-6)
     #[arg(long)]
     up_to: Option<u32>,
 
@@ -69,16 +70,16 @@ fn main() -> Result<()> {
     }
 
     if let Some(stage_n) = cli.stage {
-        if !(1..=6).contains(&stage_n) {
-            bail!("Stage must be 1-6, got {}", stage_n);
+        if !(0..=6).contains(&stage_n) {
+            bail!("Stage must be 0-6, got {}", stage_n);
         }
         let passed = stages::run_stage(&cli.distro, stage_n)?;
         std::process::exit(if passed { 0 } else { 1 });
     }
 
     if let Some(target) = cli.up_to {
-        if !(1..=6).contains(&target) {
-            bail!("--up-to must be 1-6, got {}", target);
+        if !(0..=6).contains(&target) {
+            bail!("--up-to must be 0-6, got {}", target);
         }
         let passed = stages::run_up_to(&cli.distro, target)?;
         std::process::exit(if passed { 0 } else { 1 });

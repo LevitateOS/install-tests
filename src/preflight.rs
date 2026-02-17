@@ -17,6 +17,10 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use distro_builder::stages::s00_build::{
+    check_kernel_installed_via_recipe, run_00build_evidence_script, S00BuildEvidenceSpec,
+    S00BuildKernelSpec,
+};
 use distro_contract::{
     load_stage_00_contract_bundle_for_distro_from, require_valid_contract,
     validate_stage_00_runtime,
@@ -76,7 +80,7 @@ impl PreflightCheck {
 /// This should be called BEFORE starting QEMU to catch issues early.
 ///
 /// # Arguments
-/// * `iso_dir` - Directory containing ISO artifacts (e.g. `.artifacts/out/leviso/`)
+/// * `iso_dir` - Directory containing ISO artifacts (e.g. `.artifacts/out/levitate/`)
 ///
 /// # Returns
 /// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)
@@ -246,6 +250,13 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
             .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
     );
 
+    if let Err(err) = verify_kernel_recipe_is_installed(&bundle, iso_dir) {
+        details.push(err);
+    }
+    if let Err(err) = verify_stage_00_evidence_script(&bundle, iso_dir) {
+        details.push(err);
+    }
+
     if details.is_empty() {
         println!("{} (declaration + runtime)", "PASS".green());
         Ok(PreflightCheck {
@@ -270,6 +281,44 @@ fn verify_conformance_contract(iso_dir: &Path, distro_id: &str) -> Result<Prefli
             details,
         })
     }
+}
+
+fn verify_kernel_recipe_is_installed(
+    bundle: &distro_contract::LoadedVariantContract,
+    iso_dir: &Path,
+) -> Result<(), String> {
+    let stage_00 = &bundle.contract.stages.stage_00_build;
+    let spec = S00BuildKernelSpec {
+        recipe_kernel_script: stage_00.recipe_kernel_script.clone(),
+        kernel_version: stage_00.kernel_version.clone(),
+        kernel_sha256: stage_00.kernel_sha256.clone(),
+        kernel_localversion: stage_00.kernel_localversion.clone(),
+        module_install_path: stage_00.module_install_path.clone(),
+    };
+
+    check_kernel_installed_via_recipe(&bundle.repo_root, iso_dir, &spec).map_err(|e| {
+        format!(
+            "Stage00.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
+            e
+        )
+    })
+}
+
+fn verify_stage_00_evidence_script(
+    bundle: &distro_contract::LoadedVariantContract,
+    iso_dir: &Path,
+) -> Result<(), String> {
+    let stage_00 = &bundle.contract.stages.stage_00_build;
+    let spec = S00BuildEvidenceSpec {
+        script_path: stage_00.evidence.script_path.clone(),
+        pass_marker: stage_00.evidence.pass_marker.clone(),
+        kernel_release_path: stage_00.kernel_release_path.clone(),
+        kernel_image_path: stage_00.kernel_image_path.clone(),
+        iso_filename: bundle.contract.artifacts.iso_filename.clone(),
+    };
+
+    run_00build_evidence_script(&bundle.repo_root, &bundle.variant_dir, iso_dir, &spec)
+        .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))
 }
 
 /// Verify an ISO using distro-specific checklist.
@@ -475,7 +524,16 @@ pub fn require_preflight(iso_dir: &Path) -> Result<()> {
 
 /// Run preflight for a distro and fail if critical issues found.
 pub fn require_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<()> {
-    let result = run_preflight_for_distro(iso_dir, distro_id)?;
+    require_preflight_with_iso_for_distro(iso_dir, None, distro_id)
+}
+
+/// Run preflight for a distro + explicit ISO filename and fail if critical issues found.
+pub fn require_preflight_with_iso_for_distro(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+    distro_id: &str,
+) -> Result<()> {
+    let result = run_preflight_with_iso_distro(iso_dir, iso_filename, distro_id)?;
 
     if !result.overall_pass {
         // Collect all failures for the error message
@@ -514,9 +572,10 @@ pub fn require_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<(
             consequence = "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
             "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
              Failures:\n{}\n\n\
-             Run 'cargo run -p leviso -- build' to rebuild the ISO.\n\
+             Run 'cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build' to rebuild the ISO.\n\
              ALL verification checks must pass before running tests.",
-            all_failures.join("\n")
+            all_failures.join("\n"),
+            distro_id
         );
     }
 

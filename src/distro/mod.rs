@@ -1,13 +1,14 @@
 //! Distro context for parameterized testing.
 //!
 //! The DistroContext trait enables the same test infrastructure to work with
-//! both LevitateOS (systemd) and AcornOS (OpenRC) by abstracting init system
-//! and bootloader differences.
+//! LevitateOS/RalphOS (systemd) and AcornOS/IuppiterOS (OpenRC) by abstracting
+//! init system and bootloader differences.
 
 pub mod acorn;
 pub mod iuppiter;
 pub mod levitate;
 mod openrc_base;
+pub mod ralph;
 
 use std::path::PathBuf;
 
@@ -174,9 +175,10 @@ pub fn context_for_distro(id: &str) -> Option<Box<dyn DistroContext>> {
         "levitate" | "levitateos" => Some(Box::new(levitate::LevitateContext)),
         "acorn" | "acornos" => Some(Box::new(acorn::AcornContext)),
         "iuppiter" | "iuppiteros" => Some(Box::new(iuppiter::IuppiterContext)),
+        "ralph" | "ralphos" => Some(Box::new(ralph::RalphContext)),
         _ => None,
     }
 }
 
 /// Available distro IDs for CLI help.
-pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn", "iuppiter"];
+pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn", "iuppiter", "ralph"];
