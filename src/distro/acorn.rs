@@ -49,6 +49,10 @@ impl DistroContext for AcornContext {
         BASE.service_failure_patterns()
     }
 
+    fn live_boot_stall_timeout_secs(&self) -> u64 {
+        BASE.live_boot_stall_timeout_secs()
+    }
+
     fn enable_service_cmd(&self, service: &str, runlevel: &str) -> String {
         BASE.enable_service_cmd(service, runlevel)
     }

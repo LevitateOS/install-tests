@@ -7,6 +7,10 @@
 pub struct OpenRcBase;
 
 impl OpenRcBase {
+    pub fn live_boot_stall_timeout_secs(&self) -> u64 {
+        180
+    }
+
     pub fn boot_error_patterns(&self) -> &[&str] {
         &[
             // === UEFI STAGE ===
@@ -35,6 +39,7 @@ impl OpenRcBase {
             "EROFS:",
             // === OPENRC INIT STAGE ===
             "ERROR: cannot start",
+            "Rootfs payload partition not found",
             "ERROR: ",
             // === GENERAL ===
             "fatal error",
@@ -69,6 +74,7 @@ impl OpenRcBase {
             "No root device",
             "SQUASHFS error",
             "EROFS:",
+            "Rootfs payload partition not found",
             // === GENERAL ===
             "fatal error",
             "Segmentation fault",

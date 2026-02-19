@@ -51,6 +51,13 @@ pub trait DistroContext: Send + Sync {
     #[allow(dead_code)]
     fn service_failure_patterns(&self) -> &[&str];
 
+    /// Max silence window tolerated during live boot before declaring stall.
+    ///
+    /// OpenRC early boot can be quiet for longer than systemd.
+    fn live_boot_stall_timeout_secs(&self) -> u64 {
+        60
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Service Management
     // ═══════════════════════════════════════════════════════════════════════════

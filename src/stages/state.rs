@@ -18,6 +18,9 @@ pub struct StageState {
     /// Runtime ISO mtime used for Stage 01+ checks.
     #[serde(default)]
     pub runtime_iso_mtime_secs: u64,
+    /// Runtime ISO mtime by stage number (Stage 01+).
+    #[serde(default)]
+    pub runtime_iso_mtime_secs_by_stage: HashMap<u32, u64>,
     /// Map of stage number -> result.
     pub results: HashMap<u32, StageResult>,
 }
@@ -53,14 +56,20 @@ impl StageState {
 
     /// Check if state is still valid for the given stage ISO.
     /// Stage 00 uses the build-only ISO mtime.
-    /// Stage 01+ uses runtime ISO mtime.
+    /// Stage 01+ uses per-stage runtime ISO mtime.
     pub fn is_valid_for_stage_iso(&self, stage: u32, iso_path: &Path) -> bool {
         match iso_mtime_secs(iso_path) {
             Some(mtime) => {
                 if stage == 0 {
                     self.stage00_iso_mtime_secs == mtime
                 } else {
-                    self.runtime_iso_mtime_secs == mtime
+                    self.runtime_iso_mtime_secs_by_stage
+                        .get(&stage)
+                        .copied()
+                        // Compatibility fallback for older state files that only stored
+                        // a single runtime mtime.
+                        .unwrap_or(self.runtime_iso_mtime_secs)
+                        == mtime
                 }
             }
             None => false,
@@ -69,18 +78,23 @@ impl StageState {
 
     /// Update stage ISO mtime and clear affected stage results.
     /// Stage 00 rebuild invalidates all stage results.
-    /// Stage 01+ rebuild invalidates Stage 01+ results while preserving Stage 00.
+    /// Stage N (N>=01) rebuild invalidates Stage N+ results while preserving lower stages.
     pub fn reset_for_stage_iso(&mut self, stage: u32, iso_path: &Path) {
         let mtime = iso_mtime_secs(iso_path).unwrap_or(0);
         if stage == 0 {
             self.stage00_iso_mtime_secs = mtime;
             self.runtime_iso_mtime_secs = 0;
+            self.runtime_iso_mtime_secs_by_stage.clear();
             self.results.clear();
             return;
         }
 
-        self.runtime_iso_mtime_secs = mtime;
-        self.results.retain(|s, _| *s < 1);
+        self.runtime_iso_mtime_secs_by_stage.insert(stage, mtime);
+        // Keep legacy field for compatibility with older tooling that may still read it.
+        if stage == 1 {
+            self.runtime_iso_mtime_secs = mtime;
+        }
+        self.results.retain(|s, _| *s < stage);
     }
 
     /// Record a stage result.

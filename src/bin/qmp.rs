@@ -43,6 +43,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    install_tests::enforce_policy_guard("install-tests qmp")?;
 
     match cli.command {
         Commands::Smoke { iso, vnc } => smoke_test(&iso, vnc),

@@ -8,12 +8,11 @@
 //!   cargo run --bin stages -- --distro acorn --up-to 3
 //!   cargo run --bin stages -- --distro acorn --status
 //!   cargo run --bin stages -- --distro acorn --reset
-//!   cargo run --bin stages -- --distro acorn --stage 2 --interactive
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use std::path::PathBuf;
 
-use install_tests::interactive;
 use install_tests::stages;
 
 #[derive(Parser)]
@@ -40,13 +39,22 @@ struct Cli {
     #[arg(long)]
     reset: bool,
 
-    /// Interactive mode: run stage test and drop to shell (like loading a video game save)
-    #[arg(long)]
-    interactive: bool,
+    /// Boot-inject key/value pairs (comma-separated KEY=VALUE entries).
+    #[arg(long, value_name = "KEY=VALUE[,KEY=VALUE...]")]
+    inject: Option<String>,
+
+    /// Boot-inject payload file path (takes precedence over --inject).
+    #[arg(long, value_name = "PATH")]
+    inject_file: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    apply_boot_injection_env(&cli)?;
+    let requires_guard = cli.stage.is_some() || cli.up_to.is_some();
+    if requires_guard {
+        install_tests::enforce_policy_guard("install-tests stages")?;
+    }
 
     if cli.reset {
         return stages::reset_state(&cli.distro);
@@ -54,19 +62,6 @@ fn main() -> Result<()> {
 
     if cli.status {
         return stages::print_status(&cli.distro);
-    }
-
-    if cli.interactive {
-        if cli.up_to.is_some() {
-            bail!("--interactive cannot be used with --up-to");
-        }
-        let Some(stage_n) = cli.stage else {
-            bail!("--interactive requires --stage N");
-        };
-        if !(1..=6).contains(&stage_n) {
-            bail!("Stage must be 1-6, got {}", stage_n);
-        }
-        return interactive::run_interactive_stage(&cli.distro, stage_n);
     }
 
     if let Some(stage_n) = cli.stage {
@@ -86,4 +81,21 @@ fn main() -> Result<()> {
     }
 
     bail!("Specify --stage N, --up-to N, --status, or --reset");
+}
+
+fn apply_boot_injection_env(cli: &Cli) -> Result<()> {
+    if let Some(path) = &cli.inject_file {
+        if !path.is_file() {
+            bail!("--inject-file is not a readable file: {}", path.display());
+        }
+        std::env::set_var("LEVITATE_BOOT_INJECTION_FILE", path);
+        return Ok(());
+    }
+    if let Some(kv) = &cli.inject {
+        if kv.trim().is_empty() {
+            bail!("--inject cannot be empty");
+        }
+        std::env::set_var("LEVITATE_BOOT_INJECTION_KV", kv);
+    }
+    Ok(())
 }

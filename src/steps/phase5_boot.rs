@@ -43,7 +43,7 @@ impl Step for GenerateInitramfs {
         // ═══════════════════════════════════════════════════════════════════════
         // The rootfs (EROFS) doesn't include the kernel (it's on the ISO for live boot).
         // We need to copy it to the ESP where systemd-boot can find it.
-        let kernel_cmd = "cp /media/cdrom/boot/vmlinuz /mnt/boot/vmlinuz";
+        let kernel_cmd = "cp /run/live-media/boot/vmlinuz /mnt/boot/vmlinuz";
         let cmd_start = Instant::now();
         let kernel_copy = executor.exec(kernel_cmd, Duration::from_secs(10))?;
         result.log_command(
@@ -98,7 +98,7 @@ impl Step for GenerateInitramfs {
         // ═══════════════════════════════════════════════════════════════════════
         // INITRAMFS COPY: ISO → ESP
         // ═══════════════════════════════════════════════════════════════════════
-        let copy_cmd = "cp /media/cdrom/boot/initramfs-installed.img /mnt/boot/initramfs.img";
+        let copy_cmd = "cp /run/live-media/boot/initramfs-installed.img /mnt/boot/initramfs.img";
         let cmd_start = Instant::now();
         let copy_result = executor.exec(copy_cmd, Duration::from_secs(30))?;
         result.log_command(
@@ -268,7 +268,8 @@ impl Step for InstallBootloader {
         // Create loader.conf (goes in ESP at /boot)
         let loader_config = LoaderConfig::with_defaults(ctx.id())
             .disable_editor() // Disable for security
-            .with_console_mode("max");
+            .with_console_mode("max")
+            .with_timeout(5);
         executor.write_file(
             "/mnt/boot/loader/loader.conf",
             &loader_config.to_loader_conf(),

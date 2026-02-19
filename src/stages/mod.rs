@@ -24,12 +24,15 @@ use colored::Colorize;
 use distro_contract::load_stage_00_contract_bundle_for_distro_from;
 use state::StageState;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 const STAGE00_SLUG: &str = "s00_build";
 const STAGE01_SLUG: &str = "s01_boot";
+const STAGE02_SLUG: &str = "s02_live_tools";
 const STAGE00_DIRNAME: &str = "s00-build";
 const STAGE01_DIRNAME: &str = "s01-boot";
+const STAGE02_DIRNAME: &str = "s02-live-tools";
 
 struct StageIsoTarget {
     path: PathBuf,
@@ -214,12 +217,16 @@ pub fn reset_state(distro_id: &str) -> Result<()> {
 
 /// Stage 01: Live Boot — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let (mut child, mut console) = spawn_live_qemu(ctx, iso_path)?;
+    let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
+    let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
 
-    let result = console.wait_for_live_boot_with_context(Duration::from_secs(60), ctx);
+    let result = console.wait_for_live_boot_with_context(stall_timeout, ctx);
 
     let evidence = match &result {
-        Ok(()) => "Boot markers detected".to_string(),
+        Ok(()) => {
+            verify_stage01_ssh_login(&mut console, ssh_host_port)?;
+            "Boot markers detected + SSH login probe passed".to_string()
+        }
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
@@ -241,8 +248,10 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 /// - Environment is configured (proc/sys/dev available)
 /// - Tool is functional (not broken/corrupted)
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let (mut child, mut console) = spawn_live_qemu(ctx, iso_path)?;
-    console.wait_for_live_boot_with_context(Duration::from_secs(60), ctx)?;
+    let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
+    let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
+    console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
+    verify_stage01_ssh_login(&mut console, ssh_host_port)?;
 
     // Check for key tools expected in the live environment
     let tools: Vec<&str> = ctx.live_tools().to_vec();
@@ -254,12 +263,14 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         // Get the validation command for this tool
         let validation_cmd = get_tool_validation_command(tool);
 
-        let result = console.exec(&validation_cmd, Duration::from_secs(10))?;
-
+        let result = ssh_exec(ssh_host_port, &validation_cmd)?;
         if result.exit_code == 0 {
             // Tool executed successfully - it works!
             found.push(*tool);
-        } else if result.exit_code == 127 {
+        } else if result.exit_code == 127
+            || result.output.contains("command not found")
+            || result.output.contains("not found")
+        {
             // Exit code 127 = command not found
             missing.push(*tool);
         } else {
@@ -498,10 +509,10 @@ fn resolve_iso_target_for_stage(
     let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root, distro_id)
         .with_context(|| format!("loading 00Build contract bundle for '{}'", distro_id))?;
     let stage00_filename = bundle.contract.artifacts.iso_filename.clone();
-    let filename = if stage == 0 {
-        stage00_filename.clone()
-    } else {
-        derive_s01_iso_filename(&stage00_filename)
+    let filename = match stage {
+        0 => stage00_filename.clone(),
+        1 => derive_stage_iso_filename(&stage00_filename, STAGE01_SLUG),
+        _ => derive_stage_iso_filename(&stage00_filename, STAGE02_SLUG),
     };
     let path = workspace_root
         .join(".artifacts/out")
@@ -510,7 +521,11 @@ fn resolve_iso_target_for_stage(
         .join(&filename);
 
     if !path.exists() {
-        let build_stage = if stage == 0 { "00Build" } else { "01Boot" };
+        let build_stage = match stage {
+            0 => "00Build",
+            1 => "01Boot",
+            _ => "02LiveTools",
+        };
         bail!(
             "ISO not found at {}. Build {} {} first: \
              cargo run -p distro-builder --bin distro-builder -- iso build {} {}",
@@ -526,28 +541,152 @@ fn resolve_iso_target_for_stage(
 }
 
 fn stage_output_dir_for_stage(stage: u32) -> &'static str {
-    if stage == 0 {
-        STAGE00_DIRNAME
-    } else {
-        STAGE01_DIRNAME
+    match stage {
+        0 => STAGE00_DIRNAME,
+        1 => STAGE01_DIRNAME,
+        _ => STAGE02_DIRNAME,
     }
 }
 
-fn derive_s01_iso_filename(stage00_iso_filename: &str) -> String {
+fn derive_stage_iso_filename(stage00_iso_filename: &str, stage_slug: &str) -> String {
     if stage00_iso_filename.contains(STAGE00_SLUG) {
-        return stage00_iso_filename.replacen(STAGE00_SLUG, STAGE01_SLUG, 1);
+        return stage00_iso_filename.replacen(STAGE00_SLUG, stage_slug, 1);
     }
     if let Some(base) = stage00_iso_filename.strip_suffix(".iso") {
-        return format!("{base}-{STAGE01_SLUG}.iso");
+        return format!("{base}-{stage_slug}.iso");
     }
-    format!("{stage00_iso_filename}-{STAGE01_SLUG}.iso")
+    format!("{stage00_iso_filename}-{stage_slug}.iso")
 }
 
-fn spawn_live_qemu(
+fn spawn_live_qemu_with_ssh(
     ctx: &dyn DistroContext,
     iso_path: &Path,
-) -> Result<(std::process::Child, Console)> {
-    session::spawn_live(ctx, iso_path)
+) -> Result<(std::process::Child, Console, u16)> {
+    session::spawn_live_with_ssh(ctx, iso_path)
+}
+
+struct SshExecOutput {
+    exit_code: i32,
+    output: String,
+}
+
+fn verify_stage01_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
+    let mut last_err = String::new();
+    for _ in 0..60 {
+        let out = ssh_exec(ssh_host_port, "echo __SSH_LOGIN_OK__");
+        match out {
+            Ok(result) if result.exit_code == 0 && result.output.contains("__SSH_LOGIN_OK__") => {
+                return Ok(());
+            }
+            Ok(result) => last_err = result.output,
+            Err(err) => last_err = format!("{err:#}"),
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    let diagnostics = collect_stage01_ssh_diagnostics(console);
+    bail!(
+        "Stage 01 SSH login probe failed after shell-ready boundary (forwarded port {}). Last output:\n{}\n\n{}",
+        ssh_host_port,
+        last_err,
+        diagnostics
+    );
+}
+
+fn collect_stage01_ssh_diagnostics(console: &mut Console) -> String {
+    let checks = [
+        ("Kernel cmdline", "cat /proc/cmdline"),
+        (
+            "sshd service status",
+            "systemctl status sshd.service --no-pager -l || true",
+        ),
+        (
+            "anaconda-sshd service status",
+            "systemctl status anaconda-sshd.service --no-pager -l || true",
+        ),
+        (
+            "sshd journal",
+            "journalctl -b -u sshd.service --no-pager -n 80 || true",
+        ),
+        (
+            "Port 22 listeners",
+            "ss -lntp 2>/dev/null | grep ':22' || netstat -lntp 2>/dev/null | grep ':22' || true",
+        ),
+    ];
+
+    let mut report = String::from("Stage 01 SSH diagnostics from live shell:\n");
+    for (title, cmd) in checks {
+        report.push_str(&format!("\n--- {} ---\n$ {}\n", title, cmd));
+        match console.exec(cmd, Duration::from_secs(15)) {
+            Ok(result) => {
+                let output = result.output.trim();
+                if output.is_empty() {
+                    report.push_str("(no output)\n");
+                } else {
+                    report.push_str(output);
+                    report.push('\n');
+                }
+            }
+            Err(err) => {
+                report.push_str(&format!("(failed to collect: {:#})\n", err));
+            }
+        }
+    }
+    report
+}
+
+fn ssh_exec(ssh_host_port: u16, remote_cmd: &str) -> Result<SshExecOutput> {
+    let key_path = ssh_private_key_path();
+    if !key_path.is_file() {
+        bail!(
+            "SSH private key not found at '{}'. Set LEVITATE_SSH_PRIVATE_KEY to a readable key.",
+            key_path.display()
+        );
+    }
+
+    let output = Command::new("ssh")
+        .args([
+            "-i",
+            &key_path.to_string_lossy(),
+            "-p",
+            &ssh_host_port.to_string(),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=5",
+            "root@127.0.0.1",
+            remote_cmd,
+        ])
+        .output()
+        .with_context(|| {
+            format!(
+                "running host SSH command against forwarded live SSH port {}",
+                ssh_host_port
+            )
+        })?;
+
+    let mut merged = String::new();
+    merged.push_str(&String::from_utf8_lossy(&output.stdout));
+    merged.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    Ok(SshExecOutput {
+        exit_code: output.status.code().unwrap_or(255),
+        output: merged,
+    })
+}
+
+fn ssh_private_key_path() -> PathBuf {
+    if let Ok(path) = std::env::var("LEVITATE_SSH_PRIVATE_KEY") {
+        return PathBuf::from(path);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".ssh/id_ed25519");
+    }
+    PathBuf::from("/root/.ssh/id_ed25519")
 }
 
 fn temp_disk_path(distro_id: &str) -> PathBuf {
@@ -656,8 +795,11 @@ fn get_tool_validation_command(tool: &str) -> String {
         "mount" | "umount" => format!("{} --version >/dev/null 2>&1", tool),
 
         // Network tools
-        "ip" => "ip -V >/dev/null 2>&1".to_string(),
-        "ping" => "ping -V >/dev/null 2>&1".to_string(),
+        "ip" => "ip link show >/dev/null 2>&1".to_string(),
+        "ping" => {
+            "ping -h >/dev/null 2>&1 || ping --help >/dev/null 2>&1 || ping -V >/dev/null 2>&1"
+                .to_string()
+        }
         "curl" => "curl --version >/dev/null 2>&1".to_string(),
 
         // Hardware diagnostics
@@ -673,12 +815,12 @@ fn get_tool_validation_command(tool: &str) -> String {
         // Editors and pagers
         "vim" => "vim --version >/dev/null 2>&1".to_string(),
         "vi" => "vi -h 2>&1 | head -1 >/dev/null".to_string(),
-        "less" => "less --version >/dev/null 2>&1".to_string(),
+        "less" => "less --help >/dev/null 2>&1 || less -V >/dev/null 2>&1".to_string(),
 
         // System utilities
         "htop" => "htop --version >/dev/null 2>&1".to_string(),
-        "grep" => "grep --version >/dev/null 2>&1".to_string(),
-        "find" => "find --version >/dev/null 2>&1".to_string(),
+        "grep" => "echo x | grep x >/dev/null 2>&1".to_string(),
+        "find" => "find / -maxdepth 0 >/dev/null 2>&1".to_string(),
         "sed" => "sed --version >/dev/null 2>&1".to_string(),
         "awk" | "gawk" => "awk --version >/dev/null 2>&1".to_string(),
 

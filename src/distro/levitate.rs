@@ -81,6 +81,7 @@ impl DistroContext for LevitateContext {
             "emergency.target",
             "rescue.target",
             "Timed out waiting for device",
+            "Rootfs payload partition not found",
             // === GENERAL ===
             "fatal error",
             "Segmentation fault",
@@ -120,6 +121,7 @@ impl DistroContext for LevitateContext {
             "emergency.target",
             "rescue.target",
             "Timed out waiting for device",
+            "Rootfs payload partition not found",
             // === GENERAL ===
             "fatal error",
             "Segmentation fault",

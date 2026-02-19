@@ -2,9 +2,11 @@
 //!
 //! Eliminates duplicated QEMU setup code across stages and install-tests binaries.
 
+use crate::boot_injection::boot_injection_from_env;
 use crate::distro::DistroContext;
 use crate::qemu::{Console, QemuBuilder};
 use anyhow::{bail, Context, Result};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::Duration;
@@ -54,20 +56,33 @@ pub fn temp_ovmf_vars_path(distro_id: &str) -> PathBuf {
 
 /// Spawn a QEMU VM booting from a live ISO (no disk attached).
 pub fn spawn_live(_ctx: &dyn DistroContext, iso_path: &Path) -> Result<(Child, Console)> {
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
+    let (child, console, _) = spawn_live_with_ssh(_ctx, iso_path)?;
+    Ok((child, console))
+}
 
-    let mut cmd = QemuBuilder::new()
+/// Spawn a live ISO VM with host-side SSH forwarding enabled.
+///
+/// Returns the forwarded host port mapped to guest tcp/22.
+pub fn spawn_live_with_ssh(
+    _ctx: &dyn DistroContext,
+    iso_path: &Path,
+) -> Result<(Child, Console, u16)> {
+    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
+    let ssh_host_port = allocate_local_port()?;
+
+    let builder = QemuBuilder::new()
         .cdrom(iso_path.to_path_buf())
         .uefi(ovmf)
+        .with_user_network_hostfwd(ssh_host_port, 22)
         .nographic()
         .serial_stdio()
-        .no_reboot()
-        .build_piped();
+        .no_reboot();
+    let mut cmd = with_boot_injection(builder)?.build_piped();
 
     let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
     let console = Console::new(&mut child)?;
     std::thread::sleep(Duration::from_secs(2));
-    Ok((child, console))
+    Ok((child, console, ssh_host_port))
 }
 
 /// Spawn a QEMU VM booting from a live ISO with a disk attached (for installation).
@@ -77,7 +92,7 @@ pub fn spawn_live_with_disk(
     ovmf: &Path,
     ovmf_vars: &Path,
 ) -> Result<(Child, Console)> {
-    let mut cmd = QemuBuilder::new()
+    let builder = QemuBuilder::new()
         .cdrom(iso_path.to_path_buf())
         .disk(disk_path.to_path_buf())
         .uefi(ovmf.to_path_buf())
@@ -86,8 +101,8 @@ pub fn spawn_live_with_disk(
         .with_user_network()
         .nographic()
         .serial_stdio()
-        .no_reboot()
-        .build_piped();
+        .no_reboot();
+    let mut cmd = with_boot_injection(builder)?.build_piped();
 
     let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
     let console = Console::new(&mut child)?;
@@ -101,7 +116,7 @@ pub fn spawn_installed(
     ovmf: &Path,
     ovmf_vars: &Path,
 ) -> Result<(Child, Console)> {
-    let mut cmd = QemuBuilder::new()
+    let builder = QemuBuilder::new()
         .disk(disk_path.to_path_buf())
         .uefi(ovmf.to_path_buf())
         .uefi_vars(ovmf_vars.to_path_buf())
@@ -109,11 +124,29 @@ pub fn spawn_installed(
         .with_user_network()
         .nographic()
         .serial_stdio()
-        .no_reboot()
-        .build_piped();
+        .no_reboot();
+    let mut cmd = with_boot_injection(builder)?.build_piped();
 
     let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
     let console = Console::new(&mut child)?;
     std::thread::sleep(Duration::from_secs(2));
     Ok((child, console))
+}
+
+fn with_boot_injection(builder: QemuBuilder) -> Result<QemuBuilder> {
+    let Some(injection) = boot_injection_from_env()? else {
+        return Ok(builder);
+    };
+    Ok(builder.fw_cfg_file(&injection.fw_cfg_name, injection.payload_file))
+}
+
+fn allocate_local_port() -> Result<u16> {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").context("allocating local tcp port for SSH forward")?;
+    let port = listener
+        .local_addr()
+        .context("reading allocated local tcp port")?
+        .port();
+    drop(listener);
+    Ok(port)
 }

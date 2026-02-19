@@ -23,7 +23,7 @@ use distro_builder::stages::s00_build::{
 };
 use distro_contract::{
     load_stage_00_contract_bundle_for_distro_from, require_valid_contract,
-    validate_stage_00_runtime_with_stage_dirs,
+    validate_stage_00_runtime_with_stage_dirs, validate_stage_01_runtime,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
@@ -269,11 +269,22 @@ fn verify_conformance_contract(
             .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
     );
 
+    if stage_artifact_tag != STAGE00_ARTIFACT_TAG {
+        let stage01_report =
+            validate_stage_01_runtime(&runtime_contract, iso_dir, &stage_artifact_tag);
+        details.extend(
+            stage01_report
+                .violations
+                .into_iter()
+                .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
+        );
+    }
+
     if let Err(err) = verify_kernel_recipe_is_installed(&bundle, &kernel_output_dir, distro_id) {
         details.push(err);
     }
     if let Err(err) =
-        verify_stage_00_evidence_script(&bundle, &kernel_output_dir, iso_dir, iso_filename)
+        verify_stage_00_evidence_script(&bundle, &kernel_output_dir, iso_dir, distro_id)
     {
         details.push(err);
     }
@@ -312,43 +323,50 @@ fn verify_kernel_recipe_is_installed(
     let stage_00 = &bundle.contract.stages.stage_00_build;
     let spec = S00BuildKernelSpec {
         recipe_kernel_script: stage_00.recipe_kernel_script.clone(),
+        kernel_kconfig_path: stage_00.kernel_kconfig_path.clone(),
         kernel_version: stage_00.kernel_version.clone(),
         kernel_sha256: stage_00.kernel_sha256.clone(),
         kernel_localversion: stage_00.kernel_localversion.clone(),
         module_install_path: stage_00.module_install_path.clone(),
     };
 
-    check_kernel_installed_via_recipe(&bundle.repo_root, distro_id, kernel_output_dir, &spec)
-        .map_err(|e| {
-            format!(
-                "Stage00.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
-                e
-            )
-        })
+    check_kernel_installed_via_recipe(
+        &bundle.repo_root,
+        &bundle.variant_dir,
+        distro_id,
+        kernel_output_dir,
+        &spec,
+    )
+    .map_err(|e| {
+        format!(
+            "Stage00.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
+            e
+        )
+    })
 }
 
 fn verify_stage_00_evidence_script(
     bundle: &distro_contract::LoadedVariantContract,
     kernel_output_dir: &Path,
-    stage_output_dir: &Path,
-    iso_filename: Option<&str>,
+    iso_dir: &Path,
+    distro_id: &str,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
+    let distro_output_dir = kernel_output_dir_for_iso_dir(iso_dir, distro_id).to_path_buf();
+    let stage_output_dir = distro_output_dir.join("s00-build");
     let spec = S00BuildEvidenceSpec {
         script_path: stage_00.evidence.script_path.clone(),
         pass_marker: stage_00.evidence.pass_marker.clone(),
         kernel_release_path: stage_00.kernel_release_path.clone(),
         kernel_image_path: stage_00.kernel_image_path.clone(),
-        iso_filename: iso_filename
-            .unwrap_or(bundle.contract.artifacts.iso_filename.as_str())
-            .to_string(),
+        iso_filename: bundle.contract.artifacts.iso_filename.clone(),
     };
 
     run_00build_evidence_script(
         &bundle.repo_root,
         &bundle.variant_dir,
         kernel_output_dir,
-        stage_output_dir,
+        &stage_output_dir,
         &spec,
     )
     .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))

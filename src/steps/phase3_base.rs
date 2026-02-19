@@ -40,10 +40,10 @@ impl Step for MountInstallMedia {
         let start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
 
-        // The init script mounts the ISO at /media/cdrom
+        // The init script mounts the ISO at /run/live-media
         // Verify it's mounted by checking if the directory has content
         let mount_check = executor.exec(
-            "test -d /media/cdrom/live && echo MOUNTED",
+            "test -d /run/live-media/boot && echo MOUNTED",
             Duration::from_secs(5),
         )?;
 
@@ -58,10 +58,13 @@ impl Step for MountInstallMedia {
                 "Accept any output as success"
             ],
             consequence = "No installation files available, user cannot install OS",
-            "ISO not mounted at /media/cdrom. Init should mount this automatically."
+            "ISO not mounted at /run/live-media. Init should mount this automatically."
         );
 
-        result.add_check("ISO mounted", CheckResult::pass("/media/cdrom/live exists"));
+        result.add_check(
+            "ISO mounted",
+            CheckResult::pass("/run/live-media/boot exists"),
+        );
 
         // Verify rootfs image is accessible
         let rootfs_check = executor.exec(
@@ -138,7 +141,7 @@ impl Step for ExtractRootfs {
         );
 
         // Run recstrap to extract base system
-        // recstrap handles rootfs location automatically (/media/cdrom/live/filesystem.erofs)
+        // recstrap handles rootfs location automatically (/run/live-rootfs.erofs)
         // Use --force because the freshly formatted ext4 contains lost+found
         let extract = executor.exec(
             "recstrap --force /mnt",

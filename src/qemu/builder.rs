@@ -91,6 +91,12 @@ impl QemuBuilder {
         self
     }
 
+    /// Enable user networking and host->guest TCP forwarding.
+    pub fn with_user_network_hostfwd(mut self, host_port: u16, guest_port: u16) -> Self {
+        self.inner = self.inner.user_network_with_hostfwd(host_port, guest_port);
+        self
+    }
+
     /// Disable graphics, use serial console.
     pub fn nographic(mut self) -> Self {
         self.inner = self.inner.nographic();
@@ -112,6 +118,12 @@ impl QemuBuilder {
     /// Set QMP Unix socket path for QMP control mode.
     pub fn qmp_socket(mut self, path: PathBuf) -> Self {
         self.inner = self.inner.qmp_socket(path);
+        self
+    }
+
+    /// Attach a QEMU fw_cfg payload file for early-boot guest consumption.
+    pub fn fw_cfg_file(mut self, name: &str, path: PathBuf) -> Self {
+        self.inner = self.inner.fw_cfg_file(name, path);
         self
     }
 
