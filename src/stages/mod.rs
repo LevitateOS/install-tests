@@ -22,7 +22,9 @@ use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use distro_contract::load_stage_00_contract_bundle_for_distro_from;
+use serde::Deserialize;
 use state::StageState;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -33,10 +35,20 @@ const STAGE02_SLUG: &str = "s02_live_tools";
 const STAGE00_DIRNAME: &str = "s00-build";
 const STAGE01_DIRNAME: &str = "s01-boot";
 const STAGE02_DIRNAME: &str = "s02-live-tools";
+const STAGE01_LIVE_BOOT_SCRIPT: &str = "/usr/local/bin/stage-01-live-boot.sh";
+const STAGE01_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/stage-01-ssh-preflight.sh";
 
 struct StageIsoTarget {
     path: PathBuf,
     filename: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StageRunManifest {
+    status: String,
+    created_at_utc: String,
+    finished_at_utc: Option<String>,
+    iso_path: Option<String>,
 }
 
 /// Run a single stage for a distro.
@@ -220,23 +232,20 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
     let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
 
-    let result = console.wait_for_live_boot_with_context(stall_timeout, ctx);
+    let result = (|| -> Result<String> {
+        console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
+        verify_stage01_ssh_login(&mut console, ssh_host_port)?;
 
-    let evidence = match &result {
-        Ok(()) => {
-            verify_stage01_ssh_login(&mut console, ssh_host_port)?;
-            "Boot markers detected + SSH login probe passed".to_string()
-        }
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(anyhow::anyhow!("{:#}", e));
-        }
-    };
+        run_stage_script_over_ssh(ssh_host_port, STAGE01_LIVE_BOOT_SCRIPT)?;
+        run_stage_script_over_ssh(ssh_host_port, STAGE01_SSH_PREFLIGHT_SCRIPT)?;
+
+        Ok("Boot markers detected + SSH login probe passed + stage-01 script checks passed"
+            .to_string())
+    })();
 
     let _ = child.kill();
     let _ = child.wait();
-    Ok(evidence)
+    result
 }
 
 /// Stage 02: Live Tools — Expected binaries in live environment.
@@ -249,79 +258,82 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 /// - Tool is functional (not broken/corrupted)
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
-    let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
-    console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
-    verify_stage01_ssh_login(&mut console, ssh_host_port)?;
+    let result = (|| -> Result<String> {
+        let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
+        console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
+        verify_stage01_ssh_login(&mut console, ssh_host_port)?;
 
-    // Check for key tools expected in the live environment
-    let tools: Vec<&str> = ctx.live_tools().to_vec();
-    let mut missing = Vec::new();
-    let mut found = Vec::new();
-    let mut broken = Vec::new();
+        // Check for key tools expected in the live environment
+        let tools: Vec<&str> = ctx.live_tools().to_vec();
+        let mut missing = Vec::new();
+        let mut found = Vec::new();
+        let mut broken = Vec::new();
 
-    for tool in &tools {
-        // Get the validation command for this tool
-        let validation_cmd = get_tool_validation_command(tool);
+        for tool in &tools {
+            // Get the validation command for this tool
+            let validation_cmd = get_tool_validation_command(tool);
 
-        let result = ssh_exec(ssh_host_port, &validation_cmd)?;
-        if result.exit_code == 0 {
-            // Tool executed successfully - it works!
-            found.push(*tool);
-        } else if result.exit_code == 127
-            || result.output.contains("command not found")
-            || result.output.contains("not found")
-        {
-            // Exit code 127 = command not found
-            missing.push(*tool);
-        } else {
-            // Tool exists but failed to execute properly
-            broken.push((*tool, result.exit_code, result.output.trim().to_string()));
-        }
-    }
-
-    let overlay_evidence = verify_live_overlay_behavior(&mut console)?;
-
-    let _ = child.kill();
-    let _ = child.wait();
-
-    // Report failures
-    if !missing.is_empty() || !broken.is_empty() {
-        let mut error_msg = String::new();
-
-        if !missing.is_empty() {
-            error_msg.push_str(&format!(
-                "Missing tools (not in PATH): {}\n",
-                missing.join(", ")
-            ));
-        }
-
-        if !broken.is_empty() {
-            error_msg.push_str("Broken tools (exist but failed to execute):\n");
-            for (tool, code, output) in &broken {
-                error_msg.push_str(&format!(
-                    "  {} (exit {}): {}\n",
-                    tool,
-                    code,
-                    if output.is_empty() {
-                        "no output"
-                    } else {
-                        &output.lines().next().unwrap_or("unknown error")
-                    }
-                ));
+            let result = ssh_exec(ssh_host_port, &validation_cmd)?;
+            if result.exit_code == 0 {
+                // Tool executed successfully - it works!
+                found.push(*tool);
+            } else if result.exit_code == 127
+                || result.output.contains("command not found")
+                || result.output.contains("not found")
+            {
+                // Exit code 127 = command not found
+                missing.push(*tool);
+            } else {
+                // Tool exists but failed to execute properly
+                broken.push((*tool, result.exit_code, result.output.trim().to_string()));
             }
         }
 
-        error_msg.push_str(&format!("\nWorking tools: {}", found.join(", ")));
+        let overlay_evidence = verify_live_overlay_behavior(&mut console)?;
 
-        bail!("{}", error_msg.trim());
-    }
+        // Report failures
+        if !missing.is_empty() || !broken.is_empty() {
+            let mut error_msg = String::new();
 
-    Ok(format!(
-        "All {} tools verified working (actually executed): {}; {}",
-        found.len(),
-        found.join(", "),
-        overlay_evidence
-    ))
+            if !missing.is_empty() {
+                error_msg.push_str(&format!(
+                    "Missing tools (not in PATH): {}\n",
+                    missing.join(", ")
+                ));
+            }
+
+            if !broken.is_empty() {
+                error_msg.push_str("Broken tools (exist but failed to execute):\n");
+                for (tool, code, output) in &broken {
+                    error_msg.push_str(&format!(
+                        "  {} (exit {}): {}\n",
+                        tool,
+                        code,
+                        if output.is_empty() {
+                            "no output"
+                        } else {
+                            &output.lines().next().unwrap_or("unknown error")
+                        }
+                    ));
+                }
+            }
+
+            error_msg.push_str(&format!("\nWorking tools: {}", found.join(", ")));
+
+            bail!("{}", error_msg.trim());
+        }
+
+        Ok(format!(
+            "All {} tools verified working (actually executed): {}; {}",
+            found.len(),
+            found.join(", "),
+            overlay_evidence
+        ))
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    result
 }
 
 /// Stage 03: Installation — Scripted install to disk.
@@ -514,30 +526,92 @@ fn resolve_iso_target_for_stage(
         1 => derive_stage_iso_filename(&stage00_filename, STAGE01_SLUG),
         _ => derive_stage_iso_filename(&stage00_filename, STAGE02_SLUG),
     };
-    let path = workspace_root
+    let stage_root = workspace_root
         .join(".artifacts/out")
         .join(distro_id)
-        .join(stage_output_dir_for_stage(stage))
-        .join(&filename);
+        .join(stage_output_dir_for_stage(stage));
+    let legacy_path = stage_root.join(&filename);
 
-    if !path.exists() {
+    let path = if let Some(run_iso) =
+        resolve_iso_from_latest_successful_run(&stage_root, &filename)?
+    {
+        run_iso
+    } else if legacy_path.is_file() {
+        legacy_path
+    } else {
         let build_stage = match stage {
             0 => "00Build",
             1 => "01Boot",
             _ => "02LiveTools",
         };
         bail!(
-            "ISO not found at {}. Build {} {} first: \
+            "ISO not found at {} and no successful run-manifest ISO found under '{}'. Build {} {} first: \
              cargo run -p distro-builder --bin distro-builder -- iso build {} {}",
-            path.display(),
+            legacy_path.display(),
+            stage_root.display(),
             ctx.name(),
             build_stage,
             distro_id,
             build_stage
         );
-    }
+    };
 
     Ok(StageIsoTarget { path, filename })
+}
+
+fn resolve_iso_from_latest_successful_run(
+    stage_root: &Path,
+    iso_filename: &str,
+) -> Result<Option<PathBuf>> {
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    if !stage_root.is_dir() {
+        return Ok(None);
+    }
+
+    for entry in fs::read_dir(stage_root)
+        .with_context(|| format!("reading stage output directory '{}'", stage_root.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!(
+                "iterating stage output directory '{}'",
+                stage_root.display()
+            )
+        })?;
+        let run_dir = entry.path();
+        if !run_dir.is_dir() {
+            continue;
+        }
+        let manifest_path = run_dir.join("run-manifest.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+
+        let raw = fs::read(&manifest_path)
+            .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
+        let manifest: StageRunManifest = serde_json::from_slice(&raw)
+            .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
+        if manifest.status != "success" {
+            continue;
+        }
+
+        let sort_key = manifest
+            .finished_at_utc
+            .clone()
+            .unwrap_or(manifest.created_at_utc.clone());
+        let iso_candidate = manifest
+            .iso_path
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| run_dir.join(iso_filename));
+
+        if iso_candidate.is_file() {
+            candidates.push((sort_key, iso_candidate));
+        }
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(candidates.into_iter().next().map(|(_, path)| path))
 }
 
 fn stage_output_dir_for_stage(stage: u32) -> &'static str {
@@ -677,6 +751,20 @@ fn ssh_exec(ssh_host_port: u16, remote_cmd: &str) -> Result<SshExecOutput> {
         exit_code: output.status.code().unwrap_or(255),
         output: merged,
     })
+}
+
+fn run_stage_script_over_ssh(ssh_host_port: u16, script_path: &str) -> Result<()> {
+    let result = ssh_exec(ssh_host_port, script_path)?;
+    if result.exit_code == 0 {
+        return Ok(());
+    }
+
+    bail!(
+        "Stage script '{}' failed over SSH (exit {}):\n{}",
+        script_path,
+        result.exit_code,
+        result.output.trim()
+    );
 }
 
 fn ssh_private_key_path() -> PathBuf {

@@ -29,9 +29,19 @@ use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
 use fsdbg::iso::IsoReader;
 use leviso_cheat_guard::cheat_bail;
+use serde::Deserialize;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 const STAGE00_ARTIFACT_TAG: &str = "s00";
+
+#[derive(Debug, Deserialize)]
+struct StageRunManifest {
+    status: String,
+    created_at_utc: String,
+    finished_at_utc: Option<String>,
+    iso_path: Option<String>,
+}
 
 /// Result of preflight verification
 #[derive(Debug)]
@@ -227,7 +237,8 @@ fn verify_conformance_contract(
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
-    let bundle = match load_stage_00_contract_bundle_for_distro_from(iso_dir, distro_id) {
+    let workspace_root = workspace_root();
+    let bundle = match load_stage_00_contract_bundle_for_distro_from(&workspace_root, distro_id) {
         Ok(bundle) => bundle,
         Err(err) => {
             println!("{}", "FAIL".red().bold());
@@ -243,7 +254,7 @@ fn verify_conformance_contract(
     };
 
     let mut details = Vec::new();
-    let kernel_output_dir = kernel_output_dir_for_iso_dir(iso_dir, distro_id);
+    let kernel_output_dir = kernel_output_dir_for_distro(distro_id);
     let stage_artifact_tag = detect_stage_artifact_tag(iso_dir, iso_filename);
 
     if let Err(err) = require_valid_contract(&bundle.contract) {
@@ -283,9 +294,7 @@ fn verify_conformance_contract(
     if let Err(err) = verify_kernel_recipe_is_installed(&bundle, &kernel_output_dir, distro_id) {
         details.push(err);
     }
-    if let Err(err) =
-        verify_stage_00_evidence_script(&bundle, &kernel_output_dir, iso_dir, distro_id)
-    {
+    if let Err(err) = verify_stage_00_evidence_script(&bundle, &kernel_output_dir, distro_id) {
         details.push(err);
     }
 
@@ -348,12 +357,17 @@ fn verify_kernel_recipe_is_installed(
 fn verify_stage_00_evidence_script(
     bundle: &distro_contract::LoadedVariantContract,
     kernel_output_dir: &Path,
-    iso_dir: &Path,
     distro_id: &str,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
-    let distro_output_dir = kernel_output_dir_for_iso_dir(iso_dir, distro_id).to_path_buf();
-    let stage_output_dir = distro_output_dir.join("s00-build");
+    let distro_output_dir = distro_output_dir_for_distro(distro_id);
+    let stage_root = distro_output_dir.join("s00-build");
+    let stage_output_dir = resolve_latest_successful_stage_run_dir(
+        &stage_root,
+        &bundle.contract.artifacts.iso_filename,
+    )
+    .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
+    .unwrap_or(stage_root);
     let spec = S00BuildEvidenceSpec {
         script_path: stage_00.evidence.script_path.clone(),
         pass_marker: stage_00.evidence.pass_marker.clone(),
@@ -372,28 +386,73 @@ fn verify_stage_00_evidence_script(
     .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))
 }
 
-fn kernel_output_dir_for_iso_dir(iso_dir: &Path, distro_id: &str) -> PathBuf {
-    let expected_leaf = match distro_id {
-        "levitate" => "levitate",
-        "acorn" => "acorn",
-        "iuppiter" => "iuppiter",
-        "ralph" => "ralph",
-        _ => return iso_dir.to_path_buf(),
-    };
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
 
-    let iso_leaf = iso_dir.file_name().and_then(|s| s.to_str());
-    if iso_leaf == Some(expected_leaf) {
-        return iso_dir.to_path_buf();
+fn distro_output_dir_for_distro(distro_id: &str) -> PathBuf {
+    workspace_root().join(".artifacts/out").join(distro_id)
+}
+
+fn kernel_output_dir_for_distro(distro_id: &str) -> PathBuf {
+    workspace_root()
+        .join(".artifacts/kernel")
+        .join(distro_id)
+        .join("current")
+}
+
+fn resolve_latest_successful_stage_run_dir(
+    stage_root: &Path,
+    iso_filename: &str,
+) -> Result<Option<PathBuf>> {
+    if !stage_root.is_dir() {
+        return Ok(None);
     }
 
-    if let Some(parent) = iso_dir.parent() {
-        let parent_leaf = parent.file_name().and_then(|s| s.to_str());
-        if parent_leaf == Some(expected_leaf) {
-            return parent.to_path_buf();
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    for entry in fs::read_dir(stage_root)
+        .with_context(|| format!("reading stage output directory '{}'", stage_root.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!(
+                "iterating stage output directory '{}'",
+                stage_root.display()
+            )
+        })?;
+        let run_dir = entry.path();
+        if !run_dir.is_dir() {
+            continue;
         }
+        let manifest_path = run_dir.join("run-manifest.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let raw = fs::read(&manifest_path)
+            .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
+        let manifest: StageRunManifest = serde_json::from_slice(&raw)
+            .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
+        if manifest.status != "success" {
+            continue;
+        }
+
+        let sort_key = manifest
+            .finished_at_utc
+            .clone()
+            .unwrap_or(manifest.created_at_utc.clone());
+        let iso_candidate = manifest
+            .iso_path
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| run_dir.join(iso_filename));
+        if !iso_candidate.is_file() {
+            continue;
+        }
+        candidates.push((sort_key, run_dir));
     }
 
-    iso_dir.to_path_buf()
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(candidates.into_iter().next().map(|(_, run_dir)| run_dir))
 }
 
 fn detect_stage_artifact_tag(iso_dir: &Path, iso_filename: Option<&str>) -> String {

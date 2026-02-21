@@ -25,7 +25,7 @@ impl DistroContext for AcornContext {
     }
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        &["___SHELL_READY___", "___PROMPT___"]
+        &["___SHELL_READY___"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {

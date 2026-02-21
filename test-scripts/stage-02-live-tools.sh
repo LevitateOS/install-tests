@@ -11,6 +11,7 @@
 # This is the REAL validation - if a tool passes here, users can actually use it.
 
 set -euo pipefail
+START_TIME="$(date +%s)"
 
 # Find script directory and load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,12 +44,19 @@ echo
 # ═══════════════════════════════════════════════════════════════════════════
 
 section_header "Core Installation Tools"
+test_command "PATH includes /usr/local/bin" "echo \"\$PATH\" | tr ':' '\n' | grep -qx '/usr/local/bin'"
+test_file_exists "/usr/local/bin/stage-02-live-tools.sh" "stage-02 test script installed"
 test_tool "recstrap" "recstrap --help"
 test_tool "recfstab" "recfstab --help"
 test_tool "recchroot" "recchroot --help"
 test_tool "sfdisk" "sfdisk --version"
+test_tool "fdisk" "fdisk --version"
+test_tool "lsblk" "lsblk --version"
+test_tool "blkid" "blkid --version"
+test_tool "wipefs" "wipefs --version"
 test_tool "mkfs.ext4" "mkfs.ext4 -V 2>&1 | head -1"
 test_tool "mount" "mount --version"
+test_command "block subsystem visible" "test -d /sys/class/block && ls /sys/class/block >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Network & Connectivity
@@ -58,6 +66,7 @@ section_header "Network & Connectivity"
 test_tool "ip" "ip -V"
 test_tool "ping" "ping -V"
 test_tool "curl" "curl --version"
+test_command "network interfaces discoverable" "ip -brief link >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Hardware Diagnostics
@@ -68,6 +77,7 @@ test_tool "lspci" "lspci --version"
 test_tool "lsusb" "lsusb --version"
 test_tool "smartctl" "smartctl --version"
 test_tool "hdparm" "hdparm -V"
+test_command "PCI inventory probe" "lspci -mm >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Editors & Viewers
@@ -85,10 +95,17 @@ section_header "System Utilities"
 test_tool "htop" "htop --version"
 test_tool "grep" "grep --version"
 test_tool "find" "find --version"
+test_tool "awk" "awk --version"
+test_tool "sed" "sed --version"
+test_command "shell can execute toolbox binaries" "command -v recstrap recfstab recchroot >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Report Results
 # ═══════════════════════════════════════════════════════════════════════════
 
 report_results 2
-exit $?
+RESULT=$?
+END_TIME="$(date +%s)"
+ELAPSED="$((END_TIME - START_TIME))"
+info "Stage 02 smoke duration: ${ELAPSED}s"
+exit $RESULT

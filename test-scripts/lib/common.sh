@@ -43,9 +43,11 @@ test_tool() {
 
     echo -ne "  ${BLUE}[TEST]${NC} ${tool}... "
 
-    # Run the command and capture exit code and output
+    # Run probe command without letting `set -e` abort the whole stage script.
+    set +e
     output=$(eval "$cmd" 2>&1)
     exit_code=$?
+    set -e
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓${NC}"
@@ -96,8 +98,11 @@ test_command() {
 
     echo -ne "  ${BLUE}[TEST]${NC} ${description}... "
 
+    # Run probe command without letting `set -e` abort the whole stage script.
+    set +e
     output=$(eval "$cmd" 2>&1)
     exit_code=$?
+    set -e
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓${NC}"

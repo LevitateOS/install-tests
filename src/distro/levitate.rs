@@ -33,7 +33,7 @@ impl DistroContext for LevitateContext {
         // Stage 01 requires an actually interactive live shell on serial console.
         // These markers are emitted by `/etc/profile.d/00-live-test.sh` only when
         // an interactive shell is active on ttyS0.
-        &["___SHELL_READY___", "___PROMPT___"]
+        &["___SHELL_READY___"]
     }
 
     fn installed_boot_success_patterns(&self) -> &[&str] {

@@ -509,7 +509,7 @@ impl Step for EnableServices {
         );
 
         // Copy test instrumentation to installed system
-        // This enables ___SHELL_READY___ and ___PROMPT___ markers after reboot
+        // This enables ___SHELL_READY___ markers after reboot
         // Without this, the installed system won't have the markers that install-tests requires
         let test_script = ctx.test_instrumentation_source();
         let script_name = format!("00-{}-test.sh", ctx.id());
