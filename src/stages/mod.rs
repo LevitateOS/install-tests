@@ -239,8 +239,10 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         run_stage_script_over_ssh(ssh_host_port, STAGE01_LIVE_BOOT_SCRIPT)?;
         run_stage_script_over_ssh(ssh_host_port, STAGE01_SSH_PREFLIGHT_SCRIPT)?;
 
-        Ok("Boot markers detected + SSH login probe passed + stage-01 script checks passed"
-            .to_string())
+        Ok(
+            "Boot markers detected + SSH login probe passed + stage-01 script checks passed"
+                .to_string(),
+        )
     })();
 
     let _ = child.kill();
