@@ -172,6 +172,13 @@ pub trait DistroContext: Send + Sync {
     /// Tools expected to be present in the live ISO environment.
     fn live_tools(&self) -> &[&str];
 
+    /// Stage 02 install experience profile expected in the live ISO.
+    ///
+    /// Allowed values:
+    /// - `ux`
+    /// - `automated_ssh`
+    fn stage02_install_experience(&self) -> &str;
+
     /// Tools expected to be present on the installed system.
     fn installed_tools(&self) -> &[&str];
 }

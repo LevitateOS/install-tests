@@ -39,6 +39,26 @@ info "This stage verifies that all daily driver tools are present"
 info "and FUNCTIONAL (actually executes them, not just checks existence)"
 echo
 
+detect_expected_install_experience() {
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+    else
+        ID=""
+    fi
+
+    case "${ID:-}" in
+        levitateos|acornos) printf '%s\n' "ux" ;;
+        ralphos|iuppiteros) printf '%s\n' "automated_ssh" ;;
+        *)
+            # Conservative fallback: default to headless automation profile.
+            printf '%s\n' "automated_ssh"
+            ;;
+    esac
+}
+
+EXPECTED_INSTALL_EXPERIENCE="$(detect_expected_install_experience)"
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Core Installation Tools
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,6 +77,12 @@ test_tool "wipefs" "wipefs --version"
 test_tool "mkfs.ext4" "mkfs.ext4 -V 2>&1 | head -1"
 test_tool "mount" "mount --version"
 test_command "block subsystem visible" "test -d /sys/class/block && ls /sys/class/block >/dev/null"
+test_file_exists "/usr/lib/levitate/stage-02/install-experience" "stage-02 install-experience marker exists"
+test_command "stage-02 install-experience matches distro policy" "test \"\$(tr -d '\\n' < /usr/lib/levitate/stage-02/install-experience)\" = \"$EXPECTED_INSTALL_EXPERIENCE\""
+test_command "stage-02 install entrypoint script is executable" "test -x /usr/local/bin/stage-02-install-entrypoint"
+if [ "$EXPECTED_INSTALL_EXPERIENCE" = "ux" ]; then
+    test_file_exists "/etc/profile.d/30-stage-02-install-ux.sh" "stage-02 UX profile hook exists"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Network & Connectivity

@@ -297,6 +297,10 @@ impl DistroContext for LevitateContext {
         ]
     }
 
+    fn stage02_install_experience(&self) -> &str {
+        "ux"
+    }
+
     fn installed_tools(&self) -> &[&str] {
         &["sudo", "ip", "ssh", "mount", "umount", "dmesg"]
     }

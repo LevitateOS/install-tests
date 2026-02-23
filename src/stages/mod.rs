@@ -325,10 +325,61 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
             bail!("{}", error_msg.trim());
         }
 
+        let expected_install_experience = ctx.stage02_install_experience();
+        let install_experience_marker = ssh_exec(
+            ssh_host_port,
+            "cat /usr/lib/levitate/stage-02/install-experience",
+        )
+        .with_context(|| "reading Stage 02 install-experience marker".to_string())?;
+        if install_experience_marker.exit_code != 0 {
+            bail!(
+                "Stage 02 install-experience marker missing or unreadable: {}",
+                install_experience_marker.output.trim()
+            );
+        }
+        let actual_install_experience = install_experience_marker
+            .output
+            .trim()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim();
+        if actual_install_experience != expected_install_experience {
+            bail!(
+                "Stage 02 install-experience mismatch: expected '{}', found '{}'",
+                expected_install_experience,
+                actual_install_experience
+            );
+        }
+
+        let entrypoint_check = ssh_exec(
+            ssh_host_port,
+            "test -x /usr/local/bin/stage-02-install-entrypoint",
+        )
+        .with_context(|| "checking Stage 02 install entrypoint script presence".to_string())?;
+        if entrypoint_check.exit_code != 0 {
+            bail!(
+                "missing executable Stage 02 install entrypoint at /usr/local/bin/stage-02-install-entrypoint"
+            );
+        }
+        if expected_install_experience == "ux" {
+            let ux_hook_check = ssh_exec(
+                ssh_host_port,
+                "test -r /etc/profile.d/30-stage-02-install-ux.sh",
+            )
+            .with_context(|| "checking Stage 02 UX profile hook presence".to_string())?;
+            if ux_hook_check.exit_code != 0 {
+                bail!(
+                    "missing Stage 02 UX profile hook at /etc/profile.d/30-stage-02-install-ux.sh"
+                );
+            }
+        }
+
         Ok(format!(
-            "All {} tools verified working (actually executed): {}; {}",
+            "All {} tools verified working (actually executed): {}; Stage 02 install profile '{}' verified; {}",
             found.len(),
             found.join(", "),
+            actual_install_experience,
             overlay_evidence
         ))
     })();

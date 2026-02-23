@@ -35,7 +35,6 @@ impl OpenRcBase {
             "Attempted to kill init",
             "can't find /init",
             "No root device",
-            "SQUASHFS error",
             "EROFS:",
             // === OPENRC INIT STAGE ===
             "ERROR: cannot start",
@@ -72,7 +71,6 @@ impl OpenRcBase {
             "Attempted to kill init",
             "can't find /init",
             "No root device",
-            "SQUASHFS error",
             "EROFS:",
             "Rootfs payload partition not found",
             // === GENERAL ===

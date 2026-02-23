@@ -216,6 +216,10 @@ impl DistroContext for RalphContext {
         ]
     }
 
+    fn stage02_install_experience(&self) -> &str {
+        "automated_ssh"
+    }
+
     fn installed_tools(&self) -> &[&str] {
         &[
             "sudo", "ip", "ssh", "bash", "mount", "umount", "dmesg", "ps", "ls", "cat",

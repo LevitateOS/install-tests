@@ -181,6 +181,10 @@ impl DistroContext for IuppiterContext {
         ]
     }
 
+    fn stage02_install_experience(&self) -> &str {
+        "automated_ssh"
+    }
+
     fn installed_tools(&self) -> &[&str] {
         &[
             "sudo", "ip", "ssh", "ash", "smartctl", "hdparm", "sg_inq", "mount", "umount", "dmesg",
