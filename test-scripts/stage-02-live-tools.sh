@@ -82,6 +82,8 @@ test_command "stage-02 install-experience matches distro policy" "test \"\$(tr -
 test_command "stage-02 install entrypoint script is executable" "test -x /usr/local/bin/stage-02-install-entrypoint"
 if [ "$EXPECTED_INSTALL_EXPERIENCE" = "ux" ]; then
     test_file_exists "/etc/profile.d/30-stage-02-install-ux.sh" "stage-02 UX profile hook exists"
+    test_command "stage-02 helper probe selects split launcher" "/usr/local/bin/stage-02-install-entrypoint --probe | sed -n 's/^stage02-entrypoint-helper=//p' | head -n1 | grep -E -q '(^|/)levitate-install-docs-split$'"
+    test_command "stage-02 split-pane smoke launch works" "STAGE02_ENTRYPOINT_SMOKE=1 /usr/local/bin/stage-02-install-entrypoint | grep -q 'split-smoke:ok'"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════

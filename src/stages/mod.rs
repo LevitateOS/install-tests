@@ -362,6 +362,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
                 "missing executable Stage 02 install entrypoint at /usr/local/bin/stage-02-install-entrypoint"
             );
         }
+        let mut ux_split_evidence: Option<String> = None;
         if expected_install_experience == "ux" {
             let ux_hook_check = ssh_exec(
                 ssh_host_port,
@@ -373,13 +374,25 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
                     "missing Stage 02 UX profile hook at /etc/profile.d/30-stage-02-install-ux.sh"
                 );
             }
+            ux_split_evidence = Some(verify_stage02_ux_split_behavior(ssh_host_port)?);
         }
 
+        let stage02_evidence = match ux_split_evidence {
+            Some(evidence) => format!(
+                "Stage 02 install profile '{}' verified; {}",
+                actual_install_experience, evidence
+            ),
+            None => format!(
+                "Stage 02 install profile '{}' verified",
+                actual_install_experience
+            ),
+        };
+
         Ok(format!(
-            "All {} tools verified working (actually executed): {}; Stage 02 install profile '{}' verified; {}",
+            "All {} tools verified working (actually executed): {}; {}; {}",
             found.len(),
             found.join(", "),
-            actual_install_experience,
+            stage02_evidence,
             overlay_evidence
         ))
     })();
@@ -818,6 +831,65 @@ fn run_stage_script_over_ssh(ssh_host_port: u16, script_path: &str) -> Result<()
         result.exit_code,
         result.output.trim()
     );
+}
+
+fn verify_stage02_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
+    let probe = ssh_exec(
+        ssh_host_port,
+        "/usr/local/bin/stage-02-install-entrypoint --probe",
+    )
+    .with_context(|| "probing Stage 02 UX install helper selection".to_string())?;
+    if probe.exit_code != 0 {
+        bail!(
+            "Stage 02 helper probe failed (exit {}): {}\n\
+             Expected probe command: /usr/local/bin/stage-02-install-entrypoint --probe",
+            probe.exit_code,
+            probe.output.trim()
+        );
+    }
+
+    let helper = probe
+        .output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("stage02-entrypoint-helper="))
+        .unwrap_or("")
+        .trim();
+    let helper_ok =
+        helper == "levitate-install-docs-split" || helper.ends_with("/levitate-install-docs-split");
+    if !helper_ok {
+        bail!(
+            "Stage 02 UX helper mismatch: expected 'levitate-install-docs-split', found '{}'.\n\
+             Probe output: {}\n\
+             Remediation: ensure Stage 02 payload installs levitate-install-docs-split into PATH.",
+            if helper.is_empty() { "<empty>" } else { helper },
+            probe.output.trim()
+        );
+    }
+
+    let smoke = ssh_exec(
+        ssh_host_port,
+        "STAGE02_ENTRYPOINT_SMOKE=1 /usr/local/bin/stage-02-install-entrypoint",
+    )
+    .with_context(|| "running Stage 02 UX split-pane smoke launch".to_string())?;
+    if smoke.exit_code != 0 {
+        bail!(
+            "Stage 02 UX split-pane smoke launch failed (exit {}): {}\n\
+             Expected command: STAGE02_ENTRYPOINT_SMOKE=1 /usr/local/bin/stage-02-install-entrypoint",
+            smoke.exit_code,
+            smoke.output.trim()
+        );
+    }
+    if !smoke.output.contains("split-smoke:ok") {
+        bail!(
+            "Stage 02 UX split-pane smoke output missing success marker 'split-smoke:ok'.\n\
+             Command output: {}\n\
+             Remediation: run `levitate-install-docs-split --smoke` in the live environment and fix pane launch wiring.",
+            smoke.output.trim()
+        );
+    }
+
+    Ok("Stage 02 UX split-pane smoke verified (shell-left + docs-right)".to_string())
 }
 
 fn ssh_private_key_path() -> PathBuf {
