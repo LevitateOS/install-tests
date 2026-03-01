@@ -33,5 +33,6 @@ distro-contract = { path = "../../distro-contract" }
 distro-builder = { path = "../../distro-builder" }
 leviso-cheat-guard = { path = "../cheat-guard" }
 recqemu = { path = "../../tools/recqemu" }
+recshuttle = { path = "../../tools/recshuttle" }
 fsdbg = { path = "../fsdbg" }
 libc = "0.2"
