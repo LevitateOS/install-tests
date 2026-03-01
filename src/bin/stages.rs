@@ -46,6 +46,10 @@ struct Cli {
     /// Boot-inject payload file path (takes precedence over --inject).
     #[arg(long, value_name = "PATH")]
     inject_file: Option<PathBuf>,
+
+    /// Re-run the requested stage even if it is already cached as passed.
+    #[arg(long)]
+    force: bool,
 }
 
 fn main() -> Result<()> {
@@ -64,11 +68,19 @@ fn main() -> Result<()> {
         return stages::print_status(&cli.distro);
     }
 
+    if cli.force && cli.stage.is_none() {
+        bail!("--force requires --stage N");
+    }
+
     if let Some(stage_n) = cli.stage {
         if !(0..=6).contains(&stage_n) {
             bail!("Stage must be 0-6, got {}", stage_n);
         }
-        let passed = stages::run_stage(&cli.distro, stage_n)?;
+        let passed = if cli.force {
+            stages::run_stage_forced(&cli.distro, stage_n)?
+        } else {
+            stages::run_stage(&cli.distro, stage_n)?
+        };
         std::process::exit(if passed { 0 } else { 1 });
     }
 

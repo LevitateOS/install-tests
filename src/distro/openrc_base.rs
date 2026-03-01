@@ -125,7 +125,7 @@ impl OpenRcBase {
     }
 
     pub fn install_bootloader_cmd(&self) -> &str {
-        "bootctl install --esp-path=/boot --no-variables"
+        "sh -c 'set -eu; mkdir -p /boot/EFI/BOOT /boot/EFI/systemd; cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI; cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi'"
     }
 
     pub fn chroot_shell(&self) -> &str {

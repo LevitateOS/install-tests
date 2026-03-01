@@ -1,16 +1,16 @@
-#!/bin/bash
+#!/bin/sh
 # Stage 01: OpenSSH preflight validation
 #
 # Focused checks for first-class Stage 01 SSH behavior.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
-    source "$SCRIPT_DIR/lib/common.sh"
+    . "$SCRIPT_DIR/lib/common.sh"
 elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
-    source "/usr/local/lib/stage-tests/common.sh"
+    . "/usr/local/lib/stage-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     exit 1
@@ -39,12 +39,18 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
 elif command -v rc-service >/dev/null 2>&1; then
     section_header "OpenRC Service Wiring"
+    test_command "OpenRC network interfaces config exists" "test -f /etc/network/interfaces"
+    test_command "OpenRC networking runlevel symlink exists" "test -L /etc/runlevels/boot/networking"
+    test_command "OpenRC dhcpcd runlevel symlink exists" "test -L /etc/runlevels/default/dhcpcd"
+    test_command "OpenRC networking service is running" "rc-service networking status"
+    test_command "OpenRC dhcpcd service is running" "rc-service dhcpcd status"
+    test_command "OpenRC default route is present" "ip route | grep -q '^default '"
     test_command "OpenSSH init script exists" "test -f /etc/init.d/sshd"
     test_command "OpenSSH runlevel symlink exists" "test -L /etc/runlevels/default/sshd"
     test_command "OpenSSH service is running" "rc-service sshd status"
 else
     error "No supported init service manager found for SSH checks"
-    FAILED_TESTS+=("OpenSSH service checks unavailable")
+    record_failed "OpenSSH service checks unavailable"
 fi
 
 report_results 1

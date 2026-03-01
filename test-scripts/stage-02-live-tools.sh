@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Stage 02: Live Tools Validation
 #
 # Verifies that all expected tools are present and functional in the
@@ -14,13 +14,13 @@ set -euo pipefail
 START_TIME="$(date +%s)"
 
 # Find script directory and load common functions
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Try multiple locations for common.sh
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
-    source "$SCRIPT_DIR/lib/common.sh"
+    . "$SCRIPT_DIR/lib/common.sh"
 elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
-    source "/usr/local/lib/stage-tests/common.sh"
+    . "/usr/local/lib/stage-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     echo "Tried:" >&2

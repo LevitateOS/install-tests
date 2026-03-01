@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Common functions for stage test scripts
 #
 # This library provides shared testing infrastructure used by all stage
@@ -23,10 +23,41 @@ else
     NC=''
 fi
 
-# Test state
-PASSED_TESTS=()
-FAILED_TESTS=()
-BROKEN_TESTS=()
+# Test state (POSIX-compatible; newline-delimited lists)
+PASSED_COUNT=0
+FAILED_COUNT=0
+BROKEN_COUNT=0
+PASSED_LIST=""
+FAILED_LIST=""
+BROKEN_LIST=""
+
+append_list() {
+    list_name=$1
+    value=$2
+    eval "current=\${$list_name}"
+    if [ -n "$current" ]; then
+        current="$current
+$value"
+    else
+        current="$value"
+    fi
+    eval "$list_name=\$current"
+}
+
+record_passed() {
+    PASSED_COUNT=$((PASSED_COUNT + 1))
+    append_list PASSED_LIST "$1"
+}
+
+record_failed() {
+    FAILED_COUNT=$((FAILED_COUNT + 1))
+    append_list FAILED_LIST "$1"
+}
+
+record_broken() {
+    BROKEN_COUNT=$((BROKEN_COUNT + 1))
+    append_list BROKEN_LIST "$1:$2"
+}
 
 # Test a tool by running a command
 # Usage: test_tool "vim" "vim --version"
@@ -51,11 +82,11 @@ test_tool() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓${NC}"
-        PASSED_TESTS+=("$tool")
+        record_passed "$tool"
         return 0
     elif [ $exit_code -eq 127 ]; then
         echo -e "${RED}✗ NOT FOUND${NC}"
-        FAILED_TESTS+=("$tool")
+        record_failed "$tool"
         return 1
     else
         # Extract first line of error for display
@@ -64,7 +95,7 @@ test_tool() {
         if [ -n "$error_msg" ]; then
             echo -e "    ${YELLOW}└─${NC} $error_msg"
         fi
-        BROKEN_TESTS+=("$tool:$exit_code")
+        record_broken "$tool" "$exit_code"
         return 1
     fi
 }
@@ -79,11 +110,11 @@ test_file_exists() {
 
     if [ -e "$path" ]; then
         echo -e "${GREEN}✓${NC} ($path)"
-        PASSED_TESTS+=("$description")
+        record_passed "$description"
         return 0
     else
         echo -e "${RED}✗ NOT FOUND${NC}"
-        FAILED_TESTS+=("$description")
+        record_failed "$description"
         return 1
     fi
 }
@@ -106,7 +137,7 @@ test_command() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓${NC}"
-        PASSED_TESTS+=("$description")
+        record_passed "$description"
         return 0
     else
         local error_msg=$(echo "$output" | head -1 | cut -c1-60)
@@ -114,7 +145,7 @@ test_command() {
         if [ -n "$error_msg" ]; then
             echo -e "    ${RED}└─${NC} $error_msg"
         fi
-        FAILED_TESTS+=("$description")
+        record_failed "$description"
         return 1
     fi
 }
@@ -124,26 +155,27 @@ test_command() {
 report_results() {
     local stage=$1
 
-    local total_tests=$((${#PASSED_TESTS[@]} + ${#FAILED_TESTS[@]} + ${#BROKEN_TESTS[@]}))
+    local total_tests=$((PASSED_COUNT + FAILED_COUNT + BROKEN_COUNT))
 
     echo
     echo "═══════════════════════════════════════════════════════════"
     echo -e "  ${BOLD}Stage $stage Results${NC}"
     echo "═══════════════════════════════════════════════════════════"
-    echo -e "${GREEN}Passed:${NC} ${#PASSED_TESTS[@]}/$total_tests tests"
+    echo -e "${GREEN}Passed:${NC} ${PASSED_COUNT}/$total_tests tests"
 
-    if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
+    if [ "${FAILED_COUNT}" -gt 0 ]; then
         echo
-        echo -e "${RED}Missing (not in PATH):${NC} ${#FAILED_TESTS[@]} tests"
-        for tool in "${FAILED_TESTS[@]}"; do
-            echo "  • $tool"
+        echo -e "${RED}Missing (not in PATH):${NC} ${FAILED_COUNT} tests"
+        printf '%s\n' "$FAILED_LIST" | while IFS= read -r tool; do
+            [ -n "$tool" ] && echo "  • $tool"
         done
     fi
 
-    if [ ${#BROKEN_TESTS[@]} -gt 0 ]; then
+    if [ "${BROKEN_COUNT}" -gt 0 ]; then
         echo
-        echo -e "${YELLOW}Broken (exist but failed):${NC} ${#BROKEN_TESTS[@]} tests"
-        for item in "${BROKEN_TESTS[@]}"; do
+        echo -e "${YELLOW}Broken (exist but failed):${NC} ${BROKEN_COUNT} tests"
+        printf '%s\n' "$BROKEN_LIST" | while IFS= read -r item; do
+            [ -n "$item" ] || continue
             local tool="${item%%:*}"
             local code="${item##*:}"
             echo "  • $tool (exit $code)"
@@ -152,7 +184,7 @@ report_results() {
 
     echo "═══════════════════════════════════════════════════════════"
 
-    if [ ${#FAILED_TESTS[@]} -eq 0 ] && [ ${#BROKEN_TESTS[@]} -eq 0 ]; then
+    if [ "${FAILED_COUNT}" -eq 0 ] && [ "${BROKEN_COUNT}" -eq 0 ]; then
         echo -e "${GREEN}${BOLD}✓ STAGE $stage PASSED${NC}"
         echo
         echo "All tools are present and functional in this environment."
@@ -160,10 +192,10 @@ report_results() {
     else
         echo -e "${RED}${BOLD}✗ STAGE $stage FAILED${NC}"
         echo
-        if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
+        if [ "${FAILED_COUNT}" -gt 0 ]; then
             echo "Some tools are missing from PATH. Check package installation."
         fi
-        if [ ${#BROKEN_TESTS[@]} -gt 0 ]; then
+        if [ "${BROKEN_COUNT}" -gt 0 ]; then
             echo "Some tools are installed but broken. Check dependencies and environment."
         fi
         return 1

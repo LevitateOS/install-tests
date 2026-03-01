@@ -60,6 +60,12 @@ impl QemuBuilder {
         self
     }
 
+    /// Add an additional read-only CD-ROM image.
+    pub fn extra_cdrom(mut self, path: PathBuf) -> Self {
+        self.inner = self.inner.extra_cdrom(path);
+        self
+    }
+
     /// Add virtio disk.
     pub fn disk(mut self, path: PathBuf) -> Self {
         self.inner = self.inner.disk(path);
