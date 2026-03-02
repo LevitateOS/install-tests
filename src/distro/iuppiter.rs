@@ -164,6 +164,8 @@ impl DistroContext for IuppiterContext {
             "recstrap",
             "recfstab",
             "recchroot",
+            "recab",
+            "iuppiter-dar",
             "sfdisk",
             "mkfs.ext4",
             "mount",
@@ -187,7 +189,18 @@ impl DistroContext for IuppiterContext {
 
     fn installed_tools(&self) -> &[&str] {
         &[
-            "sudo", "ip", "ssh", "ash", "smartctl", "hdparm", "sg_inq", "mount", "umount", "dmesg",
+            "sudo",
+            "ip",
+            "ssh",
+            "ash",
+            "smartctl",
+            "hdparm",
+            "sg_inq",
+            "recab",
+            "iuppiter-dar",
+            "mount",
+            "umount",
+            "dmesg",
         ]
     }
 }
