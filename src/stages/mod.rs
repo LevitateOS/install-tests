@@ -295,8 +295,7 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
     let result = (|| -> Result<String> {
-        let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
-        console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
+        wait_for_stage02_serial_readiness(&mut console, ctx)?;
         verify_stage01_ssh_login(&mut console, ssh_host_port)?;
 
         // Check for key tools expected in the live environment
@@ -434,6 +433,25 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let _ = child.kill();
     let _ = child.wait();
     result
+}
+
+fn wait_for_stage02_serial_readiness(console: &mut Console, ctx: &dyn DistroContext) -> Result<()> {
+    let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
+    // Stage 02 is validated over SSH. Serial readiness can be either the explicit
+    // shell marker or a stable login prompt on ttyS0.
+    let stage02_success_patterns = [
+        "___SHELL_READY___",
+        "Login as 'root' (no password)",
+        " login:",
+    ];
+    Console::wait_for_boot_with_patterns(
+        console,
+        stall_timeout,
+        &stage02_success_patterns,
+        ctx.boot_error_patterns(),
+        false,
+    )
+    .with_context(|| "waiting for Stage 02 serial readiness".to_string())
 }
 
 /// Stage 03: Installation — Scripted install to disk.
