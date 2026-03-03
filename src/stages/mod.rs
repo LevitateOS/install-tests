@@ -727,14 +727,12 @@ fn resolve_iso_target_for_stage(
         .join(".artifacts/out")
         .join(distro_id)
         .join(stage_output_dir_for_stage(stage));
-    let legacy_path = stage_root.join(&filename);
+    let expected_path = stage_root.join(&filename);
 
     let path = if let Some(run_iso) =
         resolve_iso_from_latest_successful_run(&stage_root, &filename)?
     {
         run_iso
-    } else if legacy_path.is_file() {
-        legacy_path
     } else {
         let build_stage = match stage {
             0 => "00Build",
@@ -742,10 +740,10 @@ fn resolve_iso_target_for_stage(
             _ => "02LiveTools",
         };
         bail!(
-            "ISO not found at {} and no successful run-manifest ISO found under '{}'. Build {} {} first: \
+            "ISO not found from successful run manifests under '{}'. Expected ISO path: {}. Build {} {} first: \
              cargo run -p distro-builder --bin distro-builder -- iso build {} {}",
-            legacy_path.display(),
             stage_root.display(),
+            expected_path.display(),
             ctx.name(),
             build_stage,
             distro_id,
