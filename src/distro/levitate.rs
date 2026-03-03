@@ -302,6 +302,6 @@ impl DistroContext for LevitateContext {
     }
 
     fn installed_tools(&self) -> &[&str] {
-        &["sudo", "ip", "ssh", "mount", "umount", "dmesg"]
+        &["sudo", "ip", "ssh", "mount", "umount", "dmesg", "bun"]
     }
 }
