@@ -593,10 +593,14 @@ fn run_preflight_with_iso_distro_layout(
                 );
             }
         } else {
+            let expected_install_path = canonical_runtime_artifact_names_for_distro(distro_id)?
+                .initramfs_installed
+                .map(|name| iso_dir.join(name))
+                .unwrap_or_else(|| iso_dir.join("initramfs-installed.img"));
             println!(
                 "  {} Install initramfs not found at {}",
                 "SKIP".yellow(),
-                iso_dir.join("initramfs-installed.img").display()
+                expected_install_path.display()
             );
         }
     }
@@ -645,13 +649,16 @@ fn resolve_runtime_artifacts_for_layout(
         )?,
         initramfs_live: resolve_required_file(
             artifact_dir,
-            "initramfs-live.cpio.gz",
+            &canonical_names.initramfs_live,
             "-initramfs-live.cpio.gz",
             artifact_layout,
         )?,
         initramfs_installed: resolve_optional_file(
             artifact_dir,
-            "initramfs-installed.img",
+            canonical_names
+                .initramfs_installed
+                .as_deref()
+                .unwrap_or("initramfs-installed.img"),
             "-initramfs-installed.img",
             artifact_layout,
         )?,
@@ -678,6 +685,8 @@ fn resolve_runtime_artifacts_for_layout(
 
 struct CanonicalRuntimeArtifactNames {
     rootfs_image: String,
+    initramfs_live: String,
+    initramfs_installed: Option<String>,
     overlay_image: String,
 }
 
@@ -690,6 +699,21 @@ fn canonical_runtime_artifact_names_for_distro(
         rootfs_image: required_transform_output_name(
             &bundle.contract.transforms.rootfs_image.output_names,
             "contract.transforms.rootfs_image.output_names",
+            distro_id,
+        )?,
+        initramfs_live: required_transform_output_name(
+            &bundle.contract.transforms.initramfs_live.output_names,
+            "contract.transforms.initramfs_live.output_names",
+            distro_id,
+        )?,
+        initramfs_installed: optional_transform_output_name(
+            bundle
+                .contract
+                .transforms
+                .initramfs_installed
+                .as_ref()
+                .map(|transform| transform.output_names.as_slice()),
+            "contract.transforms.initramfs_installed.output_names",
             distro_id,
         )?,
         overlay_image: required_transform_output_name(
@@ -711,6 +735,19 @@ fn required_transform_output_name(
             field, distro_id
         )
     })
+}
+
+fn optional_transform_output_name(
+    outputs: Option<&[String]>,
+    field: &str,
+    distro_id: &str,
+) -> Result<Option<String>> {
+    let Some(outputs) = outputs else {
+        return Ok(None);
+    };
+    Ok(Some(required_transform_output_name(
+        outputs, field, distro_id,
+    )?))
 }
 
 fn resolve_required_file(
@@ -1110,7 +1147,11 @@ mod tests {
     fn resolve_runtime_artifacts_prefers_product_native_names() {
         let dir = temp_dir("product-native");
         write_file(&dir.join("s00-filesystem.erofs"), "rootfs");
-        write_file(&dir.join("initramfs-live.cpio.gz"), "initramfs");
+        write_file(&dir.join("s00-initramfs-live.cpio.gz"), "initramfs");
+        write_file(
+            &dir.join("s00-initramfs-installed.img"),
+            "install-initramfs",
+        );
         write_file(&dir.join("s00-overlayfs.erofs"), "overlay");
         write_file(&dir.join(".live-rootfs-source.path"), "./rootfs-source\n");
         fs::create_dir_all(dir.join("live-overlay")).expect("create live overlay");
@@ -1118,7 +1159,14 @@ mod tests {
         let resolved =
             resolve_runtime_artifacts(&dir, "levitate").expect("resolve runtime artifacts");
         assert_eq!(resolved.rootfs_image, dir.join("s00-filesystem.erofs"));
-        assert_eq!(resolved.initramfs_live, dir.join("initramfs-live.cpio.gz"));
+        assert_eq!(
+            resolved.initramfs_live,
+            dir.join("s00-initramfs-live.cpio.gz")
+        );
+        assert_eq!(
+            resolved.initramfs_installed,
+            Some(dir.join("s00-initramfs-installed.img"))
+        );
         assert_eq!(resolved.overlay_image, dir.join("s00-overlayfs.erofs"));
         assert_eq!(
             resolved.rootfs_source_pointer,
@@ -1144,7 +1192,11 @@ mod tests {
         let canonical = resolve_runtime_artifacts(&dir, "levitate")
             .expect("resolve canonical runtime artifacts");
         assert_eq!(canonical.rootfs_image, dir.join("s00-filesystem.erofs"));
-        assert_eq!(canonical.initramfs_live, dir.join("initramfs-live.cpio.gz"));
+        assert_eq!(
+            canonical.initramfs_live,
+            dir.join("s00-initramfs-live.cpio.gz")
+        );
+        assert_eq!(canonical.initramfs_installed, None);
         assert_eq!(canonical.overlay_image, dir.join("s00-overlayfs.erofs"));
         assert_eq!(
             canonical.rootfs_source_pointer,
@@ -1163,6 +1215,7 @@ mod tests {
             resolved.initramfs_live,
             dir.join("s01-initramfs-live.cpio.gz")
         );
+        assert_eq!(resolved.initramfs_installed, None);
         assert_eq!(resolved.overlay_image, dir.join("s01-overlayfs.erofs"));
         assert_eq!(
             resolved.rootfs_source_pointer,

@@ -13,8 +13,10 @@ use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
 use crate::executor::Executor;
 use anyhow::Result;
+use distro_contract::load_stage_00_contract_bundle_for_distro_from;
 use distro_spec::shared::boot::{BootEntry, LoaderConfig};
 use leviso_cheat_guard::cheat_ensure;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Step 16: Copy/install initramfs from ISO
@@ -34,9 +36,10 @@ impl Step for GenerateInitramfs {
         "Initramfs exists at /boot/initramfs.img with drivers for installed hardware"
     }
 
-    fn execute(&self, executor: &mut dyn Executor, _ctx: &dyn DistroContext) -> Result<StepResult> {
+    fn execute(&self, executor: &mut dyn Executor, ctx: &dyn DistroContext) -> Result<StepResult> {
         let step_start = Instant::now();
         let mut result = StepResult::new(self.num(), self.name());
+        let installed_initramfs_name = installed_initramfs_name_for_distro(ctx.id())?;
 
         // ═══════════════════════════════════════════════════════════════════════
         // KERNEL COPY: ISO → ESP
@@ -98,11 +101,14 @@ impl Step for GenerateInitramfs {
         // ═══════════════════════════════════════════════════════════════════════
         // INITRAMFS COPY: ISO → ESP
         // ═══════════════════════════════════════════════════════════════════════
-        let copy_cmd = "cp /run/live-media/boot/initramfs-installed.img /mnt/boot/initramfs.img";
+        let copy_cmd = format!(
+            "cp /run/live-media/boot/{} /mnt/boot/initramfs.img",
+            installed_initramfs_name
+        );
         let cmd_start = Instant::now();
-        let copy_result = executor.exec(copy_cmd, Duration::from_secs(30))?;
+        let copy_result = executor.exec(&copy_cmd, Duration::from_secs(30))?;
         result.log_command(
-            copy_cmd,
+            &copy_cmd,
             copy_result.exit_code,
             &copy_result.output,
             cmd_start.elapsed(),
@@ -151,6 +157,22 @@ impl Step for GenerateInitramfs {
         result.duration = step_start.elapsed();
         Ok(result)
     }
+}
+
+fn installed_initramfs_name_for_distro(distro_id: &str) -> Result<String> {
+    let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root(), distro_id)?;
+    bundle
+        .contract
+        .transforms
+        .initramfs_installed
+        .as_ref()
+        .and_then(|transform| transform.output_names.first())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing installed initramfs transform for '{}'", distro_id))
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Step 17: Install systemd-boot bootloader
