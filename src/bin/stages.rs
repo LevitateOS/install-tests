@@ -1,10 +1,10 @@
-//! Stage-based development loop CLI.
+//! Scenario runner CLI with stage-number compatibility aliases.
 //!
 //! Lightweight, incremental scenario runner for verifying OS builds.
 //!
 //! Usage:
-//!   cargo run --bin stages -- --distro acorn --stage 0
 //!   cargo run --bin stages -- --distro acorn --scenario live-boot
+//!   cargo run --bin stages -- --distro acorn --scenario live-tools
 //!   cargo run --bin stages -- --distro acorn --stage 1
 //!   cargo run --bin stages -- --distro acorn --up-to 3
 //!   cargo run --bin stages -- --distro acorn --status
@@ -17,16 +17,14 @@ use std::path::PathBuf;
 use install_tests::stages::{self, compat};
 
 #[derive(Parser)]
-#[command(name = "stages")]
-#[command(
-    about = "Scenario-based development loop for LevitateOS variants (stage aliases retained)"
-)]
+#[command(name = "scenarios", alias = "stages")]
+#[command(about = "Scenario runner for LevitateOS variants (stage aliases retained)")]
 struct Cli {
     /// Distro to test (levitate, acorn, iuppiter, ralph)
     #[arg(long)]
     distro: String,
 
-    /// Run a specific stage (0-6)
+    /// Run a compatibility stage alias (0-6).
     #[arg(long)]
     stage: Option<u32>,
 
@@ -34,7 +32,7 @@ struct Cli {
     #[arg(long, value_name = "NAME")]
     scenario: Option<String>,
 
-    /// Run all stages up to N (inclusive, 0-6)
+    /// Run all compatibility stage aliases up to N (inclusive, 0-6).
     #[arg(long)]
     up_to: Option<u32>,
 
@@ -42,11 +40,11 @@ struct Cli {
     #[arg(long = "up-to-scenario", value_name = "NAME")]
     up_to_scenario: Option<String>,
 
-    /// Show stage status
+    /// Show scenario status.
     #[arg(long)]
     status: bool,
 
-    /// Reset stage state (forces re-run)
+    /// Reset scenario state (forces re-run).
     #[arg(long)]
     reset: bool,
 
@@ -58,7 +56,7 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     inject_file: Option<PathBuf>,
 
-    /// Re-run the requested stage even if it is already cached as passed.
+    /// Re-run the requested scenario or stage alias even if it is already cached as passed.
     #[arg(long)]
     force: bool,
 }
@@ -71,7 +69,7 @@ fn main() -> Result<()> {
         || cli.up_to.is_some()
         || cli.up_to_scenario.is_some();
     if requires_guard {
-        install_tests::enforce_policy_guard("install-tests stages")?;
+        install_tests::enforce_policy_guard("install-tests scenarios")?;
     }
 
     if cli.reset {
@@ -98,7 +96,7 @@ fn main() -> Result<()> {
 
     if let Some(stage_n) = cli.stage {
         if !(0..=6).contains(&stage_n) {
-            bail!("Stage must be 0-6, got {}", stage_n);
+            bail!("compatibility stage alias must be 0-6, got {}", stage_n);
         }
         let passed = if cli.force {
             compat::run_stage_forced(&cli.distro, stage_n)?
@@ -116,7 +114,10 @@ fn main() -> Result<()> {
 
     if let Some(target) = cli.up_to {
         if !(0..=6).contains(&target) {
-            bail!("--up-to must be 0-6, got {}", target);
+            bail!(
+                "--up-to compatibility stage alias must be 0-6, got {}",
+                target
+            );
         }
         let passed = compat::run_up_to_stage(&cli.distro, target)?;
         std::process::exit(if passed { 0 } else { 1 });

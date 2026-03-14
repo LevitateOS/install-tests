@@ -1,17 +1,17 @@
-//! Stage-based development loop.
+//! Scenario-based development loop.
 //!
-//! Lightweight, incremental stages that gate progression and give fast
-//! feedback during development. Each stage validates one thing.
+//! Lightweight, incremental scenarios that gate progression and give fast
+//! feedback during development. Each scenario validates one thing.
 //!
-//! # Stages
+//! # Scenarios
 //!
-//! 00. **00Build** — Contract + runtime provenance + artifact preflight
-//! 01. **01Boot** — ISO boots in QEMU (login prompt or `___SHELL_READY___`)
-//! 02. **02LiveTools** — Expected binaries present in live environment
-//! 03. **03Install** — Scripted install to disk succeeds
-//! 04. **04LoginGate** — System boots from disk after install
-//! 05. **05Harness** — Harness can login and run commands
-//! 06. **06Runtime** — Expected installed-system tools are present
+//! - `build-preflight` — contract + runtime provenance + artifact preflight
+//! - `live-boot` — ISO boots in QEMU (login prompt or `___SHELL_READY___`)
+//! - `live-tools` — expected binaries present in live environment
+//! - `install` — scripted install to disk succeeds
+//! - `installed-boot` — system boots from disk after install
+//! - `automated-login` — harness can login and run commands
+//! - `runtime` — expected installed-system tools are present
 
 pub mod compat;
 pub mod state;
@@ -31,8 +31,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const STAGE01_LIVE_BOOT_SCRIPT: &str = "/usr/local/bin/stage-01-live-boot.sh";
-const STAGE01_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/stage-01-ssh-preflight.sh";
+const LIVE_BOOT_VALIDATION_SCRIPT: &str = "/usr/local/bin/stage-01-live-boot.sh";
+const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/stage-01-ssh-preflight.sh";
 const STAGE_RUNTIME_RETENTION_COUNT: usize = 5;
 const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
 const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
@@ -388,20 +388,20 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 // Stage implementations
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Stage 01: Live Boot — ISO boots in QEMU.
+/// Live Boot scenario — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
     let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
 
     let result = (|| -> Result<String> {
         console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
-        verify_stage01_ssh_login(&mut console, ssh_host_port)?;
+        verify_live_boot_ssh_login(&mut console, ssh_host_port)?;
 
-        run_stage_script_over_ssh(ssh_host_port, STAGE01_LIVE_BOOT_SCRIPT)?;
-        run_stage_script_over_ssh(ssh_host_port, STAGE01_SSH_PREFLIGHT_SCRIPT)?;
+        run_stage_script_over_ssh(ssh_host_port, LIVE_BOOT_VALIDATION_SCRIPT)?;
+        run_stage_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT)?;
 
         Ok(
-            "Boot markers detected + SSH login probe passed + stage-01 script checks passed"
+            "Boot markers detected + SSH login probe passed + live-boot script checks passed"
                 .to_string(),
         )
     })();
@@ -411,7 +411,7 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     result
 }
 
-/// Stage 02: Live Tools — Expected binaries in live environment.
+/// Live Tools scenario — expected binaries in the live environment.
 ///
 /// IMPORTANT: This doesn't just check if tools exist (which would be lazy).
 /// It actually EXECUTES each tool to verify:
@@ -422,8 +422,8 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
     let result = (|| -> Result<String> {
-        wait_for_stage02_serial_readiness(&mut console, ctx)?;
-        verify_stage01_ssh_login(&mut console, ssh_host_port)?;
+        wait_for_live_tools_serial_readiness(&mut console, ctx)?;
+        verify_live_boot_ssh_login(&mut console, ssh_host_port)?;
 
         // Check for key tools expected in the live environment
         let tools: Vec<&str> = ctx.live_tools().to_vec();
@@ -485,15 +485,13 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
             bail!("{}", error_msg.trim());
         }
 
-        let expected_install_experience = ctx.stage02_install_experience();
-        let install_experience_marker = ssh_exec(
-            ssh_host_port,
-            "cat /usr/lib/levitate/stage-02/install-experience",
-        )
-        .with_context(|| "reading Stage 02 install-experience marker".to_string())?;
+        let expected_install_experience = ctx.install_experience_profile();
+        let install_experience_marker =
+            ssh_exec(ssh_host_port, "cat /usr/lib/levitate/install-experience")
+                .with_context(|| "reading install-experience marker".to_string())?;
         if install_experience_marker.exit_code != 0 {
             bail!(
-                "Stage 02 install-experience marker missing or unreadable: {}",
+                "install-experience marker missing or unreadable: {}",
                 install_experience_marker.output.trim()
             );
         }
@@ -506,7 +504,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
             .trim();
         if actual_install_experience != expected_install_experience {
             bail!(
-                "Stage 02 install-experience mismatch: expected '{}', found '{}'",
+                "install-experience mismatch: expected '{}', found '{}'",
                 expected_install_experience,
                 actual_install_experience
             );
@@ -514,45 +512,37 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 
         let entrypoint_check = ssh_exec(
             ssh_host_port,
-            "test -x /usr/local/bin/stage-02-install-entrypoint",
+            "test -x /usr/local/bin/levitate-install-entrypoint",
         )
-        .with_context(|| "checking Stage 02 install entrypoint script presence".to_string())?;
+        .with_context(|| "checking install entrypoint script presence".to_string())?;
         if entrypoint_check.exit_code != 0 {
             bail!(
-                "missing executable Stage 02 install entrypoint at /usr/local/bin/stage-02-install-entrypoint"
+                "missing executable install entrypoint at /usr/local/bin/levitate-install-entrypoint"
             );
         }
         let mut ux_split_evidence: Option<String> = None;
         if expected_install_experience == "ux" {
-            let ux_hook_check = ssh_exec(
-                ssh_host_port,
-                "test -r /etc/profile.d/30-stage-02-install-ux.sh",
-            )
-            .with_context(|| "checking Stage 02 UX profile hook presence".to_string())?;
+            let ux_hook_check = ssh_exec(ssh_host_port, "test -r /etc/profile.d/30-install-ux.sh")
+                .with_context(|| "checking install UX profile hook presence".to_string())?;
             if ux_hook_check.exit_code != 0 {
-                bail!(
-                    "missing Stage 02 UX profile hook at /etc/profile.d/30-stage-02-install-ux.sh"
-                );
+                bail!("missing install UX profile hook at /etc/profile.d/30-install-ux.sh");
             }
-            ux_split_evidence = Some(verify_stage02_ux_split_behavior(ssh_host_port)?);
+            ux_split_evidence = Some(verify_install_ux_split_behavior(ssh_host_port)?);
         }
 
-        let stage02_evidence = match ux_split_evidence {
+        let install_profile_evidence = match ux_split_evidence {
             Some(evidence) => format!(
-                "Stage 02 install profile '{}' verified; {}",
+                "install profile '{}' verified; {}",
                 actual_install_experience, evidence
             ),
-            None => format!(
-                "Stage 02 install profile '{}' verified",
-                actual_install_experience
-            ),
+            None => format!("install profile '{}' verified", actual_install_experience),
         };
 
         Ok(format!(
             "All {} tools verified working (actually executed): {}; {}; {}",
             found.len(),
             found.join(", "),
-            stage02_evidence,
+            install_profile_evidence,
             overlay_evidence
         ))
     })();
@@ -562,11 +552,14 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     result
 }
 
-fn wait_for_stage02_serial_readiness(console: &mut Console, ctx: &dyn DistroContext) -> Result<()> {
+fn wait_for_live_tools_serial_readiness(
+    console: &mut Console,
+    ctx: &dyn DistroContext,
+) -> Result<()> {
     let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
-    // Stage 02 is validated over SSH. Serial readiness can be either the explicit
+    // Live-tools is validated over SSH. Serial readiness can be either the explicit
     // shell marker or a stable login prompt on ttyS0.
-    let stage02_success_patterns = [
+    let live_tools_success_patterns = [
         "___SHELL_READY___",
         "Login as 'root' (no password)",
         " login:",
@@ -574,11 +567,11 @@ fn wait_for_stage02_serial_readiness(console: &mut Console, ctx: &dyn DistroCont
     Console::wait_for_boot_with_patterns(
         console,
         stall_timeout,
-        &stage02_success_patterns,
+        &live_tools_success_patterns,
         ctx.boot_error_patterns(),
         false,
     )
-    .with_context(|| "waiting for Stage 02 serial readiness".to_string())
+    .with_context(|| "waiting for live-tools serial readiness".to_string())
 }
 
 fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
@@ -950,7 +943,7 @@ fn spawn_live_qemu_with_ssh(
     session::spawn_live_with_ssh(ctx, iso_path)
 }
 
-fn verify_stage01_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
+fn verify_live_boot_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
     let mut last_err = String::new();
     for _ in 0..60 {
         let out = ssh_exec(ssh_host_port, "echo __SSH_LOGIN_OK__");
@@ -964,16 +957,16 @@ fn verify_stage01_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result
         std::thread::sleep(Duration::from_secs(1));
     }
 
-    let diagnostics = collect_stage01_ssh_diagnostics(console);
+    let diagnostics = collect_live_boot_ssh_diagnostics(console);
     bail!(
-        "Stage 01 SSH login probe failed after shell-ready boundary (forwarded port {}). Last output:\n{}\n\n{}",
+        "live-boot SSH login probe failed after shell-ready boundary (forwarded port {}). Last output:\n{}\n\n{}",
         ssh_host_port,
         last_err,
         diagnostics
     );
 }
 
-fn collect_stage01_ssh_diagnostics(console: &mut Console) -> String {
+fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
     let checks = [
         ("Kernel cmdline", "cat /proc/cmdline"),
         (
@@ -1022,7 +1015,7 @@ fn collect_stage01_ssh_diagnostics(console: &mut Console) -> String {
         ),
     ];
 
-    let mut report = String::from("Stage 01 SSH diagnostics from live shell:\n");
+    let mut report = String::from("live-boot SSH diagnostics from live shell:\n");
     for (title, cmd) in checks {
         report.push_str(&format!("\n--- {} ---\n$ {}\n", title, cmd));
         match console.exec(cmd, Duration::from_secs(15)) {
@@ -1066,16 +1059,16 @@ fn run_stage_script_over_ssh(ssh_host_port: u16, script_path: &str) -> Result<()
     );
 }
 
-fn verify_stage02_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
+fn verify_install_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
     let probe = ssh_exec(
         ssh_host_port,
-        "/usr/local/bin/stage-02-install-entrypoint --probe",
+        "/usr/local/bin/levitate-install-entrypoint --probe",
     )
-    .with_context(|| "probing Stage 02 UX install helper selection".to_string())?;
+    .with_context(|| "probing install UX helper selection".to_string())?;
     if probe.exit_code != 0 {
         bail!(
-            "Stage 02 helper probe failed (exit {}): {}\n\
-             Expected probe command: /usr/local/bin/stage-02-install-entrypoint --probe",
+            "install helper probe failed (exit {}): {}\n\
+             Expected probe command: /usr/local/bin/levitate-install-entrypoint --probe",
             probe.exit_code,
             probe.output.trim()
         );
@@ -1085,16 +1078,16 @@ fn verify_stage02_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
         .output
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("stage02-entrypoint-helper="))
+        .find_map(|line| line.strip_prefix("install-entrypoint-helper="))
         .unwrap_or("")
         .trim();
     let helper_ok =
         helper == "levitate-install-docs-split" || helper.ends_with("/levitate-install-docs-split");
     if !helper_ok {
         bail!(
-            "Stage 02 UX helper mismatch: expected 'levitate-install-docs-split', found '{}'.\n\
+            "install UX helper mismatch: expected 'levitate-install-docs-split', found '{}'.\n\
              Probe output: {}\n\
-             Remediation: ensure Stage 02 payload installs levitate-install-docs-split into PATH.",
+             Remediation: ensure the live install payload installs levitate-install-docs-split into PATH.",
             if helper.is_empty() { "<empty>" } else { helper },
             probe.output.trim()
         );
@@ -1102,27 +1095,27 @@ fn verify_stage02_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
 
     let smoke = ssh_exec(
         ssh_host_port,
-        "STAGE02_ENTRYPOINT_SMOKE=1 /usr/local/bin/stage-02-install-entrypoint",
+        "LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint",
     )
-    .with_context(|| "running Stage 02 UX split-pane smoke launch".to_string())?;
+    .with_context(|| "running install UX split-pane smoke launch".to_string())?;
     if smoke.exit_code != 0 {
         bail!(
-            "Stage 02 UX split-pane smoke launch failed (exit {}): {}\n\
-             Expected command: STAGE02_ENTRYPOINT_SMOKE=1 /usr/local/bin/stage-02-install-entrypoint",
+            "install UX split-pane smoke launch failed (exit {}): {}\n\
+             Expected command: LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint",
             smoke.exit_code,
             smoke.output.trim()
         );
     }
     if !smoke.output.contains("split-smoke:ok") {
         bail!(
-            "Stage 02 UX split-pane smoke output missing success marker 'split-smoke:ok'.\n\
+            "install UX split-pane smoke output missing success marker 'split-smoke:ok'.\n\
              Command output: {}\n\
              Remediation: run `levitate-install-docs-split --smoke` in the live environment and fix pane launch wiring.",
             smoke.output.trim()
         );
     }
 
-    Ok("Stage 02 UX split-pane smoke verified (shell-left + docs-right)".to_string())
+    Ok("install UX split-pane smoke verified (shell-left + docs-right)".to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -1488,7 +1481,7 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
             eprintln!("  Try:");
             eprintln!("    - Manual boot: just stage 1 <distro>");
             eprintln!(
-                "    - Rebuild Stage 01 ISO: cargo run -p distro-builder --bin distro-builder -- iso build <distro> 01Boot"
+                "    - Rebuild live-boot ISO: cargo run -p distro-builder --bin distro-builder -- iso build <distro> 01Boot"
             );
         }
         ScenarioId::LiveTools => {

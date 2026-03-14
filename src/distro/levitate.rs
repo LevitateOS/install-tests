@@ -28,7 +28,7 @@ impl DistroContext for LevitateContext {
     // ═══════════════════════════════════════════════════════════════════════════
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        // Stage 01 requires an actually interactive live shell on serial console.
+        // Live boot requires an actually interactive shell on the serial console.
         // These markers are emitted by `/etc/profile.d/00-live-test.sh` only when
         // an interactive shell is active on ttyS0.
         &["___SHELL_READY___"]
@@ -280,7 +280,7 @@ impl DistroContext for LevitateContext {
         ]
     }
 
-    fn stage02_install_experience(&self) -> &str {
+    fn install_experience_profile(&self) -> &str {
         "ux"
     }
 

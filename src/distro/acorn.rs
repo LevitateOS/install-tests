@@ -174,7 +174,7 @@ impl DistroContext for AcornContext {
         ]
     }
 
-    fn stage02_install_experience(&self) -> &str {
+    fn install_experience_profile(&self) -> &str {
         "ux"
     }
 

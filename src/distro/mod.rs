@@ -161,18 +161,18 @@ pub trait DistroContext: Send + Sync {
     fn boot_target_name(&self) -> &str;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Tool Expectations (Stages)
+    // Tool Expectations (Scenarios)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Tools expected to be present in the live ISO environment.
     fn live_tools(&self) -> &[&str];
 
-    /// Stage 02 install experience profile expected in the live ISO.
+    /// Install experience profile expected in the live ISO.
     ///
     /// Allowed values:
     /// - `ux`
     /// - `automated_ssh`
-    fn stage02_install_experience(&self) -> &str;
+    fn install_experience_profile(&self) -> &str;
 
     /// Tools expected to be present on the installed system.
     fn installed_tools(&self) -> &[&str];
