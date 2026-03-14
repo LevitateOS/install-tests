@@ -23,7 +23,8 @@ use distro_builder::stages::s00_build::{
 };
 use distro_contract::{
     load_stage_00_contract_bundle_for_distro_from, require_valid_contract,
-    validate_stage_00_runtime_with_stage_dirs, validate_stage_01_runtime,
+    validate_live_boot_runtime, validate_stage_00_runtime_with_artifacts, LiveBootRuntimeArtifacts,
+    Stage00RuntimeArtifacts,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
@@ -33,14 +34,25 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const STAGE00_ARTIFACT_TAG: &str = "s00";
-
 #[derive(Debug, Deserialize)]
 struct StageRunManifest {
     status: String,
     created_at_utc: String,
     finished_at_utc: Option<String>,
     iso_path: Option<String>,
+    target_kind: Option<String>,
+    target_name: Option<String>,
+    compatibility_stage_slug: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRuntimeArtifacts {
+    rootfs_image: PathBuf,
+    initramfs_live: PathBuf,
+    initramfs_installed: Option<PathBuf>,
+    overlay_image: PathBuf,
+    live_overlay_dir: PathBuf,
+    rootfs_source_pointer: PathBuf,
 }
 
 /// Result of preflight verification
@@ -143,19 +155,28 @@ pub fn run_preflight_with_iso_distro(
         iso: None,
         overall_pass: true,
     };
-    let stage_artifact_tag = detect_stage_artifact_tag(iso_dir, iso_filename);
+    let resolved_iso_path = iso_filename
+        .map(|filename| iso_dir.join(filename))
+        .filter(|path| path.is_file())
+        .or_else(|| find_iso_file(iso_dir));
+    let run_manifest = load_run_manifest(iso_dir)?;
+    let runtime_artifacts = resolve_runtime_artifacts(iso_dir)?;
+    let validate_live_boot = should_validate_live_boot_runtime(iso_dir, run_manifest.as_ref());
 
     result.conformance = Some(verify_conformance_contract(
         iso_dir,
         iso_filename,
         distro_id,
+        &runtime_artifacts,
+        validate_live_boot,
+        resolved_iso_path.as_deref(),
     )?);
     if !result.conformance.as_ref().unwrap().passed {
         result.overall_pass = false;
     }
 
     // Check live initramfs
-    let live_path = iso_dir.join(format!("{stage_artifact_tag}-initramfs-live.cpio.gz"));
+    let live_path = runtime_artifacts.initramfs_live.clone();
     if live_path.exists() {
         result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
         if !result.live_initramfs.as_ref().unwrap().passed {
@@ -171,44 +192,45 @@ pub fn run_preflight_with_iso_distro(
 
     // Check install initramfs (only LevitateOS builds this)
     if distro_id == "levitate" {
-        let install_path = iso_dir.join(format!("{stage_artifact_tag}-initramfs-installed.img"));
-        if install_path.exists() {
-            result.install_initramfs = Some(verify_artifact(
-                &install_path,
-                ChecklistType::InstallInitramfs,
-            )?);
-            if !result.install_initramfs.as_ref().unwrap().passed {
-                result.overall_pass = false;
+        if let Some(install_path) = runtime_artifacts.initramfs_installed.as_ref() {
+            if install_path.exists() {
+                result.install_initramfs = Some(verify_artifact(
+                    install_path,
+                    ChecklistType::InstallInitramfs,
+                )?);
+                if !result.install_initramfs.as_ref().unwrap().passed {
+                    result.overall_pass = false;
+                }
+            } else {
+                println!(
+                    "  {} Install initramfs not found at {}",
+                    "SKIP".yellow(),
+                    install_path.display()
+                );
             }
         } else {
             println!(
                 "  {} Install initramfs not found at {}",
                 "SKIP".yellow(),
-                install_path.display()
+                iso_dir.join("initramfs-installed.img").display()
             );
         }
     }
 
     // Check ISO with full content verification
     // Support multi-distro by trying specified filename first, then searching
-    let iso_path = if let Some(filename) = iso_filename {
-        iso_dir.join(filename)
+    let iso_path = if let Some(path) = resolved_iso_path {
+        path
     } else {
-        // Fallback: try to find any .iso file in the directory
-        match find_iso_file(iso_dir) {
-            Some(path) => path,
-            None => {
-                println!(
-                    "  {} No .iso file found in {}",
-                    "✗".red(),
-                    iso_dir.display()
-                );
-                result.overall_pass = false;
-                println!();
-                print_summary(&result);
-                return Ok(result);
-            }
-        }
+        println!(
+            "  {} No .iso file found in {}",
+            "✗".red(),
+            iso_dir.display()
+        );
+        result.overall_pass = false;
+        println!();
+        print_summary(&result);
+        return Ok(result);
     };
 
     if iso_path.exists() {
@@ -230,9 +252,12 @@ pub fn run_preflight_with_iso_distro(
 }
 
 fn verify_conformance_contract(
-    iso_dir: &Path,
-    iso_filename: Option<&str>,
+    _iso_dir: &Path,
+    _iso_filename: Option<&str>,
     distro_id: &str,
+    runtime_artifacts: &ResolvedRuntimeArtifacts,
+    validate_live_boot: bool,
+    resolved_iso_path: Option<&Path>,
 ) -> Result<PreflightCheck> {
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
@@ -255,7 +280,6 @@ fn verify_conformance_contract(
 
     let mut details = Vec::new();
     let kernel_output_dir = kernel_output_dir_for_distro(distro_id);
-    let stage_artifact_tag = detect_stage_artifact_tag(iso_dir, iso_filename);
 
     if let Err(err) = require_valid_contract(&bundle.contract) {
         details.extend(
@@ -266,12 +290,15 @@ fn verify_conformance_contract(
         );
     }
 
-    let runtime_contract = contract_for_stage_artifact_tag(&bundle.contract, &stage_artifact_tag);
-    let runtime_report = validate_stage_00_runtime_with_stage_dirs(
-        &runtime_contract,
+    let runtime_report = validate_stage_00_runtime_with_artifacts(
+        &bundle.contract,
         &bundle.variant_dir,
         &kernel_output_dir,
-        iso_dir,
+        &Stage00RuntimeArtifacts {
+            rootfs_image: runtime_artifacts.rootfs_image.clone(),
+            initramfs_live: runtime_artifacts.initramfs_live.clone(),
+            overlay_image: runtime_artifacts.overlay_image.clone(),
+        },
     );
     details.extend(
         runtime_report
@@ -280,9 +307,17 @@ fn verify_conformance_contract(
             .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
     );
 
-    if stage_artifact_tag != STAGE00_ARTIFACT_TAG {
-        let stage01_report =
-            validate_stage_01_runtime(&runtime_contract, iso_dir, &stage_artifact_tag);
+    if validate_live_boot {
+        let stage01_report = validate_live_boot_runtime(
+            &bundle.contract,
+            &LiveBootRuntimeArtifacts {
+                rootfs_image: runtime_artifacts.rootfs_image.clone(),
+                initramfs_live: runtime_artifacts.initramfs_live.clone(),
+                overlay_image: runtime_artifacts.overlay_image.clone(),
+                live_overlay_dir: runtime_artifacts.live_overlay_dir.clone(),
+                rootfs_source_pointer: runtime_artifacts.rootfs_source_pointer.clone(),
+            },
+        );
         details.extend(
             stage01_report
                 .violations
@@ -294,7 +329,9 @@ fn verify_conformance_contract(
     if let Err(err) = verify_kernel_recipe_is_installed(&bundle, &kernel_output_dir, distro_id) {
         details.push(err);
     }
-    if let Err(err) = verify_stage_00_evidence_script(&bundle, &kernel_output_dir, distro_id) {
+    if let Err(err) =
+        verify_stage_00_evidence_script(&bundle, &kernel_output_dir, distro_id, resolved_iso_path)
+    {
         details.push(err);
     }
 
@@ -333,10 +370,6 @@ fn verify_kernel_recipe_is_installed(
     let spec = S00BuildKernelSpec {
         recipe_kernel_script: stage_00.recipe_kernel_script.clone(),
         kernel_kconfig_path: stage_00.kernel_kconfig_path.clone(),
-        kernel_version: stage_00.kernel_version.clone(),
-        kernel_sha256: stage_00.kernel_sha256.clone(),
-        kernel_localversion: stage_00.kernel_localversion.clone(),
-        module_install_path: stage_00.module_install_path.clone(),
     };
 
     check_kernel_installed_via_recipe(
@@ -358,22 +391,47 @@ fn verify_stage_00_evidence_script(
     bundle: &distro_contract::LoadedVariantContract,
     kernel_output_dir: &Path,
     distro_id: &str,
+    resolved_iso_path: Option<&Path>,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
-    let distro_output_dir = distro_output_dir_for_distro(distro_id);
-    let stage_root = distro_output_dir.join("s00-build");
-    let stage_output_dir = resolve_latest_successful_stage_run_dir(
-        &stage_root,
-        &bundle.contract.artifacts.iso_filename,
-    )
-    .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
-    .unwrap_or(stage_root);
+    let (stage_output_dir, iso_filename) = if let Some(iso_path) = resolved_iso_path {
+        let parent = iso_path.parent().ok_or_else(|| {
+            format!(
+                "Stage00.evidence [InvalidEvidenceDeclaration] ISO path has no parent directory: {}",
+                iso_path.display()
+            )
+        })?;
+        let filename = iso_path
+            .file_name()
+            .and_then(|part| part.to_str())
+            .ok_or_else(|| {
+                format!(
+                    "Stage00.evidence [InvalidEvidenceDeclaration] ISO path has no valid filename: {}",
+                    iso_path.display()
+                )
+            })?
+            .to_string();
+        (parent.to_path_buf(), filename)
+    } else {
+        let distro_output_dir = distro_output_dir_for_distro(distro_id);
+        let stage_root = distro_output_dir.join("s00-build");
+        let stage_output_dir = resolve_latest_successful_stage_run_dir(
+            &stage_root,
+            &bundle.contract.artifacts.iso_filename,
+        )
+        .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
+        .unwrap_or(stage_root);
+        (
+            stage_output_dir,
+            bundle.contract.artifacts.iso_filename.clone(),
+        )
+    };
     let spec = S00BuildEvidenceSpec {
         script_path: stage_00.evidence.script_path.clone(),
         pass_marker: stage_00.evidence.pass_marker.clone(),
         kernel_release_path: stage_00.kernel_release_path.clone(),
         kernel_image_path: stage_00.kernel_image_path.clone(),
-        iso_filename: bundle.contract.artifacts.iso_filename.clone(),
+        iso_filename,
     };
 
     run_00build_evidence_script(
@@ -455,75 +513,160 @@ fn resolve_latest_successful_stage_run_dir(
     Ok(candidates.into_iter().next().map(|(_, run_dir)| run_dir))
 }
 
-fn detect_stage_artifact_tag(iso_dir: &Path, iso_filename: Option<&str>) -> String {
-    if let Some(leaf) = iso_dir.file_name().and_then(|s| s.to_str()) {
-        if let Some(tag) = parse_stage_artifact_tag(leaf) {
-            return tag.to_string();
+fn load_run_manifest(run_dir: &Path) -> Result<Option<StageRunManifest>> {
+    let manifest_path = run_dir.join("run-manifest.json");
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read(&manifest_path)
+        .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
+    let manifest: StageRunManifest = serde_json::from_slice(&raw)
+        .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
+    Ok(Some(manifest))
+}
+
+fn should_validate_live_boot_runtime(
+    iso_dir: &Path,
+    run_manifest: Option<&StageRunManifest>,
+) -> bool {
+    if let Some(manifest) = run_manifest {
+        if manifest.target_kind.as_deref() == Some("release-product") {
+            return matches!(
+                manifest.target_name.as_deref(),
+                Some("live-boot") | Some("live-tools")
+            );
+        }
+        if matches!(
+            manifest.compatibility_stage_slug.as_deref(),
+            Some("s01_boot") | Some("s02_live_tools")
+        ) {
+            return true;
         }
     }
 
-    if let Some(name) = iso_filename {
-        if let Some(tag) = parse_stage_artifact_tag(name) {
-            return tag.to_string();
+    iso_dir
+        .file_name()
+        .and_then(|part| part.to_str())
+        .map(|leaf| leaf.contains("s01-boot") || leaf.contains("s02-live-tools"))
+        .unwrap_or(false)
+}
+
+fn resolve_runtime_artifacts(artifact_dir: &Path) -> Result<ResolvedRuntimeArtifacts> {
+    Ok(ResolvedRuntimeArtifacts {
+        rootfs_image: resolve_required_file(artifact_dir, "filesystem.erofs", "-filesystem.erofs")?,
+        initramfs_live: resolve_required_file(
+            artifact_dir,
+            "initramfs-live.cpio.gz",
+            "-initramfs-live.cpio.gz",
+        )?,
+        initramfs_installed: resolve_optional_file(
+            artifact_dir,
+            "initramfs-installed.img",
+            "-initramfs-installed.img",
+        )?,
+        overlay_image: resolve_required_file(artifact_dir, "overlayfs.erofs", "-overlayfs.erofs")?,
+        live_overlay_dir: resolve_required_dir(artifact_dir, "live-overlay", "-live-overlay")?,
+        rootfs_source_pointer: resolve_required_file(
+            artifact_dir,
+            ".live-rootfs-source.path",
+            "-live-rootfs-source.path",
+        )?,
+    })
+}
+
+fn resolve_required_file(
+    artifact_dir: &Path,
+    canonical: &str,
+    compat_suffix: &str,
+) -> Result<PathBuf> {
+    let canonical_path = artifact_dir.join(canonical);
+    if canonical_path.is_file() {
+        return Ok(canonical_path);
+    }
+    Ok(
+        find_unique_compat_entry(artifact_dir, compat_suffix, false)?
+            .unwrap_or_else(|| artifact_dir.join(canonical)),
+    )
+}
+
+fn resolve_optional_file(
+    artifact_dir: &Path,
+    canonical: &str,
+    compat_suffix: &str,
+) -> Result<Option<PathBuf>> {
+    let canonical_path = artifact_dir.join(canonical);
+    if canonical_path.is_file() {
+        return Ok(Some(canonical_path));
+    }
+    find_unique_compat_entry(artifact_dir, compat_suffix, false)
+}
+
+fn resolve_required_dir(
+    artifact_dir: &Path,
+    canonical: &str,
+    compat_suffix: &str,
+) -> Result<PathBuf> {
+    let canonical_path = artifact_dir.join(canonical);
+    if canonical_path.is_dir() {
+        return Ok(canonical_path);
+    }
+    Ok(find_unique_compat_entry(artifact_dir, compat_suffix, true)?
+        .unwrap_or_else(|| artifact_dir.join(canonical)))
+}
+
+fn find_unique_compat_entry(
+    artifact_dir: &Path,
+    compat_suffix: &str,
+    want_dir: bool,
+) -> Result<Option<PathBuf>> {
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(artifact_dir)
+        .with_context(|| format!("reading artifact directory '{}'", artifact_dir.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!("iterating artifact directory '{}'", artifact_dir.display())
+        })?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.ends_with(compat_suffix) {
+            continue;
+        }
+        let file_type = entry.file_type().with_context(|| {
+            format!(
+                "reading file type for artifact directory entry '{}'",
+                path.display()
+            )
+        })?;
+        let matches_type = if want_dir {
+            file_type.is_dir()
+        } else {
+            file_type.is_file()
+        };
+        if matches_type {
+            matches.push(path);
         }
     }
 
-    STAGE00_ARTIFACT_TAG.to_string()
-}
-
-fn parse_stage_artifact_tag(value: &str) -> Option<&str> {
-    let bytes = value.as_bytes();
-    if bytes.len() < 3 {
-        return None;
-    }
-    for idx in 0..=(bytes.len() - 3) {
-        if bytes[idx] == b's' && bytes[idx + 1].is_ascii_digit() && bytes[idx + 2].is_ascii_digit()
-        {
-            return value.get(idx..idx + 3);
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.into_iter().next()),
+        _ => {
+            matches.sort();
+            anyhow::bail!(
+                "ambiguous compatibility artifacts in '{}': multiple entries match suffix '{}': {}",
+                artifact_dir.display(),
+                compat_suffix,
+                matches
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     }
-    None
-}
-
-fn contract_for_stage_artifact_tag(
-    base: &distro_contract::ConformanceContract,
-    stage_artifact_tag: &str,
-) -> distro_contract::ConformanceContract {
-    let mut contract = base.clone();
-    contract.artifacts.rootfs_name =
-        rewrite_stage_artifact_name(&contract.artifacts.rootfs_name, stage_artifact_tag);
-    contract.artifacts.initramfs_live_output = rewrite_stage_artifact_name(
-        &contract.artifacts.initramfs_live_output,
-        stage_artifact_tag,
-    );
-
-    let non_kernel = &mut contract.stages.stage_00_build.non_kernel_inputs;
-    rewrite_stage_artifact_names(&mut non_kernel.required_for_00build, stage_artifact_tag);
-    rewrite_stage_artifact_names(&mut non_kernel.deferred_to_01boot, stage_artifact_tag);
-    rewrite_stage_artifact_names(&mut non_kernel.deferred_to_02livetools, stage_artifact_tag);
-    rewrite_stage_artifact_names(
-        &mut non_kernel.deferred_to_03install_plus,
-        stage_artifact_tag,
-    );
-    contract
-}
-
-fn rewrite_stage_artifact_names(values: &mut [String], stage_artifact_tag: &str) {
-    for value in values {
-        *value = rewrite_stage_artifact_name(value, stage_artifact_tag);
-    }
-}
-
-fn rewrite_stage_artifact_name(value: &str, stage_artifact_tag: &str) -> String {
-    if let Some(current_tag) = parse_stage_artifact_tag(value) {
-        if current_tag.len() == 3 && value.starts_with(current_tag) {
-            let mut rewritten = String::with_capacity(value.len());
-            rewritten.push_str(stage_artifact_tag);
-            rewritten.push_str(&value[current_tag.len()..]);
-            return rewritten;
-        }
-    }
-    format!("{stage_artifact_tag}-{value}")
 }
 
 /// Verify an ISO using distro-specific checklist.
@@ -785,4 +928,106 @@ pub fn require_preflight_with_iso_for_distro(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "install-tests-preflight-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, content).expect("write file");
+    }
+
+    #[test]
+    fn resolve_runtime_artifacts_prefers_product_native_names() {
+        let dir = temp_dir("product-native");
+        write_file(&dir.join("filesystem.erofs"), "rootfs");
+        write_file(&dir.join("initramfs-live.cpio.gz"), "initramfs");
+        write_file(&dir.join("overlayfs.erofs"), "overlay");
+        write_file(&dir.join(".live-rootfs-source.path"), "./rootfs-source\n");
+        fs::create_dir_all(dir.join("live-overlay")).expect("create live overlay");
+
+        let resolved = resolve_runtime_artifacts(&dir).expect("resolve runtime artifacts");
+        assert_eq!(resolved.rootfs_image, dir.join("filesystem.erofs"));
+        assert_eq!(resolved.initramfs_live, dir.join("initramfs-live.cpio.gz"));
+        assert_eq!(resolved.overlay_image, dir.join("overlayfs.erofs"));
+        assert_eq!(
+            resolved.rootfs_source_pointer,
+            dir.join(".live-rootfs-source.path")
+        );
+        assert_eq!(resolved.live_overlay_dir, dir.join("live-overlay"));
+
+        fs::remove_dir_all(dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn resolve_runtime_artifacts_falls_back_to_compatibility_names() {
+        let dir = temp_dir("compat-layout");
+        write_file(&dir.join("s01-filesystem.erofs"), "rootfs");
+        write_file(&dir.join("s01-initramfs-live.cpio.gz"), "initramfs");
+        write_file(&dir.join("s01-overlayfs.erofs"), "overlay");
+        write_file(
+            &dir.join(".s01-live-rootfs-source.path"),
+            "./s01-rootfs-source\n",
+        );
+        fs::create_dir_all(dir.join("s01-live-overlay")).expect("create compat live overlay");
+
+        let resolved = resolve_runtime_artifacts(&dir).expect("resolve runtime artifacts");
+        assert_eq!(resolved.rootfs_image, dir.join("s01-filesystem.erofs"));
+        assert_eq!(
+            resolved.initramfs_live,
+            dir.join("s01-initramfs-live.cpio.gz")
+        );
+        assert_eq!(resolved.overlay_image, dir.join("s01-overlayfs.erofs"));
+        assert_eq!(
+            resolved.rootfs_source_pointer,
+            dir.join(".s01-live-rootfs-source.path")
+        );
+        assert_eq!(resolved.live_overlay_dir, dir.join("s01-live-overlay"));
+
+        fs::remove_dir_all(dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn live_boot_runtime_scope_uses_release_product_metadata() {
+        let dir = temp_dir("scope");
+        let manifest = StageRunManifest {
+            status: "success".to_string(),
+            created_at_utc: "20260313T120000Z".to_string(),
+            finished_at_utc: Some("20260313T120100Z".to_string()),
+            iso_path: Some(dir.join("levitate.iso").display().to_string()),
+            target_kind: Some("release-product".to_string()),
+            target_name: Some("live-boot".to_string()),
+            compatibility_stage_slug: Some("s01_boot".to_string()),
+        };
+        assert!(should_validate_live_boot_runtime(&dir, Some(&manifest)));
+
+        let base_manifest = StageRunManifest {
+            target_name: Some("base-rootfs".to_string()),
+            ..manifest
+        };
+        assert!(!should_validate_live_boot_runtime(
+            &dir,
+            Some(&base_manifest)
+        ));
+
+        fs::remove_dir_all(dir).expect("cleanup temp dir");
+    }
 }
