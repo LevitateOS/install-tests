@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
-use install_tests::scenarios::{self, compat};
+use install_tests::scenarios;
 
 #[derive(Parser)]
 #[command(name = "scenarios")]
@@ -23,17 +23,9 @@ struct Cli {
     #[arg(long)]
     distro: String,
 
-    /// Compatibility alias for older stage-number workflows (0-6).
-    #[arg(long, hide = true)]
-    stage: Option<u32>,
-
     /// Run a specific canonical scenario.
     #[arg(long, value_name = "NAME")]
     scenario: Option<String>,
-
-    /// Compatibility alias for older stage-number workflows (0-6).
-    #[arg(long, hide = true)]
-    up_to: Option<u32>,
 
     /// Run all scenarios up to the named canonical scenario.
     #[arg(long = "up-to-scenario", value_name = "NAME")]
@@ -63,10 +55,7 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     apply_boot_injection_env(&cli)?;
-    let requires_guard = cli.stage.is_some()
-        || cli.scenario.is_some()
-        || cli.up_to.is_some()
-        || cli.up_to_scenario.is_some();
+    let requires_guard = cli.scenario.is_some() || cli.up_to_scenario.is_some();
     if requires_guard {
         install_tests::enforce_policy_guard("install-tests scenarios")?;
     }
@@ -79,8 +68,8 @@ fn main() -> Result<()> {
         return scenarios::print_status(&cli.distro);
     }
 
-    if cli.force && cli.stage.is_none() && cli.scenario.is_none() {
-        bail!("--force requires --scenario NAME or a hidden compatibility alias");
+    if cli.force && cli.scenario.is_none() {
+        bail!("--force requires --scenario NAME");
     }
 
     if let Some(scenario_name) = cli.scenario.as_deref() {
@@ -93,32 +82,9 @@ fn main() -> Result<()> {
         std::process::exit(if passed { 0 } else { 1 });
     }
 
-    if let Some(stage_n) = cli.stage {
-        if !(0..=6).contains(&stage_n) {
-            bail!("compatibility stage alias must be 0-6, got {}", stage_n);
-        }
-        let passed = if cli.force {
-            compat::run_stage_forced(&cli.distro, stage_n)?
-        } else {
-            compat::run_stage(&cli.distro, stage_n)?
-        };
-        std::process::exit(if passed { 0 } else { 1 });
-    }
-
     if let Some(target) = cli.up_to_scenario.as_deref() {
         let scenario = scenarios::parse_scenario_name(target)?;
         let passed = scenarios::run_up_to_scenario(&cli.distro, scenario)?;
-        std::process::exit(if passed { 0 } else { 1 });
-    }
-
-    if let Some(target) = cli.up_to {
-        if !(0..=6).contains(&target) {
-            bail!(
-                "--up-to compatibility stage alias must be 0-6, got {}",
-                target
-            );
-        }
-        let passed = compat::run_up_to_stage(&cli.distro, target)?;
         std::process::exit(if passed { 0 } else { 1 });
     }
 

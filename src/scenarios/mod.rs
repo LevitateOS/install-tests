@@ -13,7 +13,6 @@
 //! - `automated-login` — harness can login and run commands
 //! - `runtime` — expected installed-system tools are present
 
-pub mod compat;
 pub mod state;
 
 use crate::distro::{context_for_distro, DistroContext};
@@ -22,7 +21,7 @@ use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use distro_contract::RootfsMutability;
+use distro_contract::{load_variant_contract_bundle_for_distro_from, RootfsMutability};
 use recshuttle::{InstallLayout, InstallPlanSpec, RemoteInstallerService, SshExecOutput};
 use serde::{Deserialize, Serialize};
 use state::ScenarioState;
@@ -33,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const LIVE_BOOT_VALIDATION_SCRIPT: &str = "/usr/local/bin/live-boot.sh";
 const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/live-boot-ssh-preflight.sh";
-const STAGE_RUNTIME_RETENTION_COUNT: usize = 5;
+const SCENARIO_RUNTIME_RETENTION_COUNT: usize = 5;
 const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
 const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
 
@@ -195,7 +194,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
 
     if force {
         state.results.retain(|key, _| {
-            compat::parse_scenario_target(key)
+            ScenarioId::parse_key(key)
                 .map(|existing| existing.ordinal() < scenario.ordinal())
                 .unwrap_or(false)
         });
@@ -365,9 +364,7 @@ pub fn reset_state(distro_id: &str) -> Result<()> {
     let canonical_distro_id = context_for_distro(distro_id)
         .map(|ctx| ctx.id().to_string())
         .unwrap_or_else(|| distro_id.to_string());
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.stages")
-        .join(format!("{}.json", canonical_distro_id));
+    let path = state::state_path(&canonical_distro_id);
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
@@ -385,7 +382,7 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Stage implementations
+// Scenario implementations
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Live Boot scenario — ISO boots in QEMU.
@@ -1157,15 +1154,6 @@ impl ScenarioRun {
         source_install_run_id: Option<String>,
     ) -> Result<Self> {
         let scenario_root_dir = scenario_runtime_root_dir(distro_id, scenario);
-        let legacy_current_dir = scenario_root_dir.join("current");
-        if legacy_current_dir.is_dir() {
-            fs::remove_dir_all(&legacy_current_dir).with_context(|| {
-                format!(
-                    "removing legacy scenario shortcut directory '{}'",
-                    legacy_current_dir.display()
-                )
-            })?;
-        }
         let (run_id, output_dir) =
             distro_builder::run_history::allocate_run_dir(&scenario_root_dir)?;
         let run = Self {
@@ -1197,7 +1185,7 @@ impl ScenarioRun {
         )?;
         distro_builder::run_history::prune_old_runs(
             &self.scenario_root_dir,
-            STAGE_RUNTIME_RETENTION_COUNT,
+            SCENARIO_RUNTIME_RETENTION_COUNT,
         )
     }
 
@@ -1381,14 +1369,15 @@ fn verify_live_overlay_behavior(console: &mut Console) -> Result<String> {
 }
 
 fn install_layout_for_distro(distro_id: &str) -> Result<InstallLayout> {
-    let contract = distro_spec::conformance::contract_for_distro(distro_id).ok_or_else(|| {
-        anyhow::anyhow!(
-            "missing conformance contract for distro '{}'; add it in distro-spec::conformance::contract_for_distro",
-            distro_id
-        )
-    })?;
+    let bundle = load_variant_contract_bundle_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
 
-    match contract.stages.stage_07_runtime_policy.rootfs_mutability {
+    match bundle
+        .contract
+        .stages
+        .stage_07_runtime_policy
+        .rootfs_mutability
+    {
         RootfsMutability::Mutable => Ok(InstallLayout::MutableSingleRoot),
         RootfsMutability::Immutable => Ok(InstallLayout::ImmutableAb),
     }

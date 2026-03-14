@@ -54,12 +54,6 @@ struct ResolvedRuntimeArtifacts {
     rootfs_source_pointer: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ArtifactLayout {
-    CanonicalOnly,
-    CompatibilityFallback,
-}
-
 /// Result of preflight verification
 #[derive(Debug)]
 pub struct PreflightResult {
@@ -145,12 +139,7 @@ pub fn run_preflight_with_iso_distro(
     iso_filename: Option<&str>,
     distro_id: &str,
 ) -> Result<PreflightResult> {
-    run_preflight_with_iso_distro_layout(
-        iso_dir,
-        iso_filename,
-        distro_id,
-        ArtifactLayout::CanonicalOnly,
-    )
+    run_preflight_with_iso_distro_layout(iso_dir, iso_filename, distro_id)
 }
 
 fn verify_conformance_contract(
@@ -443,81 +432,27 @@ fn resolve_runtime_artifacts(
     artifact_dir: &Path,
     distro_id: &str,
 ) -> Result<ResolvedRuntimeArtifacts> {
-    resolve_runtime_artifacts_for_layout(artifact_dir, distro_id, ArtifactLayout::CanonicalOnly)
-}
-
-#[allow(dead_code)]
-pub fn run_preflight_with_compatibility_layout_distro(
-    iso_dir: &Path,
-    iso_filename: Option<&str>,
-    distro_id: &str,
-) -> Result<PreflightResult> {
-    run_preflight_with_iso_distro_layout(
-        iso_dir,
-        iso_filename,
-        distro_id,
-        ArtifactLayout::CompatibilityFallback,
-    )
-}
-
-#[allow(dead_code)]
-pub fn require_preflight_with_compatibility_layout_for_distro(
-    iso_dir: &Path,
-    iso_filename: Option<&str>,
-    distro_id: &str,
-) -> Result<()> {
-    let result = run_preflight_with_compatibility_layout_distro(iso_dir, iso_filename, distro_id)?;
-    if result.overall_pass {
-        return Ok(());
-    }
-
-    let mut all_failures = Vec::new();
-    if let Some(ref check) = result.conformance {
-        if !check.passed {
-            all_failures.extend(check.details.iter().cloned());
-        }
-    }
-    if let Some(ref check) = result.live_initramfs {
-        if !check.passed {
-            all_failures.extend(check.details.iter().cloned());
-        }
-    }
-    if let Some(ref check) = result.install_initramfs {
-        if !check.passed {
-            all_failures.extend(check.details.iter().cloned());
-        }
-    }
-    if let Some(ref check) = result.iso {
-        if !check.passed {
-            all_failures.extend(check.details.iter().cloned());
-        }
-    }
-
-    cheat_bail!(
-        protects = "Installation tests verify REAL artifacts, not broken/incomplete ones",
-        severity = "CRITICAL",
-        cheats = [
-            "Skip preflight verification entirely",
-            "Mark missing items as optional",
-            "Remove items from required lists",
-            "Return Ok() when overall_pass is false",
-            "Lower severity of check failures"
-        ],
-        consequence = "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
-        "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
-         Failures:\n{}\n\n\
-         Run 'cargo run -p distro-builder --bin distro-builder -- release build iso {} base-rootfs' to rebuild the ISO.\n\
-         ALL verification checks must pass before running tests.",
-        all_failures.join("\n"),
-        distro_id
-    );
+    let canonical_names = canonical_runtime_artifact_names_for_distro(distro_id)?;
+    Ok(ResolvedRuntimeArtifacts {
+        rootfs_image: resolve_required_file(artifact_dir, &canonical_names.rootfs_image)?,
+        initramfs_live: resolve_required_file(artifact_dir, &canonical_names.initramfs_live)?,
+        initramfs_installed: resolve_optional_file(
+            artifact_dir,
+            canonical_names
+                .initramfs_installed
+                .as_deref()
+                .unwrap_or("initramfs-installed.img"),
+        )?,
+        overlay_image: resolve_required_file(artifact_dir, &canonical_names.overlay_image)?,
+        live_overlay_dir: resolve_required_dir(artifact_dir, "live-overlay")?,
+        rootfs_source_pointer: resolve_required_file(artifact_dir, ".live-rootfs-source.path")?,
+    })
 }
 
 fn run_preflight_with_iso_distro_layout(
     iso_dir: &Path,
     iso_filename: Option<&str>,
     distro_id: &str,
-    artifact_layout: ArtifactLayout,
 ) -> Result<PreflightResult> {
     println!();
     println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
@@ -539,14 +474,7 @@ fn run_preflight_with_iso_distro_layout(
         .filter(|path| path.is_file())
         .or_else(|| find_iso_file(iso_dir));
     let run_manifest = load_run_manifest(iso_dir)?;
-    let runtime_artifacts = match artifact_layout {
-        ArtifactLayout::CanonicalOnly => resolve_runtime_artifacts(iso_dir, distro_id)?,
-        ArtifactLayout::CompatibilityFallback => resolve_runtime_artifacts_for_layout(
-            iso_dir,
-            distro_id,
-            ArtifactLayout::CompatibilityFallback,
-        )?,
-    };
+    let runtime_artifacts = resolve_runtime_artifacts(iso_dir, distro_id)?;
     let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
 
     result.conformance = Some(verify_conformance_contract(
@@ -634,55 +562,6 @@ fn run_preflight_with_iso_distro_layout(
     Ok(result)
 }
 
-fn resolve_runtime_artifacts_for_layout(
-    artifact_dir: &Path,
-    distro_id: &str,
-    artifact_layout: ArtifactLayout,
-) -> Result<ResolvedRuntimeArtifacts> {
-    let canonical_names = canonical_runtime_artifact_names_for_distro(distro_id)?;
-    Ok(ResolvedRuntimeArtifacts {
-        rootfs_image: resolve_required_file(
-            artifact_dir,
-            &canonical_names.rootfs_image,
-            "-filesystem.erofs",
-            artifact_layout,
-        )?,
-        initramfs_live: resolve_required_file(
-            artifact_dir,
-            &canonical_names.initramfs_live,
-            "-initramfs-live.cpio.gz",
-            artifact_layout,
-        )?,
-        initramfs_installed: resolve_optional_file(
-            artifact_dir,
-            canonical_names
-                .initramfs_installed
-                .as_deref()
-                .unwrap_or("initramfs-installed.img"),
-            "-initramfs-installed.img",
-            artifact_layout,
-        )?,
-        overlay_image: resolve_required_file(
-            artifact_dir,
-            &canonical_names.overlay_image,
-            "-overlayfs.erofs",
-            artifact_layout,
-        )?,
-        live_overlay_dir: resolve_required_dir(
-            artifact_dir,
-            "live-overlay",
-            "-live-overlay",
-            artifact_layout,
-        )?,
-        rootfs_source_pointer: resolve_required_file(
-            artifact_dir,
-            ".live-rootfs-source.path",
-            "-live-rootfs-source.path",
-            artifact_layout,
-        )?,
-    })
-}
-
 struct CanonicalRuntimeArtifactNames {
     rootfs_image: String,
     initramfs_live: String,
@@ -750,111 +629,28 @@ fn optional_transform_output_name(
     )?))
 }
 
-fn resolve_required_file(
-    artifact_dir: &Path,
-    canonical: &str,
-    compat_suffix: &str,
-    artifact_layout: ArtifactLayout,
-) -> Result<PathBuf> {
+fn resolve_required_file(artifact_dir: &Path, canonical: &str) -> Result<PathBuf> {
     let canonical_path = artifact_dir.join(canonical);
     if canonical_path.is_file() {
         return Ok(canonical_path);
     }
-    if artifact_layout == ArtifactLayout::CompatibilityFallback {
-        return Ok(
-            find_unique_compat_entry(artifact_dir, compat_suffix, false)?
-                .unwrap_or_else(|| artifact_dir.join(canonical)),
-        );
-    }
     Ok(artifact_dir.join(canonical))
 }
 
-fn resolve_optional_file(
-    artifact_dir: &Path,
-    canonical: &str,
-    compat_suffix: &str,
-    artifact_layout: ArtifactLayout,
-) -> Result<Option<PathBuf>> {
+fn resolve_optional_file(artifact_dir: &Path, canonical: &str) -> Result<Option<PathBuf>> {
     let canonical_path = artifact_dir.join(canonical);
     if canonical_path.is_file() {
         return Ok(Some(canonical_path));
     }
-    if artifact_layout == ArtifactLayout::CompatibilityFallback {
-        return find_unique_compat_entry(artifact_dir, compat_suffix, false);
-    }
     Ok(None)
 }
 
-fn resolve_required_dir(
-    artifact_dir: &Path,
-    canonical: &str,
-    compat_suffix: &str,
-    artifact_layout: ArtifactLayout,
-) -> Result<PathBuf> {
+fn resolve_required_dir(artifact_dir: &Path, canonical: &str) -> Result<PathBuf> {
     let canonical_path = artifact_dir.join(canonical);
     if canonical_path.is_dir() {
         return Ok(canonical_path);
     }
-    if artifact_layout == ArtifactLayout::CompatibilityFallback {
-        return Ok(find_unique_compat_entry(artifact_dir, compat_suffix, true)?
-            .unwrap_or_else(|| artifact_dir.join(canonical)));
-    }
     Ok(artifact_dir.join(canonical))
-}
-
-fn find_unique_compat_entry(
-    artifact_dir: &Path,
-    compat_suffix: &str,
-    want_dir: bool,
-) -> Result<Option<PathBuf>> {
-    let mut matches = Vec::new();
-    for entry in fs::read_dir(artifact_dir)
-        .with_context(|| format!("reading artifact directory '{}'", artifact_dir.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!("iterating artifact directory '{}'", artifact_dir.display())
-        })?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
-        if !name.ends_with(compat_suffix) {
-            continue;
-        }
-        let file_type = entry.file_type().with_context(|| {
-            format!(
-                "reading file type for artifact directory entry '{}'",
-                path.display()
-            )
-        })?;
-        let matches_type = if want_dir {
-            file_type.is_dir()
-        } else {
-            file_type.is_file()
-        };
-        if matches_type {
-            matches.push(path);
-        }
-    }
-
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(matches.into_iter().next()),
-        _ => {
-            matches.sort();
-            anyhow::bail!(
-                "ambiguous compatibility artifacts in '{}': multiple entries match suffix '{}': {}",
-                artifact_dir.display(),
-                compat_suffix,
-                matches
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
-    }
 }
 
 /// Verify an ISO using distro-specific checklist.
@@ -1173,55 +969,6 @@ mod tests {
             dir.join(".live-rootfs-source.path")
         );
         assert_eq!(resolved.live_overlay_dir, dir.join("live-overlay"));
-
-        fs::remove_dir_all(dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn resolve_runtime_artifacts_falls_back_to_compatibility_names() {
-        let dir = temp_dir("compat-layout");
-        write_file(&dir.join("s01-filesystem.erofs"), "rootfs");
-        write_file(&dir.join("s01-initramfs-live.cpio.gz"), "initramfs");
-        write_file(&dir.join("s01-overlayfs.erofs"), "overlay");
-        write_file(
-            &dir.join(".s01-live-rootfs-source.path"),
-            "./s01-rootfs-source\n",
-        );
-        fs::create_dir_all(dir.join("s01-live-overlay")).expect("create compat live overlay");
-
-        let canonical = resolve_runtime_artifacts(&dir, "levitate")
-            .expect("resolve canonical runtime artifacts");
-        assert_eq!(canonical.rootfs_image, dir.join("s00-filesystem.erofs"));
-        assert_eq!(
-            canonical.initramfs_live,
-            dir.join("s00-initramfs-live.cpio.gz")
-        );
-        assert_eq!(canonical.initramfs_installed, None);
-        assert_eq!(canonical.overlay_image, dir.join("s00-overlayfs.erofs"));
-        assert_eq!(
-            canonical.rootfs_source_pointer,
-            dir.join(".live-rootfs-source.path")
-        );
-        assert_eq!(canonical.live_overlay_dir, dir.join("live-overlay"));
-
-        let resolved = resolve_runtime_artifacts_for_layout(
-            &dir,
-            "levitate",
-            ArtifactLayout::CompatibilityFallback,
-        )
-        .expect("resolve compatibility runtime artifacts");
-        assert_eq!(resolved.rootfs_image, dir.join("s01-filesystem.erofs"));
-        assert_eq!(
-            resolved.initramfs_live,
-            dir.join("s01-initramfs-live.cpio.gz")
-        );
-        assert_eq!(resolved.initramfs_installed, None);
-        assert_eq!(resolved.overlay_image, dir.join("s01-overlayfs.erofs"));
-        assert_eq!(
-            resolved.rootfs_source_pointer,
-            dir.join(".s01-live-rootfs-source.path")
-        );
-        assert_eq!(resolved.live_overlay_dir, dir.join("s01-live-overlay"));
 
         fs::remove_dir_all(dir).expect("cleanup temp dir");
     }
