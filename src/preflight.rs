@@ -378,12 +378,8 @@ fn resolve_latest_successful_run_dir(
     for entry in fs::read_dir(run_root)
         .with_context(|| format!("reading run output directory '{}'", run_root.display()))?
     {
-        let entry = entry.with_context(|| {
-            format!(
-                "iterating run output directory '{}'",
-                run_root.display()
-            )
-        })?;
+        let entry = entry
+            .with_context(|| format!("iterating run output directory '{}'", run_root.display()))?;
         let run_dir = entry.path();
         if !run_dir.is_dir() {
             continue;
