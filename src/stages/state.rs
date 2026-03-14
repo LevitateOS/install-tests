@@ -4,7 +4,7 @@
 //! fingerprint invalidation. Legacy stage-numbered state files continue to
 //! load and are normalized into scenario identities on read.
 
-use super::ScenarioId;
+use super::{compat, ScenarioId};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -77,7 +77,7 @@ impl ScenarioState {
         self.input_fingerprints
             .insert(scenario.key().to_string(), fingerprint.to_string());
         self.results.retain(|key, _| {
-            ScenarioId::parse_alias(key)
+            compat::parse_scenario_target(key)
                 .map(|existing| existing.ordinal() < scenario.ordinal())
                 .unwrap_or(false)
         });
@@ -107,7 +107,7 @@ impl ScenarioState {
     /// Returns true if state contains any result at or above `scenario`.
     pub fn has_any_results_from(&self, scenario: ScenarioId) -> bool {
         self.results.keys().any(|key| {
-            ScenarioId::parse_alias(key)
+            compat::parse_scenario_target(key)
                 .map(|existing| existing.ordinal() >= scenario.ordinal())
                 .unwrap_or(false)
         })
@@ -138,7 +138,7 @@ impl ScenarioState {
 
         let mut normalized = HashMap::new();
         for (key, value) in std::mem::take(&mut self.results) {
-            if let Some(scenario) = ScenarioId::parse_alias(&key) {
+            if let Some(scenario) = compat::parse_scenario_target(&key) {
                 normalized.insert(scenario.key().to_string(), value);
             }
         }

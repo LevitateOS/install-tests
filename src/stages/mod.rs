@@ -13,6 +13,7 @@
 //! 05. **05Harness** — Harness can login and run commands
 //! 06. **06Runtime** — Expected installed-system tools are present
 
+pub mod compat;
 pub mod state;
 
 use crate::distro::{context_for_distro, DistroContext};
@@ -87,46 +88,6 @@ impl ScenarioId {
         }
     }
 
-    pub fn compatibility_stage_name(self) -> &'static str {
-        match self {
-            Self::BuildPreflight => "00Build",
-            Self::LiveBoot => "01Boot",
-            Self::LiveTools => "02LiveTools",
-            Self::Install => "03Install",
-            Self::InstalledBoot => "04LoginGate",
-            Self::AutomatedLogin => "05Harness",
-            Self::Runtime => "06Runtime",
-        }
-    }
-
-    pub fn compatibility_stage_slug(self) -> &'static str {
-        match self {
-            Self::BuildPreflight => "s00_build",
-            Self::LiveBoot => "s01_boot",
-            Self::LiveTools => "s02_live_tools",
-            Self::Install => "s03_install",
-            Self::InstalledBoot => "s04_login_gate",
-            Self::AutomatedLogin => "s05_harness",
-            Self::Runtime => "s06_runtime",
-        }
-    }
-
-    pub fn compatibility_stage_dirname(self) -> &'static str {
-        match self {
-            Self::BuildPreflight => "s00-build",
-            Self::LiveBoot => "s01-boot",
-            Self::LiveTools => "s02-live-tools",
-            Self::Install => "s03-install",
-            Self::InstalledBoot => "s04-login-gate",
-            Self::AutomatedLogin => "s05-harness",
-            Self::Runtime => "s06-runtime",
-        }
-    }
-
-    pub fn compatibility_stage_number(self) -> u32 {
-        self.ordinal() as u32
-    }
-
     pub fn ordinal(self) -> usize {
         match self {
             Self::BuildPreflight => 0,
@@ -139,37 +100,16 @@ impl ScenarioId {
         }
     }
 
-    pub fn from_stage_number(stage: u32) -> Result<Self> {
-        match stage {
-            0 => Ok(Self::BuildPreflight),
-            1 => Ok(Self::LiveBoot),
-            2 => Ok(Self::LiveTools),
-            3 => Ok(Self::Install),
-            4 => Ok(Self::InstalledBoot),
-            5 => Ok(Self::AutomatedLogin),
-            6 => Ok(Self::Runtime),
-            _ => bail!("Invalid stage number: {} (valid aliases: 00-06)", stage),
-        }
-    }
-
-    pub fn parse_alias(value: &str) -> Option<Self> {
+    pub fn parse_key(value: &str) -> Option<Self> {
         let trimmed = value.trim();
         match trimmed {
-            "build-preflight" | "build_preflight" | "00Build" | "s00_build" | "0" | "00" => {
-                Some(Self::BuildPreflight)
-            }
-            "live-boot" | "live_boot" | "01Boot" | "s01_boot" | "1" | "01" => Some(Self::LiveBoot),
-            "live-tools" | "live_tools" | "02LiveTools" | "s02_live_tools" | "2" | "02" => {
-                Some(Self::LiveTools)
-            }
-            "install" | "03Install" | "s03_install" | "3" | "03" => Some(Self::Install),
-            "installed-boot" | "installed_boot" | "04LoginGate" | "s04_login_gate" | "4" | "04" => {
-                Some(Self::InstalledBoot)
-            }
-            "automated-login" | "automated_login" | "05Harness" | "s05_harness" | "5" | "05" => {
-                Some(Self::AutomatedLogin)
-            }
-            "runtime" | "06Runtime" | "s06_runtime" | "6" | "06" => Some(Self::Runtime),
+            "build-preflight" | "build_preflight" => Some(Self::BuildPreflight),
+            "live-boot" | "live_boot" => Some(Self::LiveBoot),
+            "live-tools" | "live_tools" => Some(Self::LiveTools),
+            "install" => Some(Self::Install),
+            "installed-boot" | "installed_boot" => Some(Self::InstalledBoot),
+            "automated-login" | "automated_login" => Some(Self::AutomatedLogin),
+            "runtime" => Some(Self::Runtime),
             _ => None,
         }
     }
@@ -221,16 +161,6 @@ pub fn run_scenario_forced(distro_id: &str, scenario: ScenarioId) -> Result<bool
     run_scenario_impl(distro_id, scenario, true)
 }
 
-/// Run a single compatibility stage alias for a distro.
-pub fn run_stage(distro_id: &str, stage: u32) -> Result<bool> {
-    run_scenario(distro_id, ScenarioId::from_stage_number(stage)?)
-}
-
-/// Run a single compatibility stage alias for a distro, forcing rerun.
-pub fn run_stage_forced(distro_id: &str, stage: u32) -> Result<bool> {
-    run_scenario_forced(distro_id, ScenarioId::from_stage_number(stage)?)
-}
-
 fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Result<bool> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
@@ -265,7 +195,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
 
     if force {
         state.results.retain(|key, _| {
-            ScenarioId::parse_alias(key)
+            compat::parse_scenario_target(key)
                 .map(|existing| existing.ordinal() < scenario.ordinal())
                 .unwrap_or(false)
         });
@@ -303,12 +233,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
         return Ok(true);
     }
 
-    println!(
-        "{} {} ({})",
-        ">>".cyan(),
-        scenario.display_name(),
-        scenario.compatibility_stage_name()
-    );
+    println!("{} {}", ">>".cyan(), scenario.display_name(),);
 
     let result = match scenario {
         ScenarioId::BuildPreflight => {
@@ -374,11 +299,6 @@ pub fn run_up_to_scenario(distro_id: &str, target: ScenarioId) -> Result<bool> {
     Ok(true)
 }
 
-/// Run all compatibility stage aliases up to `target` (inclusive).
-pub fn run_up_to(distro_id: &str, target: u32) -> Result<bool> {
-    run_up_to_scenario(distro_id, ScenarioId::from_stage_number(target)?)
-}
-
 /// Print scenario status for a distro.
 pub fn print_status(distro_id: &str) -> Result<()> {
     let ctx = context_for_distro(distro_id)
@@ -422,11 +342,10 @@ pub fn print_status(distro_id: &str) -> Result<()> {
             "[    ]".dimmed()
         };
         println!(
-            "  {} {:02} / {:<15} {}",
+            "  {} {:<15} {}",
             status,
-            scenario.compatibility_stage_number(),
             scenario.key(),
-            scenario.compatibility_stage_name()
+            scenario.display_name()
         );
     }
     println!();
@@ -456,10 +375,10 @@ pub fn reset_state(distro_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn parse_scenario_arg(value: &str) -> Result<ScenarioId> {
-    ScenarioId::parse_alias(value).ok_or_else(|| {
+pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
+    ScenarioId::parse_key(value).ok_or_else(|| {
         anyhow::anyhow!(
-            "unsupported scenario '{}'; expected one of: build-preflight, live-boot, live-tools, install, installed-boot, automated-login, runtime; compatibility aliases: 00Build|01Boot|02LiveTools|03Install|04LoginGate|05Harness|06Runtime|0|00|1|01|2|02|3|03|4|04|5|05|6|06",
+            "unsupported scenario '{}'; expected one of: build-preflight, live-boot, live-tools, install, installed-boot, automated-login, runtime",
             value
         )
     })
@@ -1211,8 +1130,6 @@ struct ScenarioRunManifest {
     run_id: String,
     distro_id: String,
     scenario_name: String,
-    compatibility_stage_name: String,
-    compatibility_stage_slug: String,
     status: String,
     created_at_utc: String,
     finished_at_utc: Option<String>,
@@ -1313,8 +1230,6 @@ impl ScenarioRun {
             run_id: self.run_id.clone(),
             distro_id: self.distro_id.clone(),
             scenario_name: self.scenario.key().to_string(),
-            compatibility_stage_name: self.scenario.compatibility_stage_name().to_string(),
-            compatibility_stage_slug: self.scenario.compatibility_stage_slug().to_string(),
             status: status.to_string(),
             created_at_utc: self.created_at_utc.clone(),
             finished_at_utc,
@@ -1556,7 +1471,7 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
         "{} {} FAILED: {}",
         "[FAIL]".red().bold(),
         scenario.display_name(),
-        scenario.compatibility_stage_name()
+        scenario.key()
     );
     eprintln!();
     eprintln!("  Error: {:#}", err);

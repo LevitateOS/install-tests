@@ -35,14 +35,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
-struct StageRunManifest {
+struct RunManifest {
     status: String,
     created_at_utc: String,
     finished_at_utc: Option<String>,
     iso_path: Option<String>,
     target_kind: Option<String>,
     target_name: Option<String>,
-    compatibility_stage_slug: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +52,12 @@ struct ResolvedRuntimeArtifacts {
     overlay_image: PathBuf,
     live_overlay_dir: PathBuf,
     rootfs_source_pointer: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactLayout {
+    CanonicalOnly,
+    CompatibilityFallback,
 }
 
 /// Result of preflight verification
@@ -140,115 +145,12 @@ pub fn run_preflight_with_iso_distro(
     iso_filename: Option<&str>,
     distro_id: &str,
 ) -> Result<PreflightResult> {
-    println!();
-    println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
-    println!(
-        "Verifying contract + ISO artifacts for {} before starting QEMU...",
-        distro_id
-    );
-    println!();
-
-    let mut result = PreflightResult {
-        conformance: None,
-        live_initramfs: None,
-        install_initramfs: None,
-        iso: None,
-        overall_pass: true,
-    };
-    let resolved_iso_path = iso_filename
-        .map(|filename| iso_dir.join(filename))
-        .filter(|path| path.is_file())
-        .or_else(|| find_iso_file(iso_dir));
-    let run_manifest = load_run_manifest(iso_dir)?;
-    let runtime_artifacts = resolve_runtime_artifacts(iso_dir)?;
-    let validate_live_boot = should_validate_live_boot_runtime(iso_dir, run_manifest.as_ref());
-
-    result.conformance = Some(verify_conformance_contract(
+    run_preflight_with_iso_distro_layout(
         iso_dir,
         iso_filename,
         distro_id,
-        &runtime_artifacts,
-        validate_live_boot,
-        resolved_iso_path.as_deref(),
-    )?);
-    if !result.conformance.as_ref().unwrap().passed {
-        result.overall_pass = false;
-    }
-
-    // Check live initramfs
-    let live_path = runtime_artifacts.initramfs_live.clone();
-    if live_path.exists() {
-        result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
-        if !result.live_initramfs.as_ref().unwrap().passed {
-            result.overall_pass = false;
-        }
-    } else {
-        println!(
-            "  {} Live initramfs not found at {}",
-            "SKIP".yellow(),
-            live_path.display()
-        );
-    }
-
-    // Check install initramfs (only LevitateOS builds this)
-    if distro_id == "levitate" {
-        if let Some(install_path) = runtime_artifacts.initramfs_installed.as_ref() {
-            if install_path.exists() {
-                result.install_initramfs = Some(verify_artifact(
-                    install_path,
-                    ChecklistType::InstallInitramfs,
-                )?);
-                if !result.install_initramfs.as_ref().unwrap().passed {
-                    result.overall_pass = false;
-                }
-            } else {
-                println!(
-                    "  {} Install initramfs not found at {}",
-                    "SKIP".yellow(),
-                    install_path.display()
-                );
-            }
-        } else {
-            println!(
-                "  {} Install initramfs not found at {}",
-                "SKIP".yellow(),
-                iso_dir.join("initramfs-installed.img").display()
-            );
-        }
-    }
-
-    // Check ISO with full content verification
-    // Support multi-distro by trying specified filename first, then searching
-    let iso_path = if let Some(path) = resolved_iso_path {
-        path
-    } else {
-        println!(
-            "  {} No .iso file found in {}",
-            "✗".red(),
-            iso_dir.display()
-        );
-        result.overall_pass = false;
-        println!();
-        print_summary(&result);
-        return Ok(result);
-    };
-
-    if iso_path.exists() {
-        result.iso = Some(verify_iso_distro(&iso_path, distro_id)?);
-        if !result.iso.as_ref().unwrap().passed {
-            result.overall_pass = false;
-        }
-    } else {
-        println!("  {} ISO not found at {}", "✗".red(), iso_path.display());
-        result.overall_pass = false;
-    }
-
-    println!();
-
-    // Print summary
-    print_summary(&result);
-
-    Ok(result)
+        ArtifactLayout::CanonicalOnly,
+    )
 }
 
 fn verify_conformance_contract(
@@ -487,7 +389,7 @@ fn resolve_latest_successful_stage_run_dir(
         }
         let raw = fs::read(&manifest_path)
             .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
-        let manifest: StageRunManifest = serde_json::from_slice(&raw)
+        let manifest: RunManifest = serde_json::from_slice(&raw)
             .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
         if manifest.status != "success" {
             continue;
@@ -513,60 +415,255 @@ fn resolve_latest_successful_stage_run_dir(
     Ok(candidates.into_iter().next().map(|(_, run_dir)| run_dir))
 }
 
-fn load_run_manifest(run_dir: &Path) -> Result<Option<StageRunManifest>> {
+fn load_run_manifest(run_dir: &Path) -> Result<Option<RunManifest>> {
     let manifest_path = run_dir.join("run-manifest.json");
     if !manifest_path.is_file() {
         return Ok(None);
     }
     let raw = fs::read(&manifest_path)
         .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
-    let manifest: StageRunManifest = serde_json::from_slice(&raw)
+    let manifest: RunManifest = serde_json::from_slice(&raw)
         .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
     Ok(Some(manifest))
 }
 
-fn should_validate_live_boot_runtime(
-    iso_dir: &Path,
-    run_manifest: Option<&StageRunManifest>,
-) -> bool {
+fn should_validate_live_boot_runtime(run_manifest: Option<&RunManifest>) -> bool {
     if let Some(manifest) = run_manifest {
-        if manifest.target_kind.as_deref() == Some("release-product") {
-            return matches!(
+        return manifest.target_kind.as_deref() == Some("release-product")
+            && matches!(
                 manifest.target_name.as_deref(),
                 Some("live-boot") | Some("live-tools")
             );
-        }
-        if matches!(
-            manifest.compatibility_stage_slug.as_deref(),
-            Some("s01_boot") | Some("s02_live_tools")
-        ) {
-            return true;
-        }
     }
-
-    let _ = iso_dir;
     false
 }
 
 fn resolve_runtime_artifacts(artifact_dir: &Path) -> Result<ResolvedRuntimeArtifacts> {
+    resolve_runtime_artifacts_for_layout(artifact_dir, ArtifactLayout::CanonicalOnly)
+}
+
+#[allow(dead_code)]
+pub fn run_preflight_with_compatibility_layout_distro(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+    distro_id: &str,
+) -> Result<PreflightResult> {
+    run_preflight_with_iso_distro_layout(
+        iso_dir,
+        iso_filename,
+        distro_id,
+        ArtifactLayout::CompatibilityFallback,
+    )
+}
+
+#[allow(dead_code)]
+pub fn require_preflight_with_compatibility_layout_for_distro(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+    distro_id: &str,
+) -> Result<()> {
+    let result = run_preflight_with_compatibility_layout_distro(iso_dir, iso_filename, distro_id)?;
+    if result.overall_pass {
+        return Ok(());
+    }
+
+    let mut all_failures = Vec::new();
+    if let Some(ref check) = result.conformance {
+        if !check.passed {
+            all_failures.extend(check.details.iter().cloned());
+        }
+    }
+    if let Some(ref check) = result.live_initramfs {
+        if !check.passed {
+            all_failures.extend(check.details.iter().cloned());
+        }
+    }
+    if let Some(ref check) = result.install_initramfs {
+        if !check.passed {
+            all_failures.extend(check.details.iter().cloned());
+        }
+    }
+    if let Some(ref check) = result.iso {
+        if !check.passed {
+            all_failures.extend(check.details.iter().cloned());
+        }
+    }
+
+    cheat_bail!(
+        protects = "Installation tests verify REAL artifacts, not broken/incomplete ones",
+        severity = "CRITICAL",
+        cheats = [
+            "Skip preflight verification entirely",
+            "Mark missing items as optional",
+            "Remove items from required lists",
+            "Return Ok() when overall_pass is false",
+            "Lower severity of check failures"
+        ],
+        consequence = "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
+        "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
+         Failures:\n{}\n\n\
+         Run 'cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build' to rebuild the ISO.\n\
+         ALL verification checks must pass before running tests.",
+        all_failures.join("\n"),
+        distro_id
+    );
+}
+
+fn run_preflight_with_iso_distro_layout(
+    iso_dir: &Path,
+    iso_filename: Option<&str>,
+    distro_id: &str,
+    artifact_layout: ArtifactLayout,
+) -> Result<PreflightResult> {
+    println!();
+    println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
+    println!(
+        "Verifying contract + ISO artifacts for {} before starting QEMU...",
+        distro_id
+    );
+    println!();
+
+    let mut result = PreflightResult {
+        conformance: None,
+        live_initramfs: None,
+        install_initramfs: None,
+        iso: None,
+        overall_pass: true,
+    };
+    let resolved_iso_path = iso_filename
+        .map(|filename| iso_dir.join(filename))
+        .filter(|path| path.is_file())
+        .or_else(|| find_iso_file(iso_dir));
+    let run_manifest = load_run_manifest(iso_dir)?;
+    let runtime_artifacts = match artifact_layout {
+        ArtifactLayout::CanonicalOnly => resolve_runtime_artifacts(iso_dir)?,
+        ArtifactLayout::CompatibilityFallback => {
+            resolve_runtime_artifacts_for_layout(iso_dir, ArtifactLayout::CompatibilityFallback)?
+        }
+    };
+    let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
+
+    result.conformance = Some(verify_conformance_contract(
+        iso_dir,
+        iso_filename,
+        distro_id,
+        &runtime_artifacts,
+        validate_live_boot,
+        resolved_iso_path.as_deref(),
+    )?);
+    if !result.conformance.as_ref().unwrap().passed {
+        result.overall_pass = false;
+    }
+
+    let live_path = runtime_artifacts.initramfs_live.clone();
+    if live_path.exists() {
+        result.live_initramfs = Some(verify_artifact(&live_path, ChecklistType::LiveInitramfs)?);
+        if !result.live_initramfs.as_ref().unwrap().passed {
+            result.overall_pass = false;
+        }
+    } else {
+        println!(
+            "  {} Live initramfs not found at {}",
+            "SKIP".yellow(),
+            live_path.display()
+        );
+    }
+
+    if distro_id == "levitate" {
+        if let Some(install_path) = runtime_artifacts.initramfs_installed.as_ref() {
+            if install_path.exists() {
+                result.install_initramfs = Some(verify_artifact(
+                    install_path,
+                    ChecklistType::InstallInitramfs,
+                )?);
+                if !result.install_initramfs.as_ref().unwrap().passed {
+                    result.overall_pass = false;
+                }
+            } else {
+                println!(
+                    "  {} Install initramfs not found at {}",
+                    "SKIP".yellow(),
+                    install_path.display()
+                );
+            }
+        } else {
+            println!(
+                "  {} Install initramfs not found at {}",
+                "SKIP".yellow(),
+                iso_dir.join("initramfs-installed.img").display()
+            );
+        }
+    }
+
+    let iso_path = if let Some(path) = resolved_iso_path {
+        path
+    } else {
+        println!(
+            "  {} No .iso file found in {}",
+            "✗".red(),
+            iso_dir.display()
+        );
+        result.overall_pass = false;
+        println!();
+        print_summary(&result);
+        return Ok(result);
+    };
+
+    if iso_path.exists() {
+        result.iso = Some(verify_iso_distro(&iso_path, distro_id)?);
+        if !result.iso.as_ref().unwrap().passed {
+            result.overall_pass = false;
+        }
+    } else {
+        println!("  {} ISO not found at {}", "✗".red(), iso_path.display());
+        result.overall_pass = false;
+    }
+
+    println!();
+    print_summary(&result);
+    Ok(result)
+}
+
+fn resolve_runtime_artifacts_for_layout(
+    artifact_dir: &Path,
+    artifact_layout: ArtifactLayout,
+) -> Result<ResolvedRuntimeArtifacts> {
     Ok(ResolvedRuntimeArtifacts {
-        rootfs_image: resolve_required_file(artifact_dir, "filesystem.erofs", "-filesystem.erofs")?,
+        rootfs_image: resolve_required_file(
+            artifact_dir,
+            "filesystem.erofs",
+            "-filesystem.erofs",
+            artifact_layout,
+        )?,
         initramfs_live: resolve_required_file(
             artifact_dir,
             "initramfs-live.cpio.gz",
             "-initramfs-live.cpio.gz",
+            artifact_layout,
         )?,
         initramfs_installed: resolve_optional_file(
             artifact_dir,
             "initramfs-installed.img",
             "-initramfs-installed.img",
+            artifact_layout,
         )?,
-        overlay_image: resolve_required_file(artifact_dir, "overlayfs.erofs", "-overlayfs.erofs")?,
-        live_overlay_dir: resolve_required_dir(artifact_dir, "live-overlay", "-live-overlay")?,
+        overlay_image: resolve_required_file(
+            artifact_dir,
+            "overlayfs.erofs",
+            "-overlayfs.erofs",
+            artifact_layout,
+        )?,
+        live_overlay_dir: resolve_required_dir(
+            artifact_dir,
+            "live-overlay",
+            "-live-overlay",
+            artifact_layout,
+        )?,
         rootfs_source_pointer: resolve_required_file(
             artifact_dir,
             ".live-rootfs-source.path",
             "-live-rootfs-source.path",
+            artifact_layout,
         )?,
     })
 }
@@ -575,40 +672,52 @@ fn resolve_required_file(
     artifact_dir: &Path,
     canonical: &str,
     compat_suffix: &str,
+    artifact_layout: ArtifactLayout,
 ) -> Result<PathBuf> {
     let canonical_path = artifact_dir.join(canonical);
     if canonical_path.is_file() {
         return Ok(canonical_path);
     }
-    Ok(
-        find_unique_compat_entry(artifact_dir, compat_suffix, false)?
-            .unwrap_or_else(|| artifact_dir.join(canonical)),
-    )
+    if artifact_layout == ArtifactLayout::CompatibilityFallback {
+        return Ok(
+            find_unique_compat_entry(artifact_dir, compat_suffix, false)?
+                .unwrap_or_else(|| artifact_dir.join(canonical)),
+        );
+    }
+    Ok(artifact_dir.join(canonical))
 }
 
 fn resolve_optional_file(
     artifact_dir: &Path,
     canonical: &str,
     compat_suffix: &str,
+    artifact_layout: ArtifactLayout,
 ) -> Result<Option<PathBuf>> {
     let canonical_path = artifact_dir.join(canonical);
     if canonical_path.is_file() {
         return Ok(Some(canonical_path));
     }
-    find_unique_compat_entry(artifact_dir, compat_suffix, false)
+    if artifact_layout == ArtifactLayout::CompatibilityFallback {
+        return find_unique_compat_entry(artifact_dir, compat_suffix, false);
+    }
+    Ok(None)
 }
 
 fn resolve_required_dir(
     artifact_dir: &Path,
     canonical: &str,
     compat_suffix: &str,
+    artifact_layout: ArtifactLayout,
 ) -> Result<PathBuf> {
     let canonical_path = artifact_dir.join(canonical);
     if canonical_path.is_dir() {
         return Ok(canonical_path);
     }
-    Ok(find_unique_compat_entry(artifact_dir, compat_suffix, true)?
-        .unwrap_or_else(|| artifact_dir.join(canonical)))
+    if artifact_layout == ArtifactLayout::CompatibilityFallback {
+        return Ok(find_unique_compat_entry(artifact_dir, compat_suffix, true)?
+            .unwrap_or_else(|| artifact_dir.join(canonical)));
+    }
+    Ok(artifact_dir.join(canonical))
 }
 
 fn find_unique_compat_entry(
@@ -986,7 +1095,20 @@ mod tests {
         );
         fs::create_dir_all(dir.join("s01-live-overlay")).expect("create compat live overlay");
 
-        let resolved = resolve_runtime_artifacts(&dir).expect("resolve runtime artifacts");
+        let canonical =
+            resolve_runtime_artifacts(&dir).expect("resolve canonical runtime artifacts");
+        assert_eq!(canonical.rootfs_image, dir.join("filesystem.erofs"));
+        assert_eq!(canonical.initramfs_live, dir.join("initramfs-live.cpio.gz"));
+        assert_eq!(canonical.overlay_image, dir.join("overlayfs.erofs"));
+        assert_eq!(
+            canonical.rootfs_source_pointer,
+            dir.join(".live-rootfs-source.path")
+        );
+        assert_eq!(canonical.live_overlay_dir, dir.join("live-overlay"));
+
+        let resolved =
+            resolve_runtime_artifacts_for_layout(&dir, ArtifactLayout::CompatibilityFallback)
+                .expect("resolve compatibility runtime artifacts");
         assert_eq!(resolved.rootfs_image, dir.join("s01-filesystem.erofs"));
         assert_eq!(
             resolved.initramfs_live,
@@ -1005,25 +1127,21 @@ mod tests {
     #[test]
     fn live_boot_runtime_scope_uses_release_product_metadata() {
         let dir = temp_dir("scope");
-        let manifest = StageRunManifest {
+        let manifest = RunManifest {
             status: "success".to_string(),
             created_at_utc: "20260313T120000Z".to_string(),
             finished_at_utc: Some("20260313T120100Z".to_string()),
             iso_path: Some(dir.join("levitate.iso").display().to_string()),
             target_kind: Some("release-product".to_string()),
             target_name: Some("live-boot".to_string()),
-            compatibility_stage_slug: Some("s01_boot".to_string()),
         };
-        assert!(should_validate_live_boot_runtime(&dir, Some(&manifest)));
+        assert!(should_validate_live_boot_runtime(Some(&manifest)));
 
-        let base_manifest = StageRunManifest {
+        let base_manifest = RunManifest {
             target_name: Some("base-rootfs".to_string()),
             ..manifest
         };
-        assert!(!should_validate_live_boot_runtime(
-            &dir,
-            Some(&base_manifest)
-        ));
+        assert!(!should_validate_live_boot_runtime(Some(&base_manifest)));
 
         fs::remove_dir_all(dir).expect("cleanup temp dir");
     }

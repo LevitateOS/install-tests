@@ -14,7 +14,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
-use install_tests::stages;
+use install_tests::stages::{self, compat};
 
 #[derive(Parser)]
 #[command(name = "stages")]
@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     }
 
     if let Some(scenario_name) = cli.scenario.as_deref() {
-        let scenario = stages::parse_scenario_arg(scenario_name)?;
+        let scenario = stages::parse_scenario_name(scenario_name)?;
         let passed = if cli.force {
             stages::run_scenario_forced(&cli.distro, scenario)?
         } else {
@@ -101,15 +101,15 @@ fn main() -> Result<()> {
             bail!("Stage must be 0-6, got {}", stage_n);
         }
         let passed = if cli.force {
-            stages::run_stage_forced(&cli.distro, stage_n)?
+            compat::run_stage_forced(&cli.distro, stage_n)?
         } else {
-            stages::run_stage(&cli.distro, stage_n)?
+            compat::run_stage(&cli.distro, stage_n)?
         };
         std::process::exit(if passed { 0 } else { 1 });
     }
 
     if let Some(target) = cli.up_to_scenario.as_deref() {
-        let scenario = stages::parse_scenario_arg(target)?;
+        let scenario = stages::parse_scenario_name(target)?;
         let passed = stages::run_up_to_scenario(&cli.distro, scenario)?;
         std::process::exit(if passed { 0 } else { 1 });
     }
@@ -118,7 +118,7 @@ fn main() -> Result<()> {
         if !(0..=6).contains(&target) {
             bail!("--up-to must be 0-6, got {}", target);
         }
-        let passed = stages::run_up_to(&cli.distro, target)?;
+        let passed = compat::run_up_to_stage(&cli.distro, target)?;
         std::process::exit(if passed { 0 } else { 1 });
     }
 
