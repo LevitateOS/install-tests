@@ -315,17 +315,17 @@ fn verify_stage_00_evidence_script(
             .to_string();
         (parent.to_path_buf(), filename)
     } else {
+        let iso_filename = required_transform_output_name(
+            &bundle.contract.transforms.iso.output_names,
+            "contract.transforms.iso.output_names",
+            distro_id,
+        )
+        .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?;
         let release_root = release_product_root_dir_for_distro(distro_id, "base-rootfs");
-        let run_output_dir = resolve_latest_successful_run_dir(
-            &release_root,
-            &bundle.contract.artifacts.iso_filename,
-        )
-        .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
-        .unwrap_or(release_root);
-        (
-            run_output_dir,
-            bundle.contract.artifacts.iso_filename.clone(),
-        )
+        let run_output_dir = resolve_latest_successful_run_dir(&release_root, &iso_filename)
+            .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
+            .unwrap_or(release_root);
+        (run_output_dir, iso_filename)
     };
     let spec = S00BuildEvidenceSpec {
         script_path: stage_00.evidence.script_path.clone(),
