@@ -296,7 +296,7 @@ fn verify_stage_00_evidence_script(
     resolved_iso_path: Option<&Path>,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
-    let (stage_output_dir, iso_filename) = if let Some(iso_path) = resolved_iso_path {
+    let (run_output_dir, iso_filename) = if let Some(iso_path) = resolved_iso_path {
         let parent = iso_path.parent().ok_or_else(|| {
             format!(
                 "Stage00.evidence [InvalidEvidenceDeclaration] ISO path has no parent directory: {}",
@@ -315,16 +315,15 @@ fn verify_stage_00_evidence_script(
             .to_string();
         (parent.to_path_buf(), filename)
     } else {
-        let distro_output_dir = distro_output_dir_for_distro(distro_id);
-        let stage_root = distro_output_dir.join("s00-build");
-        let stage_output_dir = resolve_latest_successful_stage_run_dir(
-            &stage_root,
+        let release_root = release_product_root_dir_for_distro(distro_id, "base-rootfs");
+        let run_output_dir = resolve_latest_successful_run_dir(
+            &release_root,
             &bundle.contract.artifacts.iso_filename,
         )
         .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
-        .unwrap_or(stage_root);
+        .unwrap_or(release_root);
         (
-            stage_output_dir,
+            run_output_dir,
             bundle.contract.artifacts.iso_filename.clone(),
         )
     };
@@ -340,7 +339,7 @@ fn verify_stage_00_evidence_script(
         &bundle.repo_root,
         &bundle.variant_dir,
         kernel_output_dir,
-        &stage_output_dir,
+        &run_output_dir,
         &spec,
     )
     .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))
@@ -354,6 +353,12 @@ fn distro_output_dir_for_distro(distro_id: &str) -> PathBuf {
     workspace_root().join(".artifacts/out").join(distro_id)
 }
 
+fn release_product_root_dir_for_distro(distro_id: &str, product_name: &str) -> PathBuf {
+    distro_output_dir_for_distro(distro_id)
+        .join("releases")
+        .join(product_name)
+}
+
 fn kernel_output_dir_for_distro(distro_id: &str) -> PathBuf {
     workspace_root()
         .join(".artifacts/kernel")
@@ -361,22 +366,22 @@ fn kernel_output_dir_for_distro(distro_id: &str) -> PathBuf {
         .join("current")
 }
 
-fn resolve_latest_successful_stage_run_dir(
-    stage_root: &Path,
+fn resolve_latest_successful_run_dir(
+    run_root: &Path,
     iso_filename: &str,
 ) -> Result<Option<PathBuf>> {
-    if !stage_root.is_dir() {
+    if !run_root.is_dir() {
         return Ok(None);
     }
 
     let mut candidates: Vec<(String, PathBuf)> = Vec::new();
-    for entry in fs::read_dir(stage_root)
-        .with_context(|| format!("reading stage output directory '{}'", stage_root.display()))?
+    for entry in fs::read_dir(run_root)
+        .with_context(|| format!("reading run output directory '{}'", run_root.display()))?
     {
         let entry = entry.with_context(|| {
             format!(
-                "iterating stage output directory '{}'",
-                stage_root.display()
+                "iterating run output directory '{}'",
+                run_root.display()
             )
         })?;
         let run_dir = entry.path();
