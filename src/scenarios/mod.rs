@@ -31,8 +31,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LIVE_BOOT_VALIDATION_SCRIPT: &str = "/usr/local/bin/stage-01-live-boot.sh";
-const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/stage-01-ssh-preflight.sh";
+const LIVE_BOOT_VALIDATION_SCRIPT: &str = "/usr/local/bin/live-boot.sh";
+const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/live-boot-ssh-preflight.sh";
 const STAGE_RUNTIME_RETENTION_COUNT: usize = 5;
 const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
 const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
@@ -215,7 +215,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
         if !state.has_passed(previous) {
             bail!(
                 "{} is blocked: {} has not passed yet.\n\
-                 Run: cargo run --bin stages -- --distro {} --scenario {}",
+                 Run: cargo run --bin scenarios -- --distro {} --scenario {}",
                 scenario.display_name(),
                 previous.display_name(),
                 canonical_distro_id,
@@ -485,7 +485,13 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
             bail!("{}", error_msg.trim());
         }
 
-        let expected_install_experience = ctx.install_experience_profile();
+        let expected_install_experience = crate::distro::load_install_experience_profile(ctx.id())
+            .with_context(|| {
+                format!(
+                    "loading canonical install experience profile for '{}'",
+                    ctx.id()
+                )
+            })?;
         let install_experience_marker =
             ssh_exec(ssh_host_port, "cat /usr/lib/levitate/install-experience")
                 .with_context(|| "reading install-experience marker".to_string())?;
@@ -821,7 +827,7 @@ pub fn resolve_iso_artifact_for_scenario(
         return Ok(None);
     };
     let release_root = release_product_root_dir(distro_id, product_name);
-    let run_id = distro_builder::stage_runs::latest_successful_run_id(&release_root)?.ok_or_else(|| {
+    let run_id = distro_builder::run_history::latest_successful_run_id(&release_root)?.ok_or_else(|| {
         anyhow::anyhow!(
             "scenario '{}' for '{}' requires release product '{}', but no successful runs were found under '{}'.\n\
              Build it first: cargo run -p distro-builder --bin distro-builder -- release build iso {} {}",
@@ -1161,7 +1167,7 @@ impl ScenarioRun {
             })?;
         }
         let (run_id, output_dir) =
-            distro_builder::stage_runs::allocate_run_dir(&scenario_root_dir)?;
+            distro_builder::run_history::allocate_run_dir(&scenario_root_dir)?;
         let run = Self {
             run_id,
             distro_id: distro_id.to_string(),
@@ -1189,7 +1195,7 @@ impl ScenarioRun {
             disk_path,
             ovmf_vars_path,
         )?;
-        distro_builder::stage_runs::prune_old_runs(
+        distro_builder::run_history::prune_old_runs(
             &self.scenario_root_dir,
             STAGE_RUNTIME_RETENTION_COUNT,
         )
@@ -1233,7 +1239,7 @@ impl ScenarioRun {
             ovmf_vars_path: ovmf_vars_path.map(|p| p.display().to_string()),
             source_install_run_id: self.source_install_run_id.clone(),
         };
-        let manifest_path = distro_builder::stage_runs::manifest_path(&self.output_dir);
+        let manifest_path = distro_builder::run_history::manifest_path(&self.output_dir);
         write_json_atomic(&manifest_path, &metadata).with_context(|| {
             format!(
                 "writing scenario runtime metadata '{}'",
@@ -1263,11 +1269,11 @@ impl ScenarioRun {
 
 pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenarioRuntime> {
     let scenario_root = scenario_runtime_root_dir(distro_id, ScenarioId::Install);
-    let run_id =
-        distro_builder::stage_runs::latest_successful_run_id(&scenario_root)?.ok_or_else(|| {
+    let run_id = distro_builder::run_history::latest_successful_run_id(&scenario_root)?
+        .ok_or_else(|| {
             anyhow::anyhow!(
                 "install scenario runtime not found for '{}': no successful runs under '{}'.\n\
-                 Run: cargo run --bin stages -- --distro {} --scenario install",
+                 Run: cargo run --bin scenarios -- --distro {} --scenario install",
                 distro_id,
                 scenario_root.display(),
                 distro_id
@@ -1279,7 +1285,7 @@ pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenario
     if !disk_path.is_file() {
         bail!(
             "install scenario disk image missing for '{}' run '{}': '{}'.\n\
-             Re-run install: cargo run --bin stages -- --distro {} --scenario install",
+             Re-run install: cargo run --bin scenarios -- --distro {} --scenario install",
             distro_id,
             run_id,
             disk_path.display(),
@@ -1289,7 +1295,7 @@ pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenario
     if !ovmf_vars_path.is_file() {
         bail!(
             "install scenario OVMF vars missing for '{}' run '{}': '{}'.\n\
-             Re-run install: cargo run --bin stages -- --distro {} --scenario install",
+             Re-run install: cargo run --bin scenarios -- --distro {} --scenario install",
             distro_id,
             run_id,
             ovmf_vars_path.display(),
@@ -1479,9 +1485,8 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
             eprintln!("    - UEFI firmware not finding boot entry");
             eprintln!();
             eprintln!("  Try:");
-            eprintln!("    - Manual boot: just stage 1 <distro>");
             eprintln!(
-                "    - Rebuild live-boot ISO: cargo run -p distro-builder --bin distro-builder -- iso build <distro> 01Boot"
+                "    - Rebuild live-boot ISO: cargo run -p distro-builder --bin distro-builder -- release build iso <distro> live-boot"
             );
         }
         ScenarioId::LiveTools => {

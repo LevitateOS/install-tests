@@ -1,15 +1,15 @@
-# Stage Test Scripts
+# Scenario Test Scripts
 
-This directory contains **stage test scripts** that validate each stage of the installation and boot process. These scripts are **pre-installed on every ISO** and can be run both manually and automatically.
+This directory contains scenario validation scripts for the installation and boot process. These scripts are pre-installed on every ISO and can be run both manually and automatically.
 
 ## Philosophy: Video Game Savepoints
 
-Like savepoints in video games, each stage represents a verified state you can "load" and inspect:
+Like savepoints in video games, each scenario represents a verified state you can load and inspect:
 
 ```
-Stage 01: Fresh boot          → [SAVE] → interactive shell
-Stage 02: Boot + tool tests   → [SAVE] → interactive shell
-Stage 03: Boot + installation → [SAVE] → interactive shell
+Live boot       → [SAVE] → interactive shell
+Live tools      → [SAVE] → interactive shell
+Installation    → [SAVE] → interactive shell
 ```
 
 ## Directory Structure
@@ -18,12 +18,12 @@ Stage 03: Boot + installation → [SAVE] → interactive shell
 test-scripts/
 ├── lib/
 │   └── common.sh                      # Shared testing functions
-├── stage-01-live-boot.sh          # Verify live boot works
-├── stage-02-live-tools.sh         # Verify all tools functional
-├── stage-03-installation.sh       # Verify installation completed
-├── stage-04-installed-boot.sh     # Verify boots from disk
-├── stage-05-automated-login.sh    # Verify login works
-├── stage-06-daily-driver.sh       # Verify daily driver tools
+├── live-boot.sh                   # Verify live boot works
+├── live-tools.sh                  # Verify all tools functional
+├── install.sh                     # Verify installation completed
+├── installed-boot.sh              # Verify boots from disk
+├── automated-login.sh             # Verify login works
+├── installed-tools.sh             # Verify installed-system tools
 └── README.md                          # This file
 ```
 
@@ -33,13 +33,13 @@ test-scripts/
 
 ```bash
 # Inside QEMU or on real hardware
-stage-02-live-tools.sh
+live-tools.sh
 
 # Debug mode (see every command)
-bash -x stage-02-live-tools.sh
+bash -x live-tools.sh
 
 # Read the script
-cat /usr/local/bin/stage-02-live-tools.sh
+cat /usr/local/bin/live-tools.sh
 ```
 
 ### Automated Testing (From Host)
@@ -52,14 +52,14 @@ just stage 2 acorn
 just test 2 acorn
 ```
 
-## Stage Descriptions
+## Scenario Descriptions
 
-### Stage 01: Live Boot
+### Live Boot
 **Purpose:** Verify the live ISO boots successfully
 **Tests:** Basic filesystem checks, shell functionality
 **Environment:** Live ISO
 
-### Stage 02: Live Tools
+### Live Tools
 **Purpose:** Verify all daily driver tools work in live environment
 **Tests:** EXECUTES each tool (not just checks existence)
 **Environment:** Live ISO
@@ -70,22 +70,22 @@ just test 2 acorn
 - Editors (vim, less)
 - System utilities (htop, grep, find)
 
-### Stage 03: Installation
+### Installation
 **Purpose:** Verify scripted installation to disk succeeds
 **Tests:** Root filesystem extracted, bootloader installed, fstab created
 **Environment:** Live ISO (post-installation)
 
-### Stage 04: Installed Boot
+### Installed Boot
 **Purpose:** Verify system boots from disk after installation
 **Tests:** Basic boot checks, filesystems mounted
 **Environment:** Installed system
 
-### Stage 05: Automated Login
+### Automated Login
 **Purpose:** Verify automated login works
 **Tests:** Can login as root, run commands
 **Environment:** Installed system
 
-### Stage 06: Daily Driver Tools
+### Installed Tools
 **Purpose:** Verify all tools work on installed system
 **Tests:** sudo, ssh, networking, shell, etc.
 **Environment:** Installed system
@@ -147,7 +147,7 @@ Scripts exit with:
 
 ```
 ═══════════════════════════════════════════════════════════
-  Stage 02: Live Tools Validation
+  Live Tools Validation
 ═══════════════════════════════════════════════════════════
 
 Core Installation Tools:
@@ -157,7 +157,7 @@ Core Installation Tools:
   [TEST] htop... ✗ NOT FOUND
 
 ═══════════════════════════════════════════════════════════
-  Stage 02 Results
+  Live Tools Results
 ═══════════════════════════════════════════════════════════
 Passed: 17/18 tests
 
@@ -165,7 +165,7 @@ Missing (not in PATH): 1 tests
   • htop
 
 ═══════════════════════════════════════════════════════════
-✗ STAGE 02 FAILED
+✗ LIVE TOOLS FAILED
 
 Some tools are missing from PATH. Check package installation.
 ```
@@ -175,7 +175,7 @@ Some tools are missing from PATH. Check package installation.
 These scripts are automatically installed on every ISO during the build process:
 
 - **Source:** `testing/install-tests/test-scripts/`
-- **Destination (on ISO):** `/usr/local/bin/stage-*.sh`
+- **Destination (on ISO):** `/usr/local/bin/*.sh`
 - **Libraries:** `/usr/local/lib/stage-tests/`
 
 See `AcornOS/src/component/definitions.rs` (STAGE_TESTS component) for build integration.

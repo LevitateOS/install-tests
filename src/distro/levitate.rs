@@ -280,10 +280,6 @@ impl DistroContext for LevitateContext {
         ]
     }
 
-    fn install_experience_profile(&self) -> &str {
-        "ux"
-    }
-
     fn installed_tools(&self) -> &[&str] {
         &["sudo", "ip", "ssh", "mount", "umount", "dmesg", "bun"]
     }

@@ -4,6 +4,11 @@
 //! LevitateOS/RalphOS (systemd) and AcornOS/IuppiterOS (OpenRC) by abstracting
 //! init system and bootloader differences.
 
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::fs;
+use std::path::PathBuf;
+
 pub mod acorn;
 pub mod iuppiter;
 pub mod levitate;
@@ -167,13 +172,6 @@ pub trait DistroContext: Send + Sync {
     /// Tools expected to be present in the live ISO environment.
     fn live_tools(&self) -> &[&str];
 
-    /// Install experience profile expected in the live ISO.
-    ///
-    /// Allowed values:
-    /// - `ux`
-    /// - `automated_ssh`
-    fn install_experience_profile(&self) -> &str;
-
     /// Tools expected to be present on the installed system.
     fn installed_tools(&self) -> &[&str];
 }
@@ -191,3 +189,37 @@ pub fn context_for_distro(id: &str) -> Option<Box<dyn DistroContext>> {
 
 /// Available distro IDs for CLI help.
 pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn", "iuppiter", "ralph"];
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenariosToml {
+    scenarios: ScenarioSectionsToml,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioSectionsToml {
+    live_tools: LiveToolsScenarioToml,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveToolsScenarioToml {
+    install_experience: String,
+}
+
+pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
+    let scenarios_path = workspace_root()
+        .join("distro-variants")
+        .join(distro_id)
+        .join("scenarios.toml");
+    let raw = fs::read_to_string(&scenarios_path)
+        .with_context(|| format!("reading scenarios config '{}'", scenarios_path.display()))?;
+    let parsed: ScenariosToml = toml::from_str(&raw)
+        .with_context(|| format!("parsing scenarios config '{}'", scenarios_path.display()))?;
+    Ok(parsed.scenarios.live_tools.install_experience)
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}

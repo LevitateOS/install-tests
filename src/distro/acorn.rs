@@ -174,10 +174,6 @@ impl DistroContext for AcornContext {
         ]
     }
 
-    fn install_experience_profile(&self) -> &str {
-        "ux"
-    }
-
     fn installed_tools(&self) -> &[&str] {
         &[
             "sudo", "ip", "ssh", "ash", "mount", "umount", "dmesg", "ps", "ls", "cat",

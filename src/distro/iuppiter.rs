@@ -174,10 +174,6 @@ impl DistroContext for IuppiterContext {
         ]
     }
 
-    fn install_experience_profile(&self) -> &str {
-        "automated_ssh"
-    }
-
     fn installed_tools(&self) -> &[&str] {
         &[
             "sudo",

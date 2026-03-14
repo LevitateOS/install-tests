@@ -20,7 +20,7 @@ pub mod distro;
 pub mod executor;
 pub mod preflight;
 pub mod qemu;
-pub mod stages;
+pub mod scenarios;
 pub mod steps;
 
 // Re-export commonly used items

@@ -1,39 +1,38 @@
-//! Scenario runner CLI with stage-number compatibility aliases.
+//! Scenario runner CLI.
 //!
 //! Lightweight, incremental scenario runner for verifying OS builds.
 //!
 //! Usage:
-//!   cargo run --bin stages -- --distro acorn --scenario live-boot
-//!   cargo run --bin stages -- --distro acorn --scenario live-tools
-//!   cargo run --bin stages -- --distro acorn --stage 1
-//!   cargo run --bin stages -- --distro acorn --up-to 3
-//!   cargo run --bin stages -- --distro acorn --status
-//!   cargo run --bin stages -- --distro acorn --reset
+//!   cargo run --bin scenarios -- --distro acorn --scenario live-boot
+//!   cargo run --bin scenarios -- --distro acorn --scenario live-tools
+//!   cargo run --bin scenarios -- --distro acorn --up-to-scenario install
+//!   cargo run --bin scenarios -- --distro acorn --status
+//!   cargo run --bin scenarios -- --distro acorn --reset
 
 use anyhow::{bail, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
-use install_tests::stages::{self, compat};
+use install_tests::scenarios::{self, compat};
 
 #[derive(Parser)]
-#[command(name = "scenarios", alias = "stages")]
-#[command(about = "Scenario runner for LevitateOS variants (stage aliases retained)")]
+#[command(name = "scenarios")]
+#[command(about = "Scenario runner for LevitateOS variants")]
 struct Cli {
     /// Distro to test (levitate, acorn, iuppiter, ralph)
     #[arg(long)]
     distro: String,
 
-    /// Run a compatibility stage alias (0-6).
-    #[arg(long)]
+    /// Compatibility alias for older stage-number workflows (0-6).
+    #[arg(long, hide = true)]
     stage: Option<u32>,
 
     /// Run a specific canonical scenario.
     #[arg(long, value_name = "NAME")]
     scenario: Option<String>,
 
-    /// Run all compatibility stage aliases up to N (inclusive, 0-6).
-    #[arg(long)]
+    /// Compatibility alias for older stage-number workflows (0-6).
+    #[arg(long, hide = true)]
     up_to: Option<u32>,
 
     /// Run all scenarios up to the named canonical scenario.
@@ -56,7 +55,7 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     inject_file: Option<PathBuf>,
 
-    /// Re-run the requested scenario or stage alias even if it is already cached as passed.
+    /// Re-run the requested scenario even if it is already cached as passed.
     #[arg(long)]
     force: bool,
 }
@@ -73,23 +72,23 @@ fn main() -> Result<()> {
     }
 
     if cli.reset {
-        return stages::reset_state(&cli.distro);
+        return scenarios::reset_state(&cli.distro);
     }
 
     if cli.status {
-        return stages::print_status(&cli.distro);
+        return scenarios::print_status(&cli.distro);
     }
 
     if cli.force && cli.stage.is_none() && cli.scenario.is_none() {
-        bail!("--force requires --stage N or --scenario NAME");
+        bail!("--force requires --scenario NAME or a hidden compatibility alias");
     }
 
     if let Some(scenario_name) = cli.scenario.as_deref() {
-        let scenario = stages::parse_scenario_name(scenario_name)?;
+        let scenario = scenarios::parse_scenario_name(scenario_name)?;
         let passed = if cli.force {
-            stages::run_scenario_forced(&cli.distro, scenario)?
+            scenarios::run_scenario_forced(&cli.distro, scenario)?
         } else {
-            stages::run_scenario(&cli.distro, scenario)?
+            scenarios::run_scenario(&cli.distro, scenario)?
         };
         std::process::exit(if passed { 0 } else { 1 });
     }
@@ -107,8 +106,8 @@ fn main() -> Result<()> {
     }
 
     if let Some(target) = cli.up_to_scenario.as_deref() {
-        let scenario = stages::parse_scenario_name(target)?;
-        let passed = stages::run_up_to_scenario(&cli.distro, scenario)?;
+        let scenario = scenarios::parse_scenario_name(target)?;
+        let passed = scenarios::run_up_to_scenario(&cli.distro, scenario)?;
         std::process::exit(if passed { 0 } else { 1 });
     }
 
@@ -123,7 +122,7 @@ fn main() -> Result<()> {
         std::process::exit(if passed { 0 } else { 1 });
     }
 
-    bail!("Specify --scenario NAME, --stage N, --up-to-scenario NAME, --up-to N, --status, or --reset");
+    bail!("Specify --scenario NAME, --up-to-scenario NAME, --status, or --reset");
 }
 
 fn apply_boot_injection_env(cli: &Cli) -> Result<()> {

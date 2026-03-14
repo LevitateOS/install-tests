@@ -65,7 +65,7 @@ EXPECTED_INSTALL_EXPERIENCE="$(detect_expected_install_experience)"
 
 section_header "Core Installation Tools"
 test_command "PATH includes /usr/local/bin" "echo \"\$PATH\" | tr ':' '\n' | grep -qx '/usr/local/bin'"
-test_file_exists "/usr/local/bin/stage-02-live-tools.sh" "legacy live-tools validation wrapper installed"
+test_file_exists "/usr/local/bin/live-tools.sh" "live-tools validation script installed"
 test_tool "recstrap" "recstrap --help"
 test_tool "recfstab" "recfstab --help"
 test_tool "recchroot" "recchroot --help"

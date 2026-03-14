@@ -17,12 +17,12 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use distro_builder::stages::s00_build::{
+use distro_builder::compat_inputs::build_capability::{
     check_kernel_installed_via_recipe, run_00build_evidence_script, S00BuildEvidenceSpec,
     S00BuildKernelSpec,
 };
 use distro_contract::{
-    load_stage_00_contract_bundle_for_distro_from, require_valid_contract,
+    load_variant_contract_bundle_for_distro_from, require_valid_contract,
     validate_live_boot_runtime, validate_stage_00_runtime_with_artifacts, LiveBootRuntimeArtifacts,
     Stage00RuntimeArtifacts,
 };
@@ -165,7 +165,7 @@ fn verify_conformance_contract(
     print!("  Checking {}... ", name);
 
     let workspace_root = workspace_root();
-    let bundle = match load_stage_00_contract_bundle_for_distro_from(&workspace_root, distro_id) {
+    let bundle = match load_variant_contract_bundle_for_distro_from(&workspace_root, distro_id) {
         Ok(bundle) => bundle,
         Err(err) => {
             println!("{}", "FAIL".red().bold());
@@ -506,7 +506,7 @@ pub fn require_preflight_with_compatibility_layout_for_distro(
         consequence = "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
         "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
          Failures:\n{}\n\n\
-         Run 'cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build' to rebuild the ISO.\n\
+         Run 'cargo run -p distro-builder --bin distro-builder -- release build iso {} base-rootfs' to rebuild the ISO.\n\
          ALL verification checks must pass before running tests.",
         all_failures.join("\n"),
         distro_id
@@ -693,8 +693,8 @@ struct CanonicalRuntimeArtifactNames {
 fn canonical_runtime_artifact_names_for_distro(
     distro_id: &str,
 ) -> Result<CanonicalRuntimeArtifactNames> {
-    let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root(), distro_id)
-        .with_context(|| format!("loading 00Build contract for '{}'", distro_id))?;
+    let bundle = load_variant_contract_bundle_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading variant contract for '{}'", distro_id))?;
     Ok(CanonicalRuntimeArtifactNames {
         rootfs_image: required_transform_output_name(
             &bundle.contract.transforms.rootfs_image.output_names,
@@ -1108,7 +1108,7 @@ pub fn require_preflight_with_iso_for_distro(
             consequence = "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
             "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
              Failures:\n{}\n\n\
-             Run 'cargo run -p distro-builder --bin distro-builder -- iso build {} 00Build' to rebuild the ISO.\n\
+             Run 'cargo run -p distro-builder --bin distro-builder -- release build iso {} base-rootfs' to rebuild the ISO.\n\
              ALL verification checks must pass before running tests.",
             all_failures.join("\n"),
             distro_id

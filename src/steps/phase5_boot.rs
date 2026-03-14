@@ -13,7 +13,7 @@ use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
 use crate::executor::Executor;
 use anyhow::Result;
-use distro_contract::load_stage_00_contract_bundle_for_distro_from;
+use distro_contract::load_variant_contract_bundle_for_distro_from;
 use distro_spec::shared::boot::{BootEntry, LoaderConfig};
 use leviso_cheat_guard::cheat_ensure;
 use std::path::PathBuf;
@@ -160,7 +160,7 @@ impl Step for GenerateInitramfs {
 }
 
 fn installed_initramfs_name_for_distro(distro_id: &str) -> Result<String> {
-    let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root(), distro_id)?;
+    let bundle = load_variant_contract_bundle_for_distro_from(&workspace_root(), distro_id)?;
     bundle
         .contract
         .transforms
