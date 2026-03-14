@@ -439,8 +439,11 @@ fn should_validate_live_boot_runtime(run_manifest: Option<&RunManifest>) -> bool
     false
 }
 
-fn resolve_runtime_artifacts(artifact_dir: &Path) -> Result<ResolvedRuntimeArtifacts> {
-    resolve_runtime_artifacts_for_layout(artifact_dir, ArtifactLayout::CanonicalOnly)
+fn resolve_runtime_artifacts(
+    artifact_dir: &Path,
+    distro_id: &str,
+) -> Result<ResolvedRuntimeArtifacts> {
+    resolve_runtime_artifacts_for_layout(artifact_dir, distro_id, ArtifactLayout::CanonicalOnly)
 }
 
 #[allow(dead_code)]
@@ -537,10 +540,12 @@ fn run_preflight_with_iso_distro_layout(
         .or_else(|| find_iso_file(iso_dir));
     let run_manifest = load_run_manifest(iso_dir)?;
     let runtime_artifacts = match artifact_layout {
-        ArtifactLayout::CanonicalOnly => resolve_runtime_artifacts(iso_dir)?,
-        ArtifactLayout::CompatibilityFallback => {
-            resolve_runtime_artifacts_for_layout(iso_dir, ArtifactLayout::CompatibilityFallback)?
-        }
+        ArtifactLayout::CanonicalOnly => resolve_runtime_artifacts(iso_dir, distro_id)?,
+        ArtifactLayout::CompatibilityFallback => resolve_runtime_artifacts_for_layout(
+            iso_dir,
+            distro_id,
+            ArtifactLayout::CompatibilityFallback,
+        )?,
     };
     let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
 
@@ -627,12 +632,14 @@ fn run_preflight_with_iso_distro_layout(
 
 fn resolve_runtime_artifacts_for_layout(
     artifact_dir: &Path,
+    distro_id: &str,
     artifact_layout: ArtifactLayout,
 ) -> Result<ResolvedRuntimeArtifacts> {
+    let canonical_names = canonical_runtime_artifact_names_for_distro(distro_id)?;
     Ok(ResolvedRuntimeArtifacts {
         rootfs_image: resolve_required_file(
             artifact_dir,
-            "filesystem.erofs",
+            &canonical_names.rootfs_image,
             "-filesystem.erofs",
             artifact_layout,
         )?,
@@ -650,7 +657,7 @@ fn resolve_runtime_artifacts_for_layout(
         )?,
         overlay_image: resolve_required_file(
             artifact_dir,
-            "overlayfs.erofs",
+            &canonical_names.overlay_image,
             "-overlayfs.erofs",
             artifact_layout,
         )?,
@@ -666,6 +673,43 @@ fn resolve_runtime_artifacts_for_layout(
             "-live-rootfs-source.path",
             artifact_layout,
         )?,
+    })
+}
+
+struct CanonicalRuntimeArtifactNames {
+    rootfs_image: String,
+    overlay_image: String,
+}
+
+fn canonical_runtime_artifact_names_for_distro(
+    distro_id: &str,
+) -> Result<CanonicalRuntimeArtifactNames> {
+    let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading 00Build contract for '{}'", distro_id))?;
+    Ok(CanonicalRuntimeArtifactNames {
+        rootfs_image: required_transform_output_name(
+            &bundle.contract.transforms.rootfs_image.output_names,
+            "contract.transforms.rootfs_image.output_names",
+            distro_id,
+        )?,
+        overlay_image: required_transform_output_name(
+            &bundle.contract.transforms.overlay_image.output_names,
+            "contract.transforms.overlay_image.output_names",
+            distro_id,
+        )?,
+    })
+}
+
+fn required_transform_output_name(
+    outputs: &[String],
+    field: &str,
+    distro_id: &str,
+) -> Result<String> {
+    outputs.first().cloned().with_context(|| {
+        format!(
+            "missing canonical Ring 1 output '{}' for '{}'",
+            field, distro_id
+        )
     })
 }
 
@@ -1065,16 +1109,17 @@ mod tests {
     #[test]
     fn resolve_runtime_artifacts_prefers_product_native_names() {
         let dir = temp_dir("product-native");
-        write_file(&dir.join("filesystem.erofs"), "rootfs");
+        write_file(&dir.join("s00-filesystem.erofs"), "rootfs");
         write_file(&dir.join("initramfs-live.cpio.gz"), "initramfs");
-        write_file(&dir.join("overlayfs.erofs"), "overlay");
+        write_file(&dir.join("s00-overlayfs.erofs"), "overlay");
         write_file(&dir.join(".live-rootfs-source.path"), "./rootfs-source\n");
         fs::create_dir_all(dir.join("live-overlay")).expect("create live overlay");
 
-        let resolved = resolve_runtime_artifacts(&dir).expect("resolve runtime artifacts");
-        assert_eq!(resolved.rootfs_image, dir.join("filesystem.erofs"));
+        let resolved =
+            resolve_runtime_artifacts(&dir, "levitate").expect("resolve runtime artifacts");
+        assert_eq!(resolved.rootfs_image, dir.join("s00-filesystem.erofs"));
         assert_eq!(resolved.initramfs_live, dir.join("initramfs-live.cpio.gz"));
-        assert_eq!(resolved.overlay_image, dir.join("overlayfs.erofs"));
+        assert_eq!(resolved.overlay_image, dir.join("s00-overlayfs.erofs"));
         assert_eq!(
             resolved.rootfs_source_pointer,
             dir.join(".live-rootfs-source.path")
@@ -1096,20 +1141,23 @@ mod tests {
         );
         fs::create_dir_all(dir.join("s01-live-overlay")).expect("create compat live overlay");
 
-        let canonical =
-            resolve_runtime_artifacts(&dir).expect("resolve canonical runtime artifacts");
-        assert_eq!(canonical.rootfs_image, dir.join("filesystem.erofs"));
+        let canonical = resolve_runtime_artifacts(&dir, "levitate")
+            .expect("resolve canonical runtime artifacts");
+        assert_eq!(canonical.rootfs_image, dir.join("s00-filesystem.erofs"));
         assert_eq!(canonical.initramfs_live, dir.join("initramfs-live.cpio.gz"));
-        assert_eq!(canonical.overlay_image, dir.join("overlayfs.erofs"));
+        assert_eq!(canonical.overlay_image, dir.join("s00-overlayfs.erofs"));
         assert_eq!(
             canonical.rootfs_source_pointer,
             dir.join(".live-rootfs-source.path")
         );
         assert_eq!(canonical.live_overlay_dir, dir.join("live-overlay"));
 
-        let resolved =
-            resolve_runtime_artifacts_for_layout(&dir, ArtifactLayout::CompatibilityFallback)
-                .expect("resolve compatibility runtime artifacts");
+        let resolved = resolve_runtime_artifacts_for_layout(
+            &dir,
+            "levitate",
+            ArtifactLayout::CompatibilityFallback,
+        )
+        .expect("resolve compatibility runtime artifacts");
         assert_eq!(resolved.rootfs_image, dir.join("s01-filesystem.erofs"));
         assert_eq!(
             resolved.initramfs_live,
