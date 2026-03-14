@@ -10,8 +10,6 @@ pub mod levitate;
 mod openrc_base;
 pub mod ralph;
 
-use std::path::PathBuf;
-
 /// Context for distro-specific test behavior.
 ///
 /// This trait abstracts the differences between init systems (systemd vs OpenRC),
@@ -125,9 +123,6 @@ pub trait DistroContext: Send + Sync {
     // ═══════════════════════════════════════════════════════════════════════════
     // Paths
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /// Default ISO path (relative to workspace root).
-    fn default_iso_path(&self) -> PathBuf;
 
     /// Shell to use in chroot.
     fn chroot_shell(&self) -> &str;

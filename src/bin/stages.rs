@@ -1,9 +1,10 @@
 //! Stage-based development loop CLI.
 //!
-//! Lightweight, incremental stages for verifying OS builds.
+//! Lightweight, incremental scenario runner for verifying OS builds.
 //!
 //! Usage:
 //!   cargo run --bin stages -- --distro acorn --stage 0
+//!   cargo run --bin stages -- --distro acorn --scenario live-boot
 //!   cargo run --bin stages -- --distro acorn --stage 1
 //!   cargo run --bin stages -- --distro acorn --up-to 3
 //!   cargo run --bin stages -- --distro acorn --status
@@ -17,7 +18,9 @@ use install_tests::stages;
 
 #[derive(Parser)]
 #[command(name = "stages")]
-#[command(about = "Stage-based development loop for LevitateOS variants")]
+#[command(
+    about = "Scenario-based development loop for LevitateOS variants (stage aliases retained)"
+)]
 struct Cli {
     /// Distro to test (levitate, acorn, iuppiter, ralph)
     #[arg(long)]
@@ -27,9 +30,17 @@ struct Cli {
     #[arg(long)]
     stage: Option<u32>,
 
+    /// Run a specific canonical scenario.
+    #[arg(long, value_name = "NAME")]
+    scenario: Option<String>,
+
     /// Run all stages up to N (inclusive, 0-6)
     #[arg(long)]
     up_to: Option<u32>,
+
+    /// Run all scenarios up to the named canonical scenario.
+    #[arg(long = "up-to-scenario", value_name = "NAME")]
+    up_to_scenario: Option<String>,
 
     /// Show stage status
     #[arg(long)]
@@ -55,7 +66,10 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     apply_boot_injection_env(&cli)?;
-    let requires_guard = cli.stage.is_some() || cli.up_to.is_some();
+    let requires_guard = cli.stage.is_some()
+        || cli.scenario.is_some()
+        || cli.up_to.is_some()
+        || cli.up_to_scenario.is_some();
     if requires_guard {
         install_tests::enforce_policy_guard("install-tests stages")?;
     }
@@ -68,8 +82,18 @@ fn main() -> Result<()> {
         return stages::print_status(&cli.distro);
     }
 
-    if cli.force && cli.stage.is_none() {
-        bail!("--force requires --stage N");
+    if cli.force && cli.stage.is_none() && cli.scenario.is_none() {
+        bail!("--force requires --stage N or --scenario NAME");
+    }
+
+    if let Some(scenario_name) = cli.scenario.as_deref() {
+        let scenario = stages::parse_scenario_arg(scenario_name)?;
+        let passed = if cli.force {
+            stages::run_scenario_forced(&cli.distro, scenario)?
+        } else {
+            stages::run_scenario(&cli.distro, scenario)?
+        };
+        std::process::exit(if passed { 0 } else { 1 });
     }
 
     if let Some(stage_n) = cli.stage {
@@ -84,6 +108,12 @@ fn main() -> Result<()> {
         std::process::exit(if passed { 0 } else { 1 });
     }
 
+    if let Some(target) = cli.up_to_scenario.as_deref() {
+        let scenario = stages::parse_scenario_arg(target)?;
+        let passed = stages::run_up_to_scenario(&cli.distro, scenario)?;
+        std::process::exit(if passed { 0 } else { 1 });
+    }
+
     if let Some(target) = cli.up_to {
         if !(0..=6).contains(&target) {
             bail!("--up-to must be 0-6, got {}", target);
@@ -92,7 +122,7 @@ fn main() -> Result<()> {
         std::process::exit(if passed { 0 } else { 1 });
     }
 
-    bail!("Specify --stage N, --up-to N, --status, or --reset");
+    bail!("Specify --scenario NAME, --stage N, --up-to-scenario NAME, --up-to N, --status, or --reset");
 }
 
 fn apply_boot_injection_env(cli: &Cli) -> Result<()> {

@@ -7,8 +7,6 @@
 //! - bash shell
 
 use super::DistroContext;
-use std::path::PathBuf;
-
 /// LevitateOS context for systemd-based testing.
 pub struct LevitateContext;
 
@@ -213,21 +211,6 @@ impl DistroContext for LevitateContext {
     // ═══════════════════════════════════════════════════════════════════════════
     // Paths
     // ═══════════════════════════════════════════════════════════════════════════
-
-    fn default_iso_path(&self) -> PathBuf {
-        // Use relative path that works from workspace root
-        // The test framework joins with current_dir() for relative paths
-        //
-        // ISO filename comes from distro-spec constant and is remapped to Stage 01.
-        use distro_spec::levitate::ISO_FILENAME;
-
-        // Path is relative to workspace root (CARGO_MANIFEST_DIR/../..)
-        // resolve_iso() in session.rs joins this with the workspace root
-        PathBuf::from(format!(
-            ".artifacts/out/levitate/s01-boot/{}",
-            ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
-        ))
-    }
 
     fn chroot_shell(&self) -> &str {
         "/bin/bash"

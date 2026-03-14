@@ -5,33 +5,12 @@
 use crate::boot_injection::boot_injection_from_env;
 use crate::distro::DistroContext;
 use crate::qemu::{Console, QemuBuilder};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::Duration;
-
-/// Resolve the ISO path for a distro context.
-pub fn resolve_iso(ctx: &dyn DistroContext) -> Result<PathBuf> {
-    let default = ctx.default_iso_path();
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let iso_path = if default.is_relative() {
-        workspace_root.join(default)
-    } else {
-        default
-    };
-    if !iso_path.exists() {
-        bail!(
-            "ISO not found at {}. Build {} Stage 01 first: \
-             cargo run -p distro-builder --bin distro-builder -- iso build {} 01Boot",
-            iso_path.display(),
-            ctx.name(),
-            ctx.id()
-        );
-    }
-    Ok(iso_path)
-}
 
 /// Set up OVMF firmware and writable vars copy at a caller-provided path.
 /// Returns (ovmf_code, ovmf_vars_copy).

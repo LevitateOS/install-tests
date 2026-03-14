@@ -9,7 +9,6 @@
 
 use super::openrc_base::OpenRcBase;
 use super::DistroContext;
-use std::path::PathBuf;
 
 /// IuppiterOS context for OpenRC-based testing on headless appliance.
 pub struct IuppiterContext;
@@ -110,14 +109,6 @@ impl DistroContext for IuppiterContext {
 
     fn efi_entry_label(&self) -> &str {
         "IuppiterOS"
-    }
-
-    fn default_iso_path(&self) -> PathBuf {
-        // Relative to repo root; session::resolve_iso() prefixes with workspace root.
-        PathBuf::from(format!(
-            ".artifacts/out/iuppiter/s01-boot/{}",
-            distro_spec::iuppiter::ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
-        ))
     }
 
     fn chroot_shell(&self) -> &str {

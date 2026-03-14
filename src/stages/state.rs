@@ -1,45 +1,52 @@
-//! Stage state persistence.
+//! Scenario state persistence.
 //!
-//! Tracks which stages passed per distro, with ISO mtime-based invalidation.
+//! Tracks which scenario checks passed per distro, with resolved-input
+//! fingerprint invalidation. Legacy stage-numbered state files continue to
+//! load and are normalized into scenario identities on read.
 
+use super::ScenarioId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::PathBuf;
 
-/// Persisted state for a single distro's stages.
+/// Persisted state for a single distro's scenario runs.
 #[derive(Debug, Serialize, Deserialize, Default)]
-pub struct StageState {
-    /// Stage 00 (build-only) ISO file mtime.
-    /// `alias = "iso_mtime_secs"` preserves compatibility with old state files.
-    #[serde(default, alias = "iso_mtime_secs")]
-    pub stage00_iso_mtime_secs: u64,
-    /// Runtime ISO mtime used for Stage 01+ checks.
-    #[serde(default)]
-    pub runtime_iso_mtime_secs: u64,
-    /// Runtime ISO mtime by stage number (Stage 01+).
-    #[serde(default)]
-    pub runtime_iso_mtime_secs_by_stage: HashMap<u32, u64>,
-    /// Map of stage number -> result.
-    pub results: HashMap<u32, StageResult>,
+pub struct ScenarioState {
+    /// Compatibility field retained so old stage-numbered cache files deserialize.
+    #[serde(default, alias = "iso_mtime_secs", skip_serializing_if = "is_zero")]
+    pub legacy_stage00_iso_mtime_secs: u64,
+    /// Compatibility field retained so old stage-numbered cache files deserialize.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub legacy_runtime_iso_mtime_secs: u64,
+    /// Compatibility field retained so old stage-numbered cache files deserialize.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub legacy_runtime_iso_mtime_secs_by_stage: HashMap<u32, u64>,
+    /// Map of canonical scenario name -> resolved input fingerprint.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub input_fingerprints: HashMap<String, String>,
+    /// Map of canonical scenario name -> result.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub results: HashMap<String, ScenarioResult>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StageResult {
+pub struct ScenarioResult {
     pub passed: bool,
     pub timestamp: String,
     pub evidence: String,
 }
 
-impl StageState {
+impl ScenarioState {
     /// Load state from disk, or return default if missing/corrupt.
     pub fn load(distro_id: &str) -> Self {
         let path = state_path(distro_id);
-        match std::fs::read_to_string(&path) {
+        let mut state = match std::fs::read_to_string(&path) {
             Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
             Err(_) => Self::default(),
-        }
+        };
+        state.normalize_legacy_keys();
+        state
     }
 
     /// Save state to disk.
@@ -54,55 +61,34 @@ impl StageState {
         Ok(())
     }
 
-    /// Check if state is still valid for the given stage ISO.
-    /// Stage 00 uses the build-only ISO mtime.
-    /// Stage 01+ uses per-stage runtime ISO mtime.
-    pub fn is_valid_for_stage_iso(&self, stage: u32, iso_path: &Path) -> bool {
-        match iso_mtime_secs(iso_path) {
-            Some(mtime) => {
-                if stage == 0 {
-                    self.stage00_iso_mtime_secs == mtime
-                } else {
-                    self.runtime_iso_mtime_secs_by_stage
-                        .get(&stage)
-                        .copied()
-                        // Compatibility fallback for older state files that only stored
-                        // a single runtime mtime.
-                        .unwrap_or(self.runtime_iso_mtime_secs)
-                        == mtime
-                }
-            }
-            None => false,
-        }
+    /// Check if state is still valid for the given scenario input fingerprint.
+    pub fn is_valid_for_scenario_input(&self, scenario: ScenarioId, fingerprint: &str) -> bool {
+        self.input_fingerprints
+            .get(scenario.key())
+            .map(|stored| stored == fingerprint)
+            .unwrap_or(false)
     }
 
-    /// Update stage ISO mtime and clear affected stage results.
-    /// Stage 00 rebuild invalidates all stage results.
-    /// Stage N (N>=01) rebuild invalidates Stage N+ results while preserving lower stages.
-    pub fn reset_for_stage_iso(&mut self, stage: u32, iso_path: &Path) {
-        let mtime = iso_mtime_secs(iso_path).unwrap_or(0);
-        if stage == 0 {
-            self.stage00_iso_mtime_secs = mtime;
-            self.runtime_iso_mtime_secs = 0;
-            self.runtime_iso_mtime_secs_by_stage.clear();
-            self.results.clear();
-            return;
-        }
-
-        self.runtime_iso_mtime_secs_by_stage.insert(stage, mtime);
-        // Keep legacy field for compatibility with older tooling that may still read it.
-        if stage == 1 {
-            self.runtime_iso_mtime_secs = mtime;
-        }
-        self.results.retain(|s, _| *s < stage);
+    /// Update scenario input fingerprint and clear affected scenario results.
+    ///
+    /// A scenario input change invalidates that scenario and every later scenario
+    /// in the canonical ladder while preserving earlier results.
+    pub fn reset_for_scenario_input(&mut self, scenario: ScenarioId, fingerprint: &str) {
+        self.input_fingerprints
+            .insert(scenario.key().to_string(), fingerprint.to_string());
+        self.results.retain(|key, _| {
+            ScenarioId::parse_alias(key)
+                .map(|existing| existing.ordinal() < scenario.ordinal())
+                .unwrap_or(false)
+        });
     }
 
-    /// Record a stage result.
-    pub fn record(&mut self, stage: u32, passed: bool, evidence: &str) {
-        let now = chrono_now();
+    /// Record a scenario result.
+    pub fn record(&mut self, scenario: ScenarioId, passed: bool, evidence: &str) {
+        let now = unix_timestamp_string();
         self.results.insert(
-            stage,
-            StageResult {
+            scenario.key().to_string(),
+            ScenarioResult {
                 passed,
                 timestamp: now,
                 evidence: evidence.to_string(),
@@ -110,48 +96,124 @@ impl StageState {
         );
     }
 
-    /// Check if a stage has already passed.
-    pub fn has_passed(&self, stage: u32) -> bool {
-        self.results.get(&stage).map(|r| r.passed).unwrap_or(false)
+    /// Check if a scenario has already passed.
+    pub fn has_passed(&self, scenario: ScenarioId) -> bool {
+        self.results
+            .get(scenario.key())
+            .map(|r| r.passed)
+            .unwrap_or(false)
     }
 
-    /// Returns true if state contains any result at or above `stage`.
-    pub fn has_any_results_from(&self, stage: u32) -> bool {
-        self.results.keys().any(|s| *s >= stage)
+    /// Returns true if state contains any result at or above `scenario`.
+    pub fn has_any_results_from(&self, scenario: ScenarioId) -> bool {
+        self.results.keys().any(|key| {
+            ScenarioId::parse_alias(key)
+                .map(|existing| existing.ordinal() >= scenario.ordinal())
+                .unwrap_or(false)
+        })
     }
 
-    /// Highest stage that passed.
-    pub fn highest_passed(&self) -> u32 {
-        // Must be contiguous from 1
-        let mut n = 0;
-        while self.has_passed(n + 1) {
-            n += 1;
+    /// Highest contiguous scenario that passed.
+    pub fn highest_passed(&self) -> Option<ScenarioId> {
+        let mut highest = None;
+        for scenario in ScenarioId::ALL {
+            if self.has_passed(scenario) {
+                highest = Some(scenario);
+                continue;
+            }
+            break;
         }
-        n
+        highest
+    }
+
+    /// Returns true if a result exists for the given scenario.
+    pub fn has_result(&self, scenario: ScenarioId) -> bool {
+        self.results.contains_key(scenario.key())
+    }
+
+    fn normalize_legacy_keys(&mut self) {
+        if self.results.is_empty() {
+            return;
+        }
+
+        let mut normalized = HashMap::new();
+        for (key, value) in std::mem::take(&mut self.results) {
+            if let Some(scenario) = ScenarioId::parse_alias(&key) {
+                normalized.insert(scenario.key().to_string(), value);
+            }
+        }
+        self.results = normalized;
     }
 }
 
 fn state_path(distro_id: &str) -> PathBuf {
-    // Find the repo root by looking for .stages/ relative to the workspace
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.stages")
         .join(format!("{}.json", distro_id))
 }
 
-fn iso_mtime_secs(iso_path: &Path) -> Option<u64> {
-    std::fs::metadata(iso_path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
-}
+fn unix_timestamp_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-fn chrono_now() -> String {
-    // Simple ISO-ish timestamp without pulling in chrono
     let d = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}s_since_epoch", d.as_secs())
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_legacy_numeric_stage_keys_into_scenarios() {
+        let mut state = ScenarioState {
+            results: HashMap::from([
+                (
+                    "1".to_string(),
+                    ScenarioResult {
+                        passed: true,
+                        timestamp: "t1".to_string(),
+                        evidence: "boot".to_string(),
+                    },
+                ),
+                (
+                    "3".to_string(),
+                    ScenarioResult {
+                        passed: false,
+                        timestamp: "t2".to_string(),
+                        evidence: "install".to_string(),
+                    },
+                ),
+            ]),
+            ..ScenarioState::default()
+        };
+
+        state.normalize_legacy_keys();
+
+        assert!(state.results.contains_key("live-boot"));
+        assert!(state.results.contains_key("install"));
+        assert!(!state.results.contains_key("1"));
+        assert!(!state.results.contains_key("3"));
+    }
+
+    #[test]
+    fn reset_for_scenario_input_drops_later_results_only() {
+        let mut state = ScenarioState::default();
+        state.record(ScenarioId::BuildPreflight, true, "ok");
+        state.record(ScenarioId::LiveBoot, true, "ok");
+        state.record(ScenarioId::LiveTools, true, "ok");
+        state.record(ScenarioId::Install, true, "ok");
+
+        state.reset_for_scenario_input(ScenarioId::LiveTools, "fingerprint");
+
+        assert!(state.has_passed(ScenarioId::BuildPreflight));
+        assert!(state.has_passed(ScenarioId::LiveBoot));
+        assert!(!state.has_result(ScenarioId::LiveTools));
+        assert!(!state.has_result(ScenarioId::Install));
+    }
 }

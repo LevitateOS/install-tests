@@ -544,11 +544,8 @@ fn should_validate_live_boot_runtime(
         }
     }
 
-    iso_dir
-        .file_name()
-        .and_then(|part| part.to_str())
-        .map(|leaf| leaf.contains("s01-boot") || leaf.contains("s02-live-tools"))
-        .unwrap_or(false)
+    let _ = iso_dir;
+    false
 }
 
 fn resolve_runtime_artifacts(artifact_dir: &Path) -> Result<ResolvedRuntimeArtifacts> {

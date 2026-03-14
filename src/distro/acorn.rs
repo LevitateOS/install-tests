@@ -8,7 +8,6 @@
 
 use super::openrc_base::OpenRcBase;
 use super::DistroContext;
-use std::path::PathBuf;
 
 /// AcornOS context for OpenRC-based testing.
 pub struct AcornContext;
@@ -107,14 +106,6 @@ impl DistroContext for AcornContext {
 
     fn efi_entry_label(&self) -> &str {
         "AcornOS"
-    }
-
-    fn default_iso_path(&self) -> PathBuf {
-        // Relative to repo root; session::resolve_iso() prefixes with workspace root.
-        PathBuf::from(format!(
-            ".artifacts/out/acorn/s01-boot/{}",
-            distro_spec::acorn::ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
-        ))
     }
 
     fn chroot_shell(&self) -> &str {

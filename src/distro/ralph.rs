@@ -4,8 +4,6 @@
 //! as LevitateOS for install-test staging.
 
 use super::DistroContext;
-use std::path::PathBuf;
-
 /// RalphOS context for systemd-based testing.
 pub struct RalphContext;
 
@@ -155,13 +153,6 @@ impl DistroContext for RalphContext {
 
     fn efi_entry_label(&self) -> &str {
         "RalphOS"
-    }
-
-    fn default_iso_path(&self) -> PathBuf {
-        PathBuf::from(format!(
-            ".artifacts/out/ralph/s01-boot/{}",
-            distro_spec::ralph::ISO_FILENAME.replacen("s00_build", "s01_boot", 1)
-        ))
     }
 
     fn chroot_shell(&self) -> &str {

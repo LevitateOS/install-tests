@@ -21,228 +21,427 @@ use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use distro_contract::{load_stage_00_contract_bundle_for_distro_from, RootfsMutability};
+use distro_contract::RootfsMutability;
 use recshuttle::{InstallLayout, InstallPlanSpec, RemoteInstallerService, SshExecOutput};
 use serde::{Deserialize, Serialize};
-use state::StageState;
+use state::ScenarioState;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const STAGE00_SLUG: &str = "s00_build";
-const STAGE01_SLUG: &str = "s01_boot";
-const STAGE02_SLUG: &str = "s02_live_tools";
-const STAGE00_DIRNAME: &str = "s00-build";
-const STAGE01_DIRNAME: &str = "s01-boot";
-const STAGE02_DIRNAME: &str = "s02-live-tools";
-const STAGE03_DIRNAME: &str = "s03-install";
-const STAGE04_DIRNAME: &str = "s04-login-gate";
-const STAGE03_CANONICAL: &str = "03Install";
-const STAGE04_CANONICAL: &str = "04LoginGate";
-const STAGE03_SLUG: &str = "s03_install";
-const STAGE04_SLUG: &str = "s04_login_gate";
 const STAGE01_LIVE_BOOT_SCRIPT: &str = "/usr/local/bin/stage-01-live-boot.sh";
 const STAGE01_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/stage-01-ssh-preflight.sh";
 const STAGE_RUNTIME_RETENTION_COUNT: usize = 5;
-const STAGE03_DISK_FILENAME: &str = "stage-disk.qcow2";
-const STAGE03_OVMF_VARS_FILENAME: &str = "stage-ovmf-vars.fd";
+const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
+const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
 
-struct StageIsoTarget {
-    path: PathBuf,
-    filename: String,
+const PRODUCT_BASE_ROOTFS: &str = "base-rootfs";
+const PRODUCT_LIVE_BOOT: &str = "live-boot";
+const PRODUCT_LIVE_TOOLS: &str = "live-tools";
+const SCENARIO_ROOT_DIRNAME: &str = "scenarios";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScenarioId {
+    BuildPreflight,
+    LiveBoot,
+    LiveTools,
+    Install,
+    InstalledBoot,
+    AutomatedLogin,
+    Runtime,
+}
+
+impl ScenarioId {
+    pub const ALL: [ScenarioId; 7] = [
+        ScenarioId::BuildPreflight,
+        ScenarioId::LiveBoot,
+        ScenarioId::LiveTools,
+        ScenarioId::Install,
+        ScenarioId::InstalledBoot,
+        ScenarioId::AutomatedLogin,
+        ScenarioId::Runtime,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::BuildPreflight => "build-preflight",
+            Self::LiveBoot => "live-boot",
+            Self::LiveTools => "live-tools",
+            Self::Install => "install",
+            Self::InstalledBoot => "installed-boot",
+            Self::AutomatedLogin => "automated-login",
+            Self::Runtime => "runtime",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::BuildPreflight => "Build Preflight",
+            Self::LiveBoot => "Live Boot",
+            Self::LiveTools => "Live Tools",
+            Self::Install => "Install",
+            Self::InstalledBoot => "Installed Boot",
+            Self::AutomatedLogin => "Automated Login",
+            Self::Runtime => "Runtime",
+        }
+    }
+
+    pub fn compatibility_stage_name(self) -> &'static str {
+        match self {
+            Self::BuildPreflight => "00Build",
+            Self::LiveBoot => "01Boot",
+            Self::LiveTools => "02LiveTools",
+            Self::Install => "03Install",
+            Self::InstalledBoot => "04LoginGate",
+            Self::AutomatedLogin => "05Harness",
+            Self::Runtime => "06Runtime",
+        }
+    }
+
+    pub fn compatibility_stage_slug(self) -> &'static str {
+        match self {
+            Self::BuildPreflight => "s00_build",
+            Self::LiveBoot => "s01_boot",
+            Self::LiveTools => "s02_live_tools",
+            Self::Install => "s03_install",
+            Self::InstalledBoot => "s04_login_gate",
+            Self::AutomatedLogin => "s05_harness",
+            Self::Runtime => "s06_runtime",
+        }
+    }
+
+    pub fn compatibility_stage_dirname(self) -> &'static str {
+        match self {
+            Self::BuildPreflight => "s00-build",
+            Self::LiveBoot => "s01-boot",
+            Self::LiveTools => "s02-live-tools",
+            Self::Install => "s03-install",
+            Self::InstalledBoot => "s04-login-gate",
+            Self::AutomatedLogin => "s05-harness",
+            Self::Runtime => "s06-runtime",
+        }
+    }
+
+    pub fn compatibility_stage_number(self) -> u32 {
+        self.ordinal() as u32
+    }
+
+    pub fn ordinal(self) -> usize {
+        match self {
+            Self::BuildPreflight => 0,
+            Self::LiveBoot => 1,
+            Self::LiveTools => 2,
+            Self::Install => 3,
+            Self::InstalledBoot => 4,
+            Self::AutomatedLogin => 5,
+            Self::Runtime => 6,
+        }
+    }
+
+    pub fn from_stage_number(stage: u32) -> Result<Self> {
+        match stage {
+            0 => Ok(Self::BuildPreflight),
+            1 => Ok(Self::LiveBoot),
+            2 => Ok(Self::LiveTools),
+            3 => Ok(Self::Install),
+            4 => Ok(Self::InstalledBoot),
+            5 => Ok(Self::AutomatedLogin),
+            6 => Ok(Self::Runtime),
+            _ => bail!("Invalid stage number: {} (valid aliases: 00-06)", stage),
+        }
+    }
+
+    pub fn parse_alias(value: &str) -> Option<Self> {
+        let trimmed = value.trim();
+        match trimmed {
+            "build-preflight" | "build_preflight" | "00Build" | "s00_build" | "0" | "00" => {
+                Some(Self::BuildPreflight)
+            }
+            "live-boot" | "live_boot" | "01Boot" | "s01_boot" | "1" | "01" => Some(Self::LiveBoot),
+            "live-tools" | "live_tools" | "02LiveTools" | "s02_live_tools" | "2" | "02" => {
+                Some(Self::LiveTools)
+            }
+            "install" | "03Install" | "s03_install" | "3" | "03" => Some(Self::Install),
+            "installed-boot" | "installed_boot" | "04LoginGate" | "s04_login_gate" | "4" | "04" => {
+                Some(Self::InstalledBoot)
+            }
+            "automated-login" | "automated_login" | "05Harness" | "s05_harness" | "5" | "05" => {
+                Some(Self::AutomatedLogin)
+            }
+            "runtime" | "06Runtime" | "s06_runtime" | "6" | "06" => Some(Self::Runtime),
+            _ => None,
+        }
+    }
+
+    fn release_product(self) -> Option<&'static str> {
+        match self {
+            Self::BuildPreflight => Some(PRODUCT_BASE_ROOTFS),
+            Self::LiveBoot => Some(PRODUCT_LIVE_BOOT),
+            Self::LiveTools | Self::Install => Some(PRODUCT_LIVE_TOOLS),
+            Self::InstalledBoot | Self::AutomatedLogin | Self::Runtime => None,
+        }
+    }
+
+    fn scenario_output_dirname(self) -> &'static str {
+        self.key()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScenarioIsoArtifact {
+    pub scenario: ScenarioId,
+    pub product_name: &'static str,
+    pub path: PathBuf,
+    pub filename: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct StageRunManifest {
+struct ReleaseRunManifest {
     status: String,
-    created_at_utc: String,
-    finished_at_utc: Option<String>,
     iso_path: Option<String>,
+    target_kind: Option<String>,
+    target_name: Option<String>,
 }
 
-/// Run a single stage for a distro.
+#[derive(Debug, Clone)]
+pub struct InstallScenarioRuntime {
+    pub run_id: String,
+    pub disk_path: PathBuf,
+    pub ovmf_vars_path: PathBuf,
+}
+
+/// Run a single scenario for a distro.
+pub fn run_scenario(distro_id: &str, scenario: ScenarioId) -> Result<bool> {
+    run_scenario_impl(distro_id, scenario, false)
+}
+
+/// Run a single scenario for a distro, forcing rerun of the target scenario.
+pub fn run_scenario_forced(distro_id: &str, scenario: ScenarioId) -> Result<bool> {
+    run_scenario_impl(distro_id, scenario, true)
+}
+
+/// Run a single compatibility stage alias for a distro.
 pub fn run_stage(distro_id: &str, stage: u32) -> Result<bool> {
-    run_stage_impl(distro_id, stage, false)
+    run_scenario(distro_id, ScenarioId::from_stage_number(stage)?)
 }
 
-/// Run a single stage for a distro, forcing rerun of the target stage.
+/// Run a single compatibility stage alias for a distro, forcing rerun.
 pub fn run_stage_forced(distro_id: &str, stage: u32) -> Result<bool> {
-    run_stage_impl(distro_id, stage, true)
+    run_scenario_forced(distro_id, ScenarioId::from_stage_number(stage)?)
 }
 
-fn run_stage_impl(distro_id: &str, stage: u32, force: bool) -> Result<bool> {
+fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Result<bool> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let canonical_distro_id = ctx.id();
-    let stage00_iso_target = resolve_iso_target_for_stage(canonical_distro_id, 0, &*ctx)?;
-    let iso_target = resolve_iso_target_for_stage(canonical_distro_id, stage, &*ctx)?;
-    let iso_path = iso_target.path.clone();
-    let iso_dir = iso_path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Could not resolve ISO parent directory for '{}'",
-            iso_path.display()
-        )
-    })?;
+    let scenario_iso = resolve_iso_artifact_for_scenario(canonical_distro_id, scenario)?;
+    if let Some(iso) = scenario_iso.as_ref() {
+        let iso_dir = iso.path.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not resolve ISO parent directory for '{}'",
+                iso.path.display()
+            )
+        })?;
+        require_preflight_with_iso_for_distro(iso_dir, Some(&iso.filename), canonical_distro_id)?;
+    }
 
-    // Stage 00 and all later stages must satisfy conformance + artifact preflight.
-    require_preflight_with_iso_for_distro(
-        iso_dir,
-        Some(&iso_target.filename),
-        canonical_distro_id,
-    )?;
+    let input_fingerprint =
+        scenario_input_fingerprint(canonical_distro_id, scenario, scenario_iso.as_ref())?;
 
-    let mut state = StageState::load(canonical_distro_id);
-    if !state.is_valid_for_stage_iso(0, &stage00_iso_target.path) {
+    let mut state = ScenarioState::load(canonical_distro_id);
+    if !state.is_valid_for_scenario_input(scenario, &input_fingerprint) {
         println!(
             "{}",
-            "ISO rebuilt since last run — resetting stages.".yellow()
+            format!(
+                "Scenario input changed for {} — resetting this scenario and later results.",
+                scenario.display_name()
+            )
+            .yellow()
         );
-        state.reset_for_stage_iso(0, &stage00_iso_target.path);
-        state.save(canonical_distro_id)?;
-    } else if stage > 0 && !state.is_valid_for_stage_iso(stage, &iso_target.path) {
-        println!(
-            "{}",
-            "Runtime ISO rebuilt since last run — resetting Stage 01+ results.".yellow()
-        );
-        state.reset_for_stage_iso(stage, &iso_target.path);
+        state.reset_for_scenario_input(scenario, &input_fingerprint);
         state.save(canonical_distro_id)?;
     }
 
     if force {
-        state.results.retain(|s, _| *s < stage);
+        state.results.retain(|key, _| {
+            ScenarioId::parse_alias(key)
+                .map(|existing| existing.ordinal() < scenario.ordinal())
+                .unwrap_or(false)
+        });
         state.save(canonical_distro_id)?;
         println!(
             "{}",
             format!(
-                "Forcing Stage {:02} rerun (cleared cached results from this stage onward).",
-                stage
+                "Forcing {} rerun (cleared cached results from this scenario onward).",
+                scenario.display_name()
             )
             .yellow()
         );
     }
 
-    // Gating: stage N requires N-1 to have passed (01 requires 00).
-    // `--force` is used for reproducible stage artifact production paths
-    // (for example `just build 3 <distro>`), so allow bypass there.
-    if !force && stage > 0 && !state.has_passed(stage - 1) {
-        bail!(
-            "Stage {:02} is blocked: Stage {:02} has not passed yet.\n\
-             Run: cargo run --bin stages -- --distro {} --stage {}",
-            stage,
-            stage - 1,
-            canonical_distro_id,
-            stage - 1
-        );
+    if !force && scenario.ordinal() > 0 {
+        let previous = ScenarioId::ALL[scenario.ordinal() - 1];
+        if !state.has_passed(previous) {
+            bail!(
+                "{} is blocked: {} has not passed yet.\n\
+                 Run: cargo run --bin stages -- --distro {} --scenario {}",
+                scenario.display_name(),
+                previous.display_name(),
+                canonical_distro_id,
+                previous.key()
+            );
+        }
     }
 
-    // Already passed?
-    if state.has_passed(stage) {
+    if state.has_passed(scenario) {
         println!(
-            "{} Stage {:02} already passed (use --reset to clear).",
+            "{} {} already passed (use --reset to clear).",
             "[SKIP]".green(),
-            stage
+            scenario.display_name()
         );
         return Ok(true);
     }
 
-    println!("{} Stage {:02}: {}", ">>".cyan(), stage, stage_name(stage));
+    println!(
+        "{} {} ({})",
+        ">>".cyan(),
+        scenario.display_name(),
+        scenario.compatibility_stage_name()
+    );
 
-    let result = match stage {
-        0 => Ok("Preflight conformance + artifact checks passed".to_string()),
-        1 => run_live_boot(&*ctx, &iso_path),
-        2 => run_live_tools(&*ctx, &iso_path),
-        3 => run_installation(&*ctx, &iso_path),
-        4 => run_installed_boot(&*ctx, &iso_path),
-        5 => run_automated_login(&*ctx, &iso_path),
-        6 => run_daily_driver_tools(&*ctx, &iso_path),
-        _ => bail!("Invalid stage number: {} (valid: 00-06)", stage),
+    let result = match scenario {
+        ScenarioId::BuildPreflight => {
+            Ok("Preflight conformance + artifact checks passed".to_string())
+        }
+        ScenarioId::LiveBoot => run_live_boot(
+            &*ctx,
+            &scenario_iso
+                .as_ref()
+                .expect("live-boot scenario requires ISO")
+                .path,
+        ),
+        ScenarioId::LiveTools => run_live_tools(
+            &*ctx,
+            &scenario_iso
+                .as_ref()
+                .expect("live-tools scenario requires ISO")
+                .path,
+        ),
+        ScenarioId::Install => run_installation(
+            &*ctx,
+            &scenario_iso
+                .as_ref()
+                .expect("install scenario requires ISO")
+                .path,
+        ),
+        ScenarioId::InstalledBoot => run_installed_boot(&*ctx),
+        ScenarioId::AutomatedLogin => run_automated_login(&*ctx),
+        ScenarioId::Runtime => run_daily_driver_tools(&*ctx),
     };
 
     match &result {
         Ok(evidence) => {
-            state.record(stage, true, evidence);
+            state.record(scenario, true, evidence);
             state.save(canonical_distro_id)?;
             println!(
-                "{} Stage {:02} passed: {}",
+                "{} {} passed: {}",
                 "[PASS]".green().bold(),
-                stage,
+                scenario.display_name(),
                 evidence
             );
             Ok(true)
         }
         Err(e) => {
-            state.record(stage, false, &format!("{:#}", e));
+            state.record(scenario, false, &format!("{:#}", e));
             state.save(canonical_distro_id)?;
-            print_failure(stage, e);
+            print_failure(scenario, e);
             Ok(false)
         }
     }
 }
 
-/// Run all stages up to `target` (inclusive).
-pub fn run_up_to(distro_id: &str, target: u32) -> Result<bool> {
-    for stage_n in 0..=target {
-        if !run_stage(distro_id, stage_n)? {
+/// Run all scenarios up to `target` (inclusive).
+pub fn run_up_to_scenario(distro_id: &str, target: ScenarioId) -> Result<bool> {
+    for scenario in ScenarioId::ALL {
+        if scenario.ordinal() > target.ordinal() {
+            break;
+        }
+        if !run_scenario(distro_id, scenario)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-/// Print stage status for a distro.
+/// Run all compatibility stage aliases up to `target` (inclusive).
+pub fn run_up_to(distro_id: &str, target: u32) -> Result<bool> {
+    run_up_to_scenario(distro_id, ScenarioId::from_stage_number(target)?)
+}
+
+/// Print scenario status for a distro.
 pub fn print_status(distro_id: &str) -> Result<()> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let canonical_distro_id = ctx.id();
-    let stage00_iso_path =
-        resolve_iso_target_for_stage(canonical_distro_id, 0, &*ctx).map(|target| target.path);
-    let runtime_iso_path =
-        resolve_iso_target_for_stage(canonical_distro_id, 1, &*ctx).map(|target| target.path);
 
-    let state = StageState::load(canonical_distro_id);
-    let build_iso_valid = stage00_iso_path
-        .as_ref()
-        .map(|p| state.is_valid_for_stage_iso(0, p))
-        .unwrap_or(false);
-    let runtime_iso_valid = if state.has_any_results_from(1) {
-        runtime_iso_path
-            .as_ref()
-            .map(|p| state.is_valid_for_stage_iso(1, p))
-            .unwrap_or(false)
-    } else {
-        true
-    };
-    let valid = build_iso_valid && runtime_iso_valid;
+    let state = ScenarioState::load(canonical_distro_id);
+    let valid = ScenarioId::ALL.iter().all(|scenario| {
+        if !state.has_result(*scenario) {
+            return true;
+        }
+        match scenario_input_fingerprint(
+            canonical_distro_id,
+            *scenario,
+            resolve_iso_artifact_for_scenario(canonical_distro_id, *scenario)
+                .ok()
+                .flatten()
+                .as_ref(),
+        ) {
+            Ok(fingerprint) => state.is_valid_for_scenario_input(*scenario, &fingerprint),
+            Err(_) => false,
+        }
+    });
 
-    println!("{} Stage Status", ctx.name().bold());
+    println!("{} Scenario Status", ctx.name().bold());
     if !valid {
         println!(
             "{}",
-            "  (stale — ISO rebuilt or missing, stages will reset on next run)".yellow()
+            "  (stale — scenario input changed or is missing, results will reset on next run)"
+                .yellow()
         );
     }
     println!();
 
-    for stage_n in 0..=6u32 {
-        let status = if state.has_passed(stage_n) {
+    for scenario in ScenarioId::ALL {
+        let status = if state.has_passed(scenario) {
             "[PASS]".green()
-        } else if state.results.contains_key(&stage_n) {
+        } else if state.has_result(scenario) {
             "[FAIL]".red()
         } else {
             "[    ]".dimmed()
         };
-        println!("  {} {:02}: {}", status, stage_n, stage_name(stage_n));
+        println!(
+            "  {} {:02} / {:<15} {}",
+            status,
+            scenario.compatibility_stage_number(),
+            scenario.key(),
+            scenario.compatibility_stage_name()
+        );
     }
     println!();
     println!(
         "  Highest passed: {}",
-        state.highest_passed().to_string().bold()
+        state
+            .highest_passed()
+            .map(|scenario| scenario.display_name().to_string())
+            .unwrap_or_else(|| "none".to_string())
+            .bold()
     );
     Ok(())
 }
 
-/// Reset all stage state for a distro.
+/// Reset all scenario state for a distro.
 pub fn reset_state(distro_id: &str) -> Result<()> {
     let canonical_distro_id = context_for_distro(distro_id)
         .map(|ctx| ctx.id().to_string())
@@ -253,8 +452,17 @@ pub fn reset_state(distro_id: &str) -> Result<()> {
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
-    println!("Stages reset for {}.", canonical_distro_id);
+    println!("Scenario state reset for {}.", canonical_distro_id);
     Ok(())
+}
+
+pub fn parse_scenario_arg(value: &str) -> Result<ScenarioId> {
+    ScenarioId::parse_alias(value).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported scenario '{}'; expected one of: build-preflight, live-boot, live-tools, install, installed-boot, automated-login, runtime; compatibility aliases: 00Build|01Boot|02LiveTools|03Install|04LoginGate|05Harness|06Runtime|0|00|1|01|2|02|3|03|4|04|5|05|6|06",
+            value
+        )
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -454,28 +662,21 @@ fn wait_for_stage02_serial_readiness(console: &mut Console, ctx: &dyn DistroCont
     .with_context(|| "waiting for Stage 02 serial readiness".to_string())
 }
 
-/// Stage 03: Installation — Scripted install to disk.
 fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let stage_run = RuntimeStageRun::start(
-        ctx.id(),
-        STAGE03_DIRNAME,
-        STAGE03_CANONICAL,
-        STAGE03_SLUG,
-        None,
-    )?;
-    let disk_path = stage_run.output_dir.join(STAGE03_DISK_FILENAME);
+    let scenario_run = ScenarioRun::start(ctx.id(), ScenarioId::Install, None)?;
+    let disk_path = scenario_run.output_dir.join(INSTALL_DISK_FILENAME);
     if disk_path.exists() {
         std::fs::remove_file(&disk_path)?;
     }
     recqemu::create_disk(&disk_path, "20G")?;
 
-    let ovmf_vars_path = stage_run.output_dir.join(STAGE03_OVMF_VARS_FILENAME);
+    let ovmf_vars_path = scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME);
     let (ovmf, ovmf_vars) = session::setup_ovmf_vars_at(&ovmf_vars_path)?;
 
     let (mut child, mut console, ssh_host_port) =
         session::spawn_live_with_disk_with_ssh(iso_path, &disk_path, &ovmf, &ovmf_vars)?;
 
-    // Stage 03 install must run through the remote installer service channel (SSH),
+    // Install runs through the remote installer service channel (SSH),
     // not through serial console command execution. We still wait for live boot
     // markers to drain serial output and establish a deterministic ready boundary.
     let installer = RemoteInstallerService::new(ssh_host_port);
@@ -564,7 +765,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
                 "{} install steps completed + verified via remote installer service",
                 step_count
             );
-            stage_run.finish_success(
+            scenario_run.finish_success(
                 &evidence,
                 Some(disk_path.as_path()),
                 Some(ovmf_vars_path.as_path()),
@@ -573,7 +774,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         }
         Err(err) => {
             let failure = format!("FAIL: {:#}", err);
-            let _ = stage_run.finish_failed(
+            let _ = scenario_run.finish_failed(
                 &failure,
                 Some(disk_path.as_path()),
                 Some(ovmf_vars_path.as_path()),
@@ -583,19 +784,19 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     }
 }
 
-/// Stage 04: Installed Boot — Boot from disk after install.
-fn run_installed_boot(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<String> {
-    let stage03 = resolve_latest_stage03_runtime(ctx.id())?;
-    let stage_run = RuntimeStageRun::start(
+fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
+    let install_runtime = resolve_latest_install_runtime(ctx.id())?;
+    let scenario_run = ScenarioRun::start(
         ctx.id(),
-        STAGE04_DIRNAME,
-        STAGE04_CANONICAL,
-        STAGE04_SLUG,
-        Some(stage03.run_id.clone()),
+        ScenarioId::InstalledBoot,
+        Some(install_runtime.run_id.clone()),
     )?;
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
-    let (mut child, mut console) =
-        session::spawn_installed(&stage03.disk_path, &ovmf, &stage03.ovmf_vars_path)?;
+    let (mut child, mut console) = session::spawn_installed(
+        &install_runtime.disk_path,
+        &ovmf,
+        &install_runtime.ovmf_vars_path,
+    )?;
 
     let result = console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx);
     let _ = child.kill();
@@ -604,32 +805,34 @@ fn run_installed_boot(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Strin
     match result {
         Ok(()) => {
             let evidence = "Installed system boot markers detected".to_string();
-            stage_run.finish_success(
+            scenario_run.finish_success(
                 &evidence,
-                Some(stage03.disk_path.as_path()),
-                Some(stage03.ovmf_vars_path.as_path()),
+                Some(install_runtime.disk_path.as_path()),
+                Some(install_runtime.ovmf_vars_path.as_path()),
             )?;
             Ok(evidence)
         }
         Err(e) => {
             let failure = format!("FAIL: {:#}", e);
-            let _ = stage_run.finish_failed(
+            let _ = scenario_run.finish_failed(
                 &failure,
-                Some(stage03.disk_path.as_path()),
-                Some(stage03.ovmf_vars_path.as_path()),
+                Some(install_runtime.disk_path.as_path()),
+                Some(install_runtime.ovmf_vars_path.as_path()),
             );
             Err(anyhow::anyhow!("{:#}", e))
         }
     }
 }
 
-/// Stage 05: Automated Login — Harness can login and execute commands.
-fn run_automated_login(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<String> {
-    let stage03 = resolve_latest_stage03_runtime(ctx.id())?;
+fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
+    let install_runtime = resolve_latest_install_runtime(ctx.id())?;
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
 
-    let (mut child, mut console) =
-        session::spawn_installed(&stage03.disk_path, &ovmf, &stage03.ovmf_vars_path)?;
+    let (mut child, mut console) = session::spawn_installed(
+        &install_runtime.disk_path,
+        &ovmf,
+        &install_runtime.ovmf_vars_path,
+    )?;
 
     console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
 
@@ -651,13 +854,15 @@ fn run_automated_login(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<Stri
     }
 }
 
-/// Stage 06: Daily Driver Tools — All expected tools present.
-fn run_daily_driver_tools(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<String> {
-    let stage03 = resolve_latest_stage03_runtime(ctx.id())?;
+fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
+    let install_runtime = resolve_latest_install_runtime(ctx.id())?;
     let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
 
-    let (mut child, mut console) =
-        session::spawn_installed(&stage03.disk_path, &ovmf, &stage03.ovmf_vars_path)?;
+    let (mut child, mut console) = session::spawn_installed(
+        &install_runtime.disk_path,
+        &ovmf,
+        &install_runtime.ovmf_vars_path,
+    )?;
 
     console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
     console.login("root", ctx.default_password(), Duration::from_secs(15))?;
@@ -696,135 +901,127 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext, _iso_path: &Path) -> Result<S
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn stage_name(n: u32) -> &'static str {
-    match n {
-        0 => "00Build",
-        1 => "01Boot",
-        2 => "02LiveTools",
-        3 => "03Install",
-        4 => "04LoginGate",
-        5 => "05Harness",
-        6 => "06Runtime",
-        _ => "Unknown",
-    }
-}
-
-fn resolve_iso_target_for_stage(
+pub fn resolve_iso_artifact_for_scenario(
     distro_id: &str,
-    stage: u32,
-    ctx: &dyn DistroContext,
-) -> Result<StageIsoTarget> {
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bundle = load_stage_00_contract_bundle_for_distro_from(&workspace_root, distro_id)
-        .with_context(|| format!("loading 00Build contract bundle for '{}'", distro_id))?;
-    let stage00_filename = bundle.contract.artifacts.iso_filename.clone();
-    let filename = match stage {
-        0 => stage00_filename.clone(),
-        1 => derive_stage_iso_filename(&stage00_filename, STAGE01_SLUG),
-        _ => derive_stage_iso_filename(&stage00_filename, STAGE02_SLUG),
-    };
-    let stage_root = workspace_root
-        .join(".artifacts/out")
-        .join(distro_id)
-        .join(stage_output_dir_for_stage(stage));
-    let expected_path = stage_root.join(&filename);
-
-    let path = if let Some(run_iso) =
-        resolve_iso_from_latest_successful_run(&stage_root, &filename)?
-    {
-        run_iso
-    } else {
-        let build_stage = match stage {
-            0 => "00Build",
-            1 => "01Boot",
-            _ => "02LiveTools",
-        };
-        bail!(
-            "ISO not found from successful run manifests under '{}'. Expected ISO path: {}. Build {} {} first: \
-             cargo run -p distro-builder --bin distro-builder -- iso build {} {}",
-            stage_root.display(),
-            expected_path.display(),
-            ctx.name(),
-            build_stage,
-            distro_id,
-            build_stage
-        );
-    };
-
-    Ok(StageIsoTarget { path, filename })
-}
-
-fn resolve_iso_from_latest_successful_run(
-    stage_root: &Path,
-    iso_filename: &str,
-) -> Result<Option<PathBuf>> {
-    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
-    if !stage_root.is_dir() {
+    scenario: ScenarioId,
+) -> Result<Option<ScenarioIsoArtifact>> {
+    let Some(product_name) = scenario.release_product() else {
         return Ok(None);
+    };
+    let release_root = release_product_root_dir(distro_id, product_name);
+    let run_id = distro_builder::stage_runs::latest_successful_run_id(&release_root)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "scenario '{}' for '{}' requires release product '{}', but no successful runs were found under '{}'.\n\
+             Build it first: cargo run -p distro-builder --bin distro-builder -- release build iso {} {}",
+            scenario.key(),
+            distro_id,
+            product_name,
+            release_root.display(),
+            distro_id,
+            product_name
+        )
+    })?;
+    let run_dir = release_root.join(&run_id);
+    let manifest = load_release_run_manifest(&run_dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "release product '{}' for '{}' is missing run-manifest metadata under '{}'.",
+            product_name,
+            distro_id,
+            run_dir.display()
+        )
+    })?;
+    if manifest.status != "success" {
+        bail!(
+            "latest '{}' release run for '{}' is not successful under '{}'",
+            product_name,
+            distro_id,
+            run_dir.display()
+        );
+    }
+    if manifest.target_kind.as_deref() != Some("release-product")
+        || manifest.target_name.as_deref() != Some(product_name)
+    {
+        bail!(
+            "release run manifest under '{}' does not match expected product '{}'",
+            run_dir.display(),
+            product_name
+        );
     }
 
-    for entry in fs::read_dir(stage_root)
-        .with_context(|| format!("reading stage output directory '{}'", stage_root.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!(
-                "iterating stage output directory '{}'",
-                stage_root.display()
+    let iso_path = manifest
+        .iso_path
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "release product '{}' for '{}' is missing ISO output in '{}'.",
+                product_name,
+                distro_id,
+                run_dir.display()
             )
         })?;
-        let run_dir = entry.path();
-        if !run_dir.is_dir() {
-            continue;
-        }
-        let manifest_path = run_dir.join("run-manifest.json");
-        if !manifest_path.is_file() {
-            continue;
-        }
+    let filename = iso_path
+        .file_name()
+        .and_then(|part| part.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid ISO filename '{}'", iso_path.display()))?
+        .to_string();
 
-        let raw = fs::read(&manifest_path)
-            .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
-        let manifest: StageRunManifest = serde_json::from_slice(&raw)
-            .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
-        if manifest.status != "success" {
-            continue;
-        }
-
-        let sort_key = manifest
-            .finished_at_utc
-            .clone()
-            .unwrap_or(manifest.created_at_utc.clone());
-        let iso_candidate = manifest
-            .iso_path
-            .as_ref()
-            .map(PathBuf::from)
-            .filter(|path| path.is_file())
-            .unwrap_or_else(|| run_dir.join(iso_filename));
-
-        if iso_candidate.is_file() {
-            candidates.push((sort_key, iso_candidate));
-        }
-    }
-
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(candidates.into_iter().next().map(|(_, path)| path))
+    Ok(Some(ScenarioIsoArtifact {
+        scenario,
+        product_name,
+        path: iso_path,
+        filename,
+    }))
 }
 
-fn stage_output_dir_for_stage(stage: u32) -> &'static str {
-    match stage {
-        0 => STAGE00_DIRNAME,
-        1 => STAGE01_DIRNAME,
-        _ => STAGE02_DIRNAME,
+fn scenario_input_fingerprint(
+    distro_id: &str,
+    scenario: ScenarioId,
+    iso_artifact: Option<&ScenarioIsoArtifact>,
+) -> Result<String> {
+    if let Some(iso) = iso_artifact {
+        let mtime = std::fs::metadata(&iso.path)
+            .with_context(|| format!("reading metadata for '{}'", iso.path.display()))?
+            .modified()
+            .with_context(|| format!("reading mtime for '{}'", iso.path.display()))?
+            .duration_since(UNIX_EPOCH)
+            .with_context(|| format!("mtime before UNIX_EPOCH for '{}'", iso.path.display()))?
+            .as_secs();
+        return Ok(format!(
+            "iso:{}:{}:{}",
+            iso.product_name,
+            iso.path.display(),
+            mtime
+        ));
     }
+
+    let install_runtime = resolve_latest_install_runtime(distro_id)?;
+    Ok(format!(
+        "install-runtime:{}:{}",
+        scenario.key(),
+        install_runtime.run_id
+    ))
 }
 
-fn derive_stage_iso_filename(stage00_iso_filename: &str, stage_slug: &str) -> String {
-    if stage00_iso_filename.contains(STAGE00_SLUG) {
-        return stage00_iso_filename.replacen(STAGE00_SLUG, stage_slug, 1);
+fn load_release_run_manifest(run_dir: &Path) -> Result<Option<ReleaseRunManifest>> {
+    let manifest_path = run_dir.join("run-manifest.json");
+    if !manifest_path.is_file() {
+        return Ok(None);
     }
-    if let Some(base) = stage00_iso_filename.strip_suffix(".iso") {
-        return format!("{base}-{stage_slug}.iso");
-    }
-    format!("{stage00_iso_filename}-{stage_slug}.iso")
+    let raw = fs::read(&manifest_path)
+        .with_context(|| format!("reading release run manifest '{}'", manifest_path.display()))?;
+    let manifest: ReleaseRunManifest = serde_json::from_slice(&raw)
+        .with_context(|| format!("parsing release run manifest '{}'", manifest_path.display()))?;
+    Ok(Some(manifest))
+}
+
+fn release_product_root_dir(distro_id: &str, product_name: &str) -> PathBuf {
+    workspace_root()
+        .join(".artifacts/out")
+        .join(distro_id)
+        .join("releases")
+        .join(product_name)
 }
 
 fn spawn_live_qemu_with_ssh(
@@ -1009,69 +1206,60 @@ fn verify_stage02_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
     Ok("Stage 02 UX split-pane smoke verified (shell-left + docs-right)".to_string())
 }
 
-#[derive(Debug)]
-struct Stage03RuntimeArtifacts {
-    run_id: String,
-    disk_path: PathBuf,
-    ovmf_vars_path: PathBuf,
-}
-
 #[derive(Debug, Serialize)]
-struct RuntimeStageRunManifest {
+struct ScenarioRunManifest {
     run_id: String,
     distro_id: String,
-    stage_name: String,
-    stage_slug: String,
+    scenario_name: String,
+    compatibility_stage_name: String,
+    compatibility_stage_slug: String,
     status: String,
     created_at_utc: String,
     finished_at_utc: Option<String>,
-    stage_root_dir: String,
-    stage_output_dir: String,
+    scenario_root_dir: String,
+    output_dir: String,
     evidence_path: Option<String>,
     disk_path: Option<String>,
     ovmf_vars_path: Option<String>,
-    source_stage03_run_id: Option<String>,
+    source_install_run_id: Option<String>,
 }
 
-struct RuntimeStageRun {
+struct ScenarioRun {
     run_id: String,
     distro_id: String,
-    stage_name: String,
-    stage_slug: String,
-    stage_root_dir: PathBuf,
+    scenario: ScenarioId,
+    scenario_root_dir: PathBuf,
     output_dir: PathBuf,
     created_at_utc: String,
-    source_stage03_run_id: Option<String>,
+    source_install_run_id: Option<String>,
 }
 
-impl RuntimeStageRun {
+impl ScenarioRun {
     fn start(
         distro_id: &str,
-        stage_dirname: &str,
-        stage_name: &str,
-        stage_slug: &str,
-        source_stage03_run_id: Option<String>,
+        scenario: ScenarioId,
+        source_install_run_id: Option<String>,
     ) -> Result<Self> {
-        let stage_root_dir = stage_runtime_root_dir(distro_id, stage_dirname);
-        let legacy_current_dir = stage_root_dir.join("current");
+        let scenario_root_dir = scenario_runtime_root_dir(distro_id, scenario);
+        let legacy_current_dir = scenario_root_dir.join("current");
         if legacy_current_dir.is_dir() {
             fs::remove_dir_all(&legacy_current_dir).with_context(|| {
                 format!(
-                    "removing legacy runtime shortcut directory '{}'",
+                    "removing legacy scenario shortcut directory '{}'",
                     legacy_current_dir.display()
                 )
             })?;
         }
-        let (run_id, output_dir) = distro_builder::stage_runs::allocate_run_dir(&stage_root_dir)?;
+        let (run_id, output_dir) =
+            distro_builder::stage_runs::allocate_run_dir(&scenario_root_dir)?;
         let run = Self {
             run_id,
             distro_id: distro_id.to_string(),
-            stage_name: stage_name.to_string(),
-            stage_slug: stage_slug.to_string(),
-            stage_root_dir,
+            scenario,
+            scenario_root_dir,
             output_dir,
             created_at_utc: now_utc_sortable()?,
-            source_stage03_run_id,
+            source_install_run_id,
         };
         run.write_manifest("building", None, None, None, None)?;
         Ok(run)
@@ -1092,7 +1280,7 @@ impl RuntimeStageRun {
             ovmf_vars_path,
         )?;
         distro_builder::stage_runs::prune_old_runs(
-            &self.stage_root_dir,
+            &self.scenario_root_dir,
             STAGE_RUNTIME_RETENTION_COUNT,
         )
     }
@@ -1121,25 +1309,26 @@ impl RuntimeStageRun {
         disk_path: Option<&Path>,
         ovmf_vars_path: Option<&Path>,
     ) -> Result<()> {
-        let metadata = RuntimeStageRunManifest {
+        let metadata = ScenarioRunManifest {
             run_id: self.run_id.clone(),
             distro_id: self.distro_id.clone(),
-            stage_name: self.stage_name.clone(),
-            stage_slug: self.stage_slug.clone(),
+            scenario_name: self.scenario.key().to_string(),
+            compatibility_stage_name: self.scenario.compatibility_stage_name().to_string(),
+            compatibility_stage_slug: self.scenario.compatibility_stage_slug().to_string(),
             status: status.to_string(),
             created_at_utc: self.created_at_utc.clone(),
             finished_at_utc,
-            stage_root_dir: self.stage_root_dir.display().to_string(),
-            stage_output_dir: self.output_dir.display().to_string(),
+            scenario_root_dir: self.scenario_root_dir.display().to_string(),
+            output_dir: self.output_dir.display().to_string(),
             evidence_path: evidence_path.map(|p| p.display().to_string()),
             disk_path: disk_path.map(|p| p.display().to_string()),
             ovmf_vars_path: ovmf_vars_path.map(|p| p.display().to_string()),
-            source_stage03_run_id: self.source_stage03_run_id.clone(),
+            source_install_run_id: self.source_install_run_id.clone(),
         };
         let manifest_path = distro_builder::stage_runs::manifest_path(&self.output_dir);
         write_json_atomic(&manifest_path, &metadata).with_context(|| {
             format!(
-                "writing stage runtime metadata '{}'",
+                "writing scenario runtime metadata '{}'",
                 manifest_path.display()
             )
         })
@@ -1148,15 +1337,15 @@ impl RuntimeStageRun {
     fn write_evidence(&self, evidence: &str) -> Result<PathBuf> {
         let evidence_path = self.output_dir.join("last-result.txt");
         let body = format!(
-            "timestamp_unix_ns={}\ndistro={}\nstage={}\n{}\n",
+            "timestamp_unix_ns={}\ndistro={}\nscenario={}\n{}\n",
             now_unix_nanos()?,
             self.distro_id,
-            self.stage_name,
+            self.scenario.key(),
             evidence
         );
         fs::write(&evidence_path, body).with_context(|| {
             format!(
-                "writing stage runtime evidence '{}'",
+                "writing scenario runtime evidence '{}'",
                 evidence_path.display()
             )
         })?;
@@ -1164,25 +1353,25 @@ impl RuntimeStageRun {
     }
 }
 
-fn resolve_latest_stage03_runtime(distro_id: &str) -> Result<Stage03RuntimeArtifacts> {
-    let stage_root = stage_runtime_root_dir(distro_id, STAGE03_DIRNAME);
+pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenarioRuntime> {
+    let scenario_root = scenario_runtime_root_dir(distro_id, ScenarioId::Install);
     let run_id =
-        distro_builder::stage_runs::latest_successful_run_id(&stage_root)?.ok_or_else(|| {
+        distro_builder::stage_runs::latest_successful_run_id(&scenario_root)?.ok_or_else(|| {
             anyhow::anyhow!(
-                "Stage 03 runtime not found for '{}': no successful runs under '{}'.\n\
-                 Run: cargo run --bin stages -- --distro {} --stage 3",
+                "install scenario runtime not found for '{}': no successful runs under '{}'.\n\
+                 Run: cargo run --bin stages -- --distro {} --scenario install",
                 distro_id,
-                stage_root.display(),
+                scenario_root.display(),
                 distro_id
             )
         })?;
-    let run_dir = stage_root.join(&run_id);
-    let disk_path = run_dir.join(STAGE03_DISK_FILENAME);
-    let ovmf_vars_path = run_dir.join(STAGE03_OVMF_VARS_FILENAME);
+    let run_dir = scenario_root.join(&run_id);
+    let disk_path = run_dir.join(INSTALL_DISK_FILENAME);
+    let ovmf_vars_path = run_dir.join(INSTALL_OVMF_VARS_FILENAME);
     if !disk_path.is_file() {
         bail!(
-            "Stage 03 disk image missing for '{}' run '{}': '{}'.\n\
-             Re-run Stage 03: cargo run --bin stages -- --distro {} --stage 3",
+            "install scenario disk image missing for '{}' run '{}': '{}'.\n\
+             Re-run install: cargo run --bin stages -- --distro {} --scenario install",
             distro_id,
             run_id,
             disk_path.display(),
@@ -1191,26 +1380,27 @@ fn resolve_latest_stage03_runtime(distro_id: &str) -> Result<Stage03RuntimeArtif
     }
     if !ovmf_vars_path.is_file() {
         bail!(
-            "Stage 03 OVMF vars missing for '{}' run '{}': '{}'.\n\
-             Re-run Stage 03: cargo run --bin stages -- --distro {} --stage 3",
+            "install scenario OVMF vars missing for '{}' run '{}': '{}'.\n\
+             Re-run install: cargo run --bin stages -- --distro {} --scenario install",
             distro_id,
             run_id,
             ovmf_vars_path.display(),
             distro_id
         );
     }
-    Ok(Stage03RuntimeArtifacts {
+    Ok(InstallScenarioRuntime {
         run_id,
         disk_path,
         ovmf_vars_path,
     })
 }
 
-fn stage_runtime_root_dir(distro_id: &str, stage_dirname: &str) -> PathBuf {
+fn scenario_runtime_root_dir(distro_id: &str, scenario: ScenarioId) -> PathBuf {
     workspace_root()
         .join(".artifacts/out")
         .join(distro_id)
-        .join(stage_dirname)
+        .join(SCENARIO_ROOT_DIRNAME)
+        .join(scenario.scenario_output_dirname())
 }
 
 fn workspace_root() -> PathBuf {
@@ -1228,8 +1418,8 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::create_dir_all(parent)
         .with_context(|| format!("creating metadata parent directory '{}'", parent.display()))?;
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let payload =
-        serde_json::to_vec_pretty(value).with_context(|| "serializing stage runtime metadata")?;
+    let payload = serde_json::to_vec_pretty(value)
+        .with_context(|| "serializing scenario runtime metadata")?;
     fs::write(&tmp, payload).with_context(|| format!("writing temp file '{}'", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| {
         format!(
@@ -1360,20 +1550,20 @@ fn get_tool_validation_command(tool: &str) -> String {
     }
 }
 
-fn print_failure(stage: u32, err: &anyhow::Error) {
+fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
     eprintln!();
     eprintln!(
-        "{} Stage {:02} FAILED: {}",
+        "{} {} FAILED: {}",
         "[FAIL]".red().bold(),
-        stage,
-        stage_name(stage)
+        scenario.display_name(),
+        scenario.compatibility_stage_name()
     );
     eprintln!();
     eprintln!("  Error: {:#}", err);
     eprintln!();
 
-    match stage {
-        1 => {
+    match scenario {
+        ScenarioId::LiveBoot => {
             eprintln!("  Common causes:");
             eprintln!("    - ISO not built or corrupted");
             eprintln!("    - Kernel panic during boot");
@@ -1386,7 +1576,7 @@ fn print_failure(stage: u32, err: &anyhow::Error) {
                 "    - Rebuild Stage 01 ISO: cargo run -p distro-builder --bin distro-builder -- iso build <distro> 01Boot"
             );
         }
-        2 => {
+        ScenarioId::LiveTools => {
             eprintln!("  Common causes:");
             eprintln!("    - Tools not included in initramfs or rootfs");
             eprintln!("    - PATH not set correctly");
@@ -1394,7 +1584,7 @@ fn print_failure(stage: u32, err: &anyhow::Error) {
             eprintln!("  Try:");
             eprintln!("    - Check package list in distro-spec");
         }
-        3 => {
+        ScenarioId::Install => {
             eprintln!("  Common causes:");
             eprintln!("    - recstrap/recfstab/recchroot broken");
             eprintln!("    - Disk too small or partition failure");
@@ -1403,19 +1593,19 @@ fn print_failure(stage: u32, err: &anyhow::Error) {
             eprintln!("  Try:");
             eprintln!("    - Manual install: boot ISO, run install commands by hand");
         }
-        4 => {
+        ScenarioId::InstalledBoot => {
             eprintln!("  Common causes:");
             eprintln!("    - Bootloader not installed correctly");
             eprintln!("    - UKI not found by systemd-boot");
             eprintln!("    - Missing kernel modules");
         }
-        5 => {
+        ScenarioId::AutomatedLogin => {
             eprintln!("  Common causes:");
             eprintln!("    - No serial getty enabled");
             eprintln!("    - Password not set correctly");
             eprintln!("    - Shell not functional");
         }
-        6 => {
+        ScenarioId::Runtime => {
             eprintln!("  Common causes:");
             eprintln!("    - Packages not installed in rootfs");
             eprintln!("    - PATH misconfigured");
