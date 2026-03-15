@@ -17,9 +17,9 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use distro_builder::compat_inputs::build_capability::{
-    check_kernel_installed_via_recipe, run_00build_evidence_script, S00BuildEvidenceSpec,
-    S00BuildKernelSpec,
+use distro_builder::build_host::{
+    check_kernel_preinstalled_via_recipe, run_build_host_evidence_script, BuildHostEvidenceSpec,
+    BuildHostKernelSpec,
 };
 use distro_contract::{
     load_variant_contract_bundle_for_distro_from, require_valid_contract,
@@ -258,12 +258,12 @@ fn verify_kernel_recipe_is_installed(
     distro_id: &str,
 ) -> Result<(), String> {
     let stage_00 = &bundle.contract.stages.stage_00_build;
-    let spec = S00BuildKernelSpec {
+    let spec = BuildHostKernelSpec {
         recipe_kernel_script: stage_00.recipe_kernel_script.clone(),
         kernel_kconfig_path: stage_00.kernel_kconfig_path.clone(),
     };
 
-    check_kernel_installed_via_recipe(
+    check_kernel_preinstalled_via_recipe(
         &bundle.repo_root,
         &bundle.variant_dir,
         distro_id,
@@ -316,7 +316,7 @@ fn verify_stage_00_evidence_script(
             .unwrap_or(release_root);
         (run_output_dir, iso_filename)
     };
-    let spec = S00BuildEvidenceSpec {
+    let spec = BuildHostEvidenceSpec {
         script_path: stage_00.evidence.script_path.clone(),
         pass_marker: stage_00.evidence.pass_marker.clone(),
         kernel_release_path: stage_00.kernel_release_path.clone(),
@@ -324,7 +324,7 @@ fn verify_stage_00_evidence_script(
         iso_filename,
     };
 
-    run_00build_evidence_script(
+    run_build_host_evidence_script(
         &bundle.repo_root,
         &bundle.variant_dir,
         kernel_output_dir,
