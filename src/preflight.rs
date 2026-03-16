@@ -942,28 +942,22 @@ mod tests {
     #[test]
     fn resolve_runtime_artifacts_prefers_product_native_names() {
         let dir = temp_dir("product-native");
-        write_file(&dir.join("s00-filesystem.erofs"), "rootfs");
-        write_file(&dir.join("s00-initramfs-live.cpio.gz"), "initramfs");
-        write_file(
-            &dir.join("s00-initramfs-installed.img"),
-            "install-initramfs",
-        );
-        write_file(&dir.join("s00-overlayfs.erofs"), "overlay");
+        write_file(&dir.join("filesystem.erofs"), "rootfs");
+        write_file(&dir.join("initramfs-live.cpio.gz"), "initramfs");
+        write_file(&dir.join("initramfs-installed.img"), "install-initramfs");
+        write_file(&dir.join("overlayfs.erofs"), "overlay");
         write_file(&dir.join(".live-rootfs-source.path"), "./rootfs-source\n");
         fs::create_dir_all(dir.join("live-overlay")).expect("create live overlay");
 
         let resolved =
             resolve_runtime_artifacts(&dir, "levitate").expect("resolve runtime artifacts");
-        assert_eq!(resolved.rootfs_image, dir.join("s00-filesystem.erofs"));
-        assert_eq!(
-            resolved.initramfs_live,
-            dir.join("s00-initramfs-live.cpio.gz")
-        );
+        assert_eq!(resolved.rootfs_image, dir.join("filesystem.erofs"));
+        assert_eq!(resolved.initramfs_live, dir.join("initramfs-live.cpio.gz"));
         assert_eq!(
             resolved.initramfs_installed,
-            Some(dir.join("s00-initramfs-installed.img"))
+            Some(dir.join("initramfs-installed.img"))
         );
-        assert_eq!(resolved.overlay_image, dir.join("s00-overlayfs.erofs"));
+        assert_eq!(resolved.overlay_image, dir.join("overlayfs.erofs"));
         assert_eq!(
             resolved.rootfs_source_pointer,
             dir.join(".live-rootfs-source.path")
