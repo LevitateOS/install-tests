@@ -23,8 +23,8 @@ use distro_builder::build_host::{
 };
 use distro_contract::{
     load_variant_contract_bundle_for_distro_from, require_valid_contract,
-    validate_live_boot_runtime, validate_stage_00_runtime_with_artifacts, LiveBootRuntimeArtifacts,
-    Stage00RuntimeArtifacts,
+    validate_build_runtime_with_artifacts, validate_live_boot_runtime, BuildRuntimeArtifacts,
+    LiveBootRuntimeArtifacts,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
@@ -181,11 +181,11 @@ fn verify_conformance_contract(
         );
     }
 
-    let runtime_report = validate_stage_00_runtime_with_artifacts(
+    let runtime_report = validate_build_runtime_with_artifacts(
         &bundle.contract,
         &bundle.variant_dir,
         &kernel_output_dir,
-        &Stage00RuntimeArtifacts {
+        &BuildRuntimeArtifacts {
             rootfs_image: runtime_artifacts.rootfs_image.clone(),
             initramfs_live: runtime_artifacts.initramfs_live.clone(),
             overlay_image: runtime_artifacts.overlay_image.clone(),
