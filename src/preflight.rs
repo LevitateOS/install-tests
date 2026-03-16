@@ -199,7 +199,7 @@ fn verify_conformance_contract(
     );
 
     if validate_live_boot {
-        let stage01_report = validate_live_boot_runtime(
+        let live_boot_report = validate_live_boot_runtime(
             &bundle.contract,
             &LiveBootRuntimeArtifacts {
                 rootfs_image: runtime_artifacts.rootfs_image.clone(),
@@ -210,7 +210,7 @@ fn verify_conformance_contract(
             },
         );
         details.extend(
-            stage01_report
+            live_boot_report
                 .violations
                 .into_iter()
                 .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
@@ -221,7 +221,7 @@ fn verify_conformance_contract(
         details.push(err);
     }
     if let Err(err) =
-        verify_stage_00_evidence_script(&bundle, &kernel_output_dir, distro_id, resolved_iso_path)
+        verify_build_evidence_script(&bundle, &kernel_output_dir, distro_id, resolved_iso_path)
     {
         details.push(err);
     }
@@ -272,13 +272,13 @@ fn verify_kernel_recipe_is_installed(
     )
     .map_err(|e| {
         format!(
-            "Stage00.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
+            "build.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
             e
         )
     })
 }
 
-fn verify_stage_00_evidence_script(
+fn verify_build_evidence_script(
     bundle: &distro_contract::LoadedVariantContract,
     kernel_output_dir: &Path,
     distro_id: &str,
@@ -288,7 +288,7 @@ fn verify_stage_00_evidence_script(
     let (run_output_dir, iso_filename) = if let Some(iso_path) = resolved_iso_path {
         let parent = iso_path.parent().ok_or_else(|| {
             format!(
-                "Stage00.evidence [InvalidEvidenceDeclaration] ISO path has no parent directory: {}",
+                "build.evidence [InvalidEvidenceDeclaration] ISO path has no parent directory: {}",
                 iso_path.display()
             )
         })?;
@@ -297,7 +297,7 @@ fn verify_stage_00_evidence_script(
             .and_then(|part| part.to_str())
             .ok_or_else(|| {
                 format!(
-                    "Stage00.evidence [InvalidEvidenceDeclaration] ISO path has no valid filename: {}",
+                    "build.evidence [InvalidEvidenceDeclaration] ISO path has no valid filename: {}",
                     iso_path.display()
                 )
             })?
@@ -309,10 +309,10 @@ fn verify_stage_00_evidence_script(
             "contract.transforms.iso.output_names",
             distro_id,
         )
-        .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?;
+        .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))?;
         let release_root = release_product_root_dir_for_distro(distro_id, "base-rootfs");
         let run_output_dir = resolve_latest_successful_run_dir(&release_root, &iso_filename)
-            .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))?
+            .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))?
             .unwrap_or(release_root);
         (run_output_dir, iso_filename)
     };
@@ -331,7 +331,7 @@ fn verify_stage_00_evidence_script(
         &run_output_dir,
         &spec,
     )
-    .map_err(|e| format!("Stage00.evidence [InvalidEvidenceDeclaration] {}", e))
+    .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))
 }
 
 fn workspace_root() -> PathBuf {
