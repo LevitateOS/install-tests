@@ -5,6 +5,10 @@
 //! init system and bootloader differences.
 
 use anyhow::{Context, Result};
+use distro_contract::{
+    load_variant_contract_for_distro_from, AutomatedLoginStage, BootStage, RuntimePolicyStage,
+    ToolsStage,
+};
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -40,8 +44,6 @@ pub trait DistroContext: Send + Sync {
     fn live_boot_success_patterns(&self) -> &[&str];
 
     /// Patterns indicating successful installed system boot.
-    fn installed_boot_success_patterns(&self) -> &[&str];
-
     /// Patterns indicating fatal boot error.
     ///
     /// If any of these appear, the test fails immediately.
@@ -142,20 +144,6 @@ pub trait DistroContext: Send + Sync {
     fn test_instrumentation_source(&self) -> &str;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // User/Auth
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// Default username created during installation.
-    fn default_username(&self) -> &str;
-
-    /// Default password for both root and user.
-    fn default_password(&self) -> &str;
-
-    /// Login prompt pattern to detect.
-    #[allow(dead_code)]
-    fn login_prompt_pattern(&self) -> &str;
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // Summary Display
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -165,15 +153,8 @@ pub trait DistroContext: Send + Sync {
     /// Boot target name for display (e.g., "multi-user.target", "default runlevel").
     fn boot_target_name(&self) -> &str;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Tool Expectations (Scenarios)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     /// Tools expected to be present in the live ISO environment.
     fn live_tools(&self) -> &[&str];
-
-    /// Tools expected to be present on the installed system.
-    fn installed_tools(&self) -> &[&str];
 }
 
 /// Create a DistroContext based on the distro ID string.
@@ -208,6 +189,14 @@ struct LiveToolsScenarioToml {
     install_experience: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct InstalledScenarioFacts {
+    pub installed_boot: BootStage,
+    pub automated_login: AutomatedLoginStage,
+    pub installed_tools: ToolsStage,
+    pub runtime_policy: RuntimePolicyStage,
+}
+
 pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
     let scenarios_path = workspace_root()
         .join("distro-variants")
@@ -218,6 +207,17 @@ pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
     let parsed: ScenariosToml = toml::from_str(&raw)
         .with_context(|| format!("parsing scenarios config '{}'", scenarios_path.display()))?;
     Ok(parsed.scenarios.live_tools.install_experience)
+}
+
+pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {
+    let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
+    Ok(InstalledScenarioFacts {
+        installed_boot: contract.scenarios.installed_boot,
+        automated_login: contract.scenarios.automated_login,
+        installed_tools: contract.scenarios.installed_tools,
+        runtime_policy: contract.scenarios.runtime_policy,
+    })
 }
 
 fn workspace_root() -> PathBuf {

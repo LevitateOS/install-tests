@@ -257,10 +257,10 @@ fn verify_kernel_recipe_is_installed(
     kernel_output_dir: &Path,
     distro_id: &str,
 ) -> Result<(), String> {
-    let stage_00 = &bundle.contract.stages.stage_00_build;
+    let build = &bundle.contract.build;
     let spec = BuildHostKernelSpec {
-        recipe_kernel_script: stage_00.recipe_kernel_script.clone(),
-        kernel_kconfig_path: stage_00.kernel_kconfig_path.clone(),
+        recipe_kernel_script: build.kernel.recipe_script.clone(),
+        kernel_kconfig_path: build.kernel.kconfig_path.clone(),
     };
 
     check_kernel_preinstalled_via_recipe(
@@ -284,7 +284,7 @@ fn verify_stage_00_evidence_script(
     distro_id: &str,
     resolved_iso_path: Option<&Path>,
 ) -> Result<(), String> {
-    let stage_00 = &bundle.contract.stages.stage_00_build;
+    let build = &bundle.contract.build;
     let (run_output_dir, iso_filename) = if let Some(iso_path) = resolved_iso_path {
         let parent = iso_path.parent().ok_or_else(|| {
             format!(
@@ -317,10 +317,10 @@ fn verify_stage_00_evidence_script(
         (run_output_dir, iso_filename)
     };
     let spec = BuildHostEvidenceSpec {
-        script_path: stage_00.evidence.script_path.clone(),
-        pass_marker: stage_00.evidence.pass_marker.clone(),
-        kernel_release_path: stage_00.kernel_release_path.clone(),
-        kernel_image_path: stage_00.kernel_image_path.clone(),
+        script_path: build.evidence.script_path.clone(),
+        pass_marker: build.evidence.pass_marker.clone(),
+        kernel_release_path: build.kernel.release_path.clone(),
+        kernel_image_path: build.kernel.image_path.clone(),
         iso_filename,
     };
 
