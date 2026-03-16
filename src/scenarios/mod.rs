@@ -15,13 +15,13 @@
 
 pub mod state;
 
-use crate::distro::{context_for_distro, DistroContext};
+use crate::distro::{context_for_distro, load_installed_scenario_facts, DistroContext};
 use crate::preflight::require_preflight_with_iso_for_distro;
 use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use distro_contract::{load_variant_contract_bundle_for_distro_from, RootfsMutability};
+use distro_contract::RootfsMutability;
 use recshuttle::{InstallLayout, InstallPlanSpec, RemoteInstallerService, SshExecOutput};
 use serde::{Deserialize, Serialize};
 use state::ScenarioState;
@@ -603,12 +603,22 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         installer.wait_ready(Duration::from_secs(ctx.live_boot_stall_timeout_secs()))?;
 
         let install_disk = installer.resolve_install_disk()?;
+        let installed_facts = load_installed_scenario_facts(ctx.id())?;
         let install_layout = install_layout_for_distro(ctx.id())?;
         let install_spec = InstallPlanSpec {
             distro_id: ctx.id().to_string(),
             os_name: ctx.name().to_string(),
             default_hostname: ctx.default_hostname().to_string(),
-            default_password: ctx.default_password().to_string(),
+            default_password: installed_facts
+                .automated_login
+                .default_password
+                .clone()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing canonical automated-login default_password for '{}'",
+                        ctx.id()
+                    )
+                })?,
             install_bootloader_cmd: ctx.install_bootloader_cmd().to_string(),
             enable_serial_getty_cmd: ctx.enable_serial_getty_cmd(),
             include_initramfs: ctx.init_system_name() != "OpenRC",
@@ -752,7 +762,18 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
 
     // Attempt login
-    console.login("root", ctx.default_password(), Duration::from_secs(15))?;
+    let facts = load_installed_scenario_facts(ctx.id())?;
+    let default_password = facts
+        .automated_login
+        .default_password
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "missing canonical automated-login default_password for '{}'",
+                ctx.id()
+            )
+        })?;
+    console.login("root", default_password, Duration::from_secs(15))?;
 
     // Verify shell works
     let result = console.exec("echo STAGE_LOGIN_OK", Duration::from_secs(5))?;
@@ -780,9 +801,25 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
     )?;
 
     console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
-    console.login("root", ctx.default_password(), Duration::from_secs(15))?;
+    let facts = load_installed_scenario_facts(ctx.id())?;
+    let default_password = facts
+        .automated_login
+        .default_password
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "missing canonical automated-login default_password for '{}'",
+                ctx.id()
+            )
+        })?;
+    console.login("root", default_password, Duration::from_secs(15))?;
 
-    let tools: Vec<&str> = ctx.installed_tools().to_vec();
+    let tools: Vec<&str> = facts
+        .installed_tools
+        .required_tools
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut missing = Vec::new();
     let mut found = Vec::new();
 
@@ -1369,13 +1406,8 @@ fn verify_live_overlay_behavior(console: &mut Console) -> Result<String> {
 }
 
 fn install_layout_for_distro(distro_id: &str) -> Result<InstallLayout> {
-    let bundle = load_variant_contract_bundle_for_distro_from(&workspace_root(), distro_id)
-        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
-
-    match bundle
-        .contract
-        .stages
-        .stage_07_runtime_policy
+    match load_installed_scenario_facts(distro_id)?
+        .runtime_policy
         .rootfs_mutability
     {
         RootfsMutability::Mutable => Ok(InstallLayout::MutableSingleRoot),

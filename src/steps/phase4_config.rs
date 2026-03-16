@@ -8,7 +8,7 @@
 //! User creation MUST include password - empty passwords = security hole.
 
 use super::{CheckResult, Step, StepResult};
-use crate::distro::DistroContext;
+use crate::distro::{load_installed_scenario_facts, DistroContext};
 use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
@@ -238,7 +238,17 @@ impl Step for SetRootPassword {
         // is now codified in the build system.
         //
         // See: https://github.com/systemd/systemd/issues/9197
-        let password = ctx.default_password();
+        let facts = load_installed_scenario_facts(ctx.id())?;
+        let password = facts
+            .automated_login
+            .default_password
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_password for '{}'",
+                    ctx.id()
+                )
+            })?;
 
         // Generate SHA-512 password hash using openssl (available on all systems)
         // The -6 option uses SHA-512 (same as yescrypt in terms of security)
@@ -346,7 +356,17 @@ impl Step for CreateUser {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Get user details from distro context
-        let username = ctx.default_username();
+        let facts = load_installed_scenario_facts(ctx.id())?;
+        let username = facts
+            .automated_login
+            .default_username
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_username for '{}'",
+                    ctx.id()
+                )
+            })?;
         let user_shell = ctx.chroot_shell(); // Use chroot shell as default user shell
 
         // Default groups for sudo/admin access
@@ -402,7 +422,16 @@ impl Step for CreateUser {
 
         // Set user password using direct shadow manipulation (same workaround as root password)
         // chpasswd via PAM silently fails in chroot environments
-        let password = ctx.default_password();
+        let password = facts
+            .automated_login
+            .default_password
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_password for '{}'",
+                    ctx.id()
+                )
+            })?;
 
         // Generate SHA-512 password hash using stdin to avoid shell escaping issues
         let hash_cmd = format!(

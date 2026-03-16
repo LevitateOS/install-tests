@@ -27,15 +27,6 @@ impl DistroContext for AcornContext {
         &["___SHELL_READY___"]
     }
 
-    fn installed_boot_success_patterns(&self) -> &[&str] {
-        &[
-            "___SHELL_READY___",
-            "acornos login:",
-            "login:",
-            "Welcome to AcornOS",
-        ]
-    }
-
     fn boot_error_patterns(&self) -> &[&str] {
         BASE.boot_error_patterns()
     }
@@ -126,18 +117,6 @@ impl DistroContext for AcornContext {
         )
     }
 
-    fn default_username(&self) -> &str {
-        "acorn"
-    }
-
-    fn default_password(&self) -> &str {
-        "acorn"
-    }
-
-    fn login_prompt_pattern(&self) -> &str {
-        "acornos login:"
-    }
-
     fn init_system_name(&self) -> &str {
         BASE.init_system_name()
     }
@@ -171,12 +150,6 @@ impl DistroContext for AcornContext {
             "htop", // htop
             "grep", // grep
             "find", // findutils
-        ]
-    }
-
-    fn installed_tools(&self) -> &[&str] {
-        &[
-            "sudo", "ip", "ssh", "ash", "mount", "umount", "dmesg", "ps", "ls", "cat",
         ]
     }
 }

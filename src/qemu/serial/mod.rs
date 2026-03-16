@@ -17,7 +17,7 @@
 // Re-export from recqemu
 pub use recqemu::serial::{generate_command_markers, is_marker_line, CommandResult, Console};
 
-use crate::distro::DistroContext;
+use crate::distro::{load_installed_scenario_facts, DistroContext};
 use crate::executor::{ExecResult, Executor};
 use anyhow::Result;
 use std::time::Duration;
@@ -108,10 +108,17 @@ impl SerialExecutorExt for Console {
         stall_timeout: Duration,
         ctx: &dyn DistroContext,
     ) -> Result<()> {
+        let facts = load_installed_scenario_facts(ctx.id())?;
+        let success_patterns: Vec<&str> = facts
+            .installed_boot
+            .success_patterns
+            .iter()
+            .map(String::as_str)
+            .collect();
         Console::wait_for_boot_with_patterns(
             self,
             stall_timeout,
-            ctx.installed_boot_success_patterns(),
+            &success_patterns,
             ctx.critical_boot_errors(),
             true, // Track service failures for later diagnostic capture
         )

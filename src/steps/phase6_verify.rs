@@ -17,7 +17,7 @@
 //! - Essential commands prove base system is complete
 
 use super::{CheckResult, Step, StepResult};
-use crate::distro::DistroContext;
+use crate::distro::{load_installed_scenario_facts, DistroContext};
 use crate::executor::Executor;
 use anyhow::Result;
 use leviso_cheat_guard::cheat_ensure;
@@ -211,7 +211,17 @@ impl Step for VerifyUserLogin {
         let mut result = StepResult::new(self.num(), self.name());
 
         // Check user exists
-        let username = ctx.default_username();
+        let facts = load_installed_scenario_facts(ctx.id())?;
+        let username = facts
+            .automated_login
+            .default_username
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_username for '{}'",
+                    ctx.id()
+                )
+            })?;
         let user_check = executor.exec(&format!("id {}", username), Duration::from_secs(5))?;
 
         // CHEAT GUARD: User account MUST exist after reboot
@@ -412,7 +422,17 @@ impl Step for VerifySudo {
 
         // Check if wheel group exists and user is in it
         // This is the standard sudo configuration on most Linux systems
-        let username = ctx.default_username();
+        let facts = load_installed_scenario_facts(ctx.id())?;
+        let username = facts
+            .automated_login
+            .default_username
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_username for '{}'",
+                    ctx.id()
+                )
+            })?;
         let wheel_check = executor.exec(
             &format!(
                 "getent group wheel && id {} | grep -q wheel && echo WHEEL_OK",
@@ -443,7 +463,16 @@ impl Step for VerifySudo {
         );
 
         // Test sudo actually works (with password from stdin)
-        let password = ctx.default_password();
+        let password = facts
+            .automated_login
+            .default_password
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_password for '{}'",
+                    ctx.id()
+                )
+            })?;
         let sudo_test = executor.exec(
             &format!(
                 "echo '{}' | su - {} -c 'sudo -S whoami'",

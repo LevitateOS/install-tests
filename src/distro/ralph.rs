@@ -20,10 +20,6 @@ impl DistroContext for RalphContext {
         &["___SHELL_READY___"]
     }
 
-    fn installed_boot_success_patterns(&self) -> &[&str] {
-        &["___SHELL_READY___", "ralphos login:", "multi-user.target"]
-    }
-
     fn boot_error_patterns(&self) -> &[&str] {
         &[
             "No bootable device",
@@ -171,18 +167,6 @@ impl DistroContext for RalphContext {
         include_str!("../../../../distro-spec/src/shared/auth/files/00-levitate-test.sh")
     }
 
-    fn default_username(&self) -> &str {
-        "ralph"
-    }
-
-    fn default_password(&self) -> &str {
-        "ralph"
-    }
-
-    fn login_prompt_pattern(&self) -> &str {
-        "ralphos login:"
-    }
-
     fn init_system_name(&self) -> &str {
         "systemd"
     }
@@ -204,12 +188,6 @@ impl DistroContext for RalphContext {
             "curl",
             "grep",
             "find",
-        ]
-    }
-
-    fn installed_tools(&self) -> &[&str] {
-        &[
-            "sudo", "ip", "ssh", "bash", "mount", "umount", "dmesg", "ps", "ls", "cat",
         ]
     }
 }

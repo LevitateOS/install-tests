@@ -28,15 +28,6 @@ impl DistroContext for IuppiterContext {
         &["___SHELL_READY___"]
     }
 
-    fn installed_boot_success_patterns(&self) -> &[&str] {
-        &[
-            "___SHELL_READY___",
-            "iuppiter login:",
-            "login:",
-            "Welcome to IuppiterOS",
-        ]
-    }
-
     fn boot_error_patterns(&self) -> &[&str] {
         BASE.boot_error_patterns()
     }
@@ -129,18 +120,6 @@ impl DistroContext for IuppiterContext {
         )
     }
 
-    fn default_username(&self) -> &str {
-        "operator"
-    }
-
-    fn default_password(&self) -> &str {
-        "iuppiter"
-    }
-
-    fn login_prompt_pattern(&self) -> &str {
-        "iuppiter login:"
-    }
-
     fn init_system_name(&self) -> &str {
         BASE.init_system_name()
     }
@@ -171,23 +150,6 @@ impl DistroContext for IuppiterContext {
             "less", // less - pager for logs
             "grep", // grep - text search
             "find", // findutils - file search
-        ]
-    }
-
-    fn installed_tools(&self) -> &[&str] {
-        &[
-            "sudo",
-            "ip",
-            "ssh",
-            "ash",
-            "smartctl",
-            "hdparm",
-            "sg_inq",
-            "recab",
-            "iuppiter-dar",
-            "mount",
-            "umount",
-            "dmesg",
         ]
     }
 }

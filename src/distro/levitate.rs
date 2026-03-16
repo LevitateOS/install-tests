@@ -34,19 +34,6 @@ impl DistroContext for LevitateContext {
         &["___SHELL_READY___"]
     }
 
-    fn installed_boot_success_patterns(&self) -> &[&str] {
-        // Unlike live ISO which has autologin, installed system requires login
-        // Use "levitateos login:" to avoid matching "Login Prompts" in systemd output
-        // After login, shell emits ___SHELL_READY___ for command execution
-        // Also accept multi-user.target - proves system booted successfully even if
-        // serial console login prompt has issues (VT emulation quirks in QEMU)
-        &[
-            "___SHELL_READY___",
-            "levitateos login:",
-            "multi-user.target",
-        ]
-    }
-
     fn boot_error_patterns(&self) -> &[&str] {
         &[
             // === UEFI STAGE ===
@@ -229,22 +216,6 @@ impl DistroContext for LevitateContext {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // User/Auth
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    fn default_username(&self) -> &str {
-        "levitate"
-    }
-
-    fn default_password(&self) -> &str {
-        "levitate"
-    }
-
-    fn login_prompt_pattern(&self) -> &str {
-        "levitateos login:"
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // Summary Display
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -278,9 +249,5 @@ impl DistroContext for LevitateContext {
             "grep", // grep (coreutils)
             "find", // findutils
         ]
-    }
-
-    fn installed_tools(&self) -> &[&str] {
-        &["sudo", "ip", "ssh", "mount", "umount", "dmesg", "bun"]
     }
 }
