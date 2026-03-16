@@ -1,5 +1,5 @@
 #!/bin/sh
-# Stage 03: Installation Validation
+# Install Validation
 #
 # Verifies that the installation process completes successfully.
 # This runs after performing a scripted installation to disk.
@@ -17,7 +17,7 @@ else
     exit 1
 fi
 
-stage_header 3 "Installation Validation"
+scenario_header "Install Validation"
 
 info "This stage verifies the installation completed successfully"
 echo
@@ -30,5 +30,5 @@ test_file_exists "/mnt/sysroot/etc/fstab" "fstab generated"
 section_header "Bootloader"
 test_command "Bootloader installed" "ls /mnt/sysroot/boot/EFI/BOOT/BOOTX64.EFI"
 
-report_results 3
+report_results "Install"
 exit $?

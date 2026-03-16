@@ -103,7 +103,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh" || source "/usr/local/lib/stage-tests/common.sh"
 
 # Header
-stage_header N "Stage Name"
+scenario_header "Scenario Name"
 
 # Tests
 section_header "Test Category"
@@ -112,7 +112,7 @@ test_file_exists "/path/to/file" "description"
 test_command "description" "command to run"
 
 # Report
-report_results N
+report_results "Scenario Name"
 exit $?
 ```
 
@@ -124,13 +124,13 @@ exit $?
 - `test_command <description> <command>` - Test arbitrary command succeeds
 
 #### Output Functions
-- `stage_header <number> <name>` - Print stage header
+- `scenario_header <name>` - Print scenario header
 - `section_header <name>` - Print section header
 - `info <message>` - Print info message
 - `warn <message>` - Print warning
 - `error <message>` - Print error
 - `success <message>` - Print success message
-- `report_results <stage>` - Print final results (pass/fail)
+- `report_results <scenario> [pass_marker] [fail_marker]` - Print final results (pass/fail)
 
 #### State Variables
 - `PASSED_TESTS[]` - Array of tests that passed

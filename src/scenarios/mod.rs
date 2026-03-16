@@ -21,7 +21,7 @@ use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use distro_contract::RootfsMutability;
+use distro_contract::{load_variant_contract_for_distro_from, RootfsMutability};
 use recshuttle::{InstallLayout, InstallPlanSpec, RemoteInstallerService, SshExecOutput};
 use serde::{Deserialize, Serialize};
 use state::ScenarioState;
@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LIVE_BOOT_VALIDATION_SCRIPT: &str = "/usr/local/bin/live-boot.sh";
 const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/live-boot-ssh-preflight.sh";
 const SCENARIO_RUNTIME_RETENTION_COUNT: usize = 5;
 const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
@@ -141,6 +140,12 @@ struct ReleaseRunManifest {
     iso_path: Option<String>,
     target_kind: Option<String>,
     target_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScenarioEvidenceSpec {
+    script_path: String,
+    pass_marker: String,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +392,7 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 
 /// Live Boot scenario — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
+    let live_boot_evidence = load_live_boot_evidence_spec(ctx.id())?;
     let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
     let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
 
@@ -394,8 +400,12 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
         verify_live_boot_ssh_login(&mut console, ssh_host_port)?;
 
-        run_stage_script_over_ssh(ssh_host_port, LIVE_BOOT_VALIDATION_SCRIPT)?;
-        run_stage_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT)?;
+        run_stage_script_over_ssh(
+            ssh_host_port,
+            &installed_script_path(&live_boot_evidence.script_path),
+            Some(&live_boot_evidence.pass_marker),
+        )?;
+        run_stage_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT, None)?;
 
         Ok(
             "Boot markers detected + SSH login probe passed + live-boot script checks passed"
@@ -1085,8 +1095,20 @@ fn ssh_exec(ssh_host_port: u16, remote_cmd: &str) -> Result<SshExecOutput> {
     })
 }
 
-fn run_stage_script_over_ssh(ssh_host_port: u16, script_path: &str) -> Result<()> {
-    let result = ssh_exec(ssh_host_port, script_path)?;
+fn run_stage_script_over_ssh(
+    ssh_host_port: u16,
+    script_path: &str,
+    pass_marker: Option<&str>,
+) -> Result<()> {
+    let remote_cmd = match pass_marker {
+        Some(pass_marker) => format!(
+            "SCENARIO_PASS_MARKER={} {}",
+            shell_single_quote(pass_marker),
+            shell_single_quote(script_path)
+        ),
+        None => shell_single_quote(script_path),
+    };
+    let result = ssh_exec(ssh_host_port, &remote_cmd)?;
     if result.exit_code == 0 {
         return Ok(());
     }
@@ -1097,6 +1119,10 @@ fn run_stage_script_over_ssh(ssh_host_port: u16, script_path: &str) -> Result<()
         result.exit_code,
         result.output.trim()
     );
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn verify_install_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
@@ -1347,10 +1373,23 @@ fn workspace_root() -> PathBuf {
     root.canonicalize().unwrap_or(root)
 }
 
+fn installed_script_path(script_filename: &str) -> String {
+    format!("/usr/local/bin/{script_filename}")
+}
+
+fn load_live_boot_evidence_spec(distro_id: &str) -> Result<ScenarioEvidenceSpec> {
+    let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
+    Ok(ScenarioEvidenceSpec {
+        script_path: contract.scenarios.live_boot.evidence.script_path,
+        pass_marker: contract.scenarios.live_boot.evidence.pass_marker,
+    })
+}
+
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         anyhow::anyhow!(
-            "cannot write stage runtime metadata without parent directory: '{}'",
+            "cannot write scenario runtime metadata without parent directory: '{}'",
             path.display()
         )
     })?;
@@ -1374,7 +1413,7 @@ fn now_utc_sortable() -> Result<String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .with_context(|| {
-            "system clock before UNIX_EPOCH while recording stage runtime metadata".to_string()
+            "system clock before UNIX_EPOCH while recording scenario runtime metadata".to_string()
         })?;
     Ok(format!("{:020}{:09}", now.as_secs(), now.subsec_nanos()))
 }
@@ -1383,7 +1422,7 @@ fn now_unix_nanos() -> Result<u128> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .with_context(|| {
-            "system clock before UNIX_EPOCH while recording stage runtime evidence".to_string()
+            "system clock before UNIX_EPOCH while recording scenario runtime evidence".to_string()
         })?
         .as_nanos())
 }

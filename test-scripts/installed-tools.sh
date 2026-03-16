@@ -1,8 +1,8 @@
 #!/bin/sh
-# Stage 06: Daily Driver Tools Validation
+# Installed Tools Validation
 #
-# Verifies that all daily driver tools are present and functional
-# on the INSTALLED system (not live ISO).
+# Verifies that daily-driver tools are present and functional on the installed
+# system, not the live ISO.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ else
     exit 1
 fi
 
-stage_header 6 "Daily Driver Tools Validation"
+scenario_header "Installed Tools Validation"
 
 info "Testing daily driver tools on installed system"
 echo
@@ -34,5 +34,5 @@ section_header "Shell & Core Utils"
 test_tool "bash" "bash --version"
 test_tool "ash" "ash -c 'echo test'" || test_tool "sh" "sh -c 'echo test'"
 
-report_results 6
+report_results "Installed Tools"
 exit $?

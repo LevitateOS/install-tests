@@ -1,8 +1,8 @@
 #!/bin/sh
-# Stage 04: Installed Boot Validation
+# Installed Boot Validation
 #
 # Verifies that the system boots successfully from disk after installation.
-# This runs on the INSTALLED system (not live ISO).
+# This runs on the installed system, not the live ISO.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ else
     exit 1
 fi
 
-stage_header 4 "Installed Boot Validation"
+scenario_header "Installed Boot Validation"
 
 info "If you can read this, the installed system booted successfully!"
 echo
@@ -28,5 +28,5 @@ test_file_exists "/boot/EFI" "EFI partition mounted"
 test_command "Root is writable" "touch /tmp/.stage-test && rm /tmp/.stage-test"
 test_command "Init system running" "ps aux | grep -v grep | grep -q init"
 
-report_results 4
+report_results "Installed Boot"
 exit $?

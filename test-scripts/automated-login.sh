@@ -1,8 +1,8 @@
 #!/bin/sh
-# Stage 05: Automated Login Validation
+# Automated Login Validation
 #
 # Verifies that automated login works on the installed system.
-# This tests that the test harness can login and run commands.
+# This tests that the harness can login and run commands.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ else
     exit 1
 fi
 
-stage_header 5 "Automated Login Validation"
+scenario_header "Automated Login Validation"
 
 info "Testing that automated login is functional"
 echo
@@ -28,5 +28,5 @@ test_command "Shell is functional" "echo 'test' | grep 'test'"
 test_command "Environment variables set" "[ -n \"\$HOME\" ]"
 test_command "Can run commands" "ls / >/dev/null"
 
-report_results 5
+report_results "Automated Login"
 exit $?

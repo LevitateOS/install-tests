@@ -1,7 +1,7 @@
 #!/bin/sh
-# Stage 01: OpenSSH preflight validation
+# OpenSSH preflight validation
 #
-# Focused checks for first-class Stage 01 SSH behavior.
+# Focused checks for first-class live-boot SSH behavior.
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ else
     exit 1
 fi
 
-stage_header 1 "OpenSSH Preflight"
+scenario_header "OpenSSH Preflight"
 
 section_header "OpenSSH Runtime Checks"
 test_command "OpenSSH daemon binary exists" "command -v sshd >/dev/null 2>&1"
@@ -53,5 +53,5 @@ else
     record_failed "OpenSSH service checks unavailable"
 fi
 
-report_results 1
+report_results "OpenSSH Preflight"
 exit $?

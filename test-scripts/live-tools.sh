@@ -33,7 +33,7 @@ fi
 # Main Test
 # ═══════════════════════════════════════════════════════════════════════════
 
-stage_header 2 "Live Tools Validation"
+scenario_header "Live Tools Validation"
 
 info "This stage verifies that all daily driver tools are present"
 info "and FUNCTIONAL (actually executes them, not just checks existence)"
@@ -131,7 +131,7 @@ test_command "shell can execute toolbox binaries" "command -v recstrap recfstab 
 # Report Results
 # ═══════════════════════════════════════════════════════════════════════════
 
-report_results 2
+report_results "Live Tools"
 RESULT=$?
 END_TIME="$(date +%s)"
 ELAPSED="$((END_TIME - START_TIME))"

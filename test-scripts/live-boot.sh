@@ -1,8 +1,8 @@
 #!/bin/sh
-# Stage 01: Live Boot Validation
+# Live Boot Validation
 #
 # Verifies that the live ISO boots successfully and reaches a usable shell.
-# This is the simplest stage - if this script runs, the boot succeeded!
+# This is the simplest live scenario: if this script runs, the boot succeeded.
 
 set -euo pipefail
 
@@ -22,7 +22,7 @@ fi
 # Main Test
 # ═══════════════════════════════════════════════════════════════════════════
 
-stage_header 1 "Live Boot Validation"
+scenario_header "Live Boot Validation"
 
 info "If you can read this, the live ISO booted successfully!"
 echo
@@ -35,7 +35,7 @@ test_file_exists "/dev" "/dev filesystem"
 test_command "Shell is functional" "echo 'test' | grep 'test'"
 test_command "Root filesystem is writable" "touch /tmp/.stage-test && rm /tmp/.stage-test"
 
-section_header "Stage 01 First-Class Services"
+section_header "Live Boot First-Class Services"
 if command -v systemctl >/dev/null 2>&1; then
     test_command "Kernel cmdline includes inst.sshd=0" "grep -qw 'inst.sshd=0' /proc/cmdline"
     test_command "OpenSSH is enabled (systemd)" "systemctl is-enabled sshd.service | grep -q '^enabled$'"
@@ -58,5 +58,5 @@ else
 fi
 
 # Report results
-report_results 1
+report_results "Live Boot"
 exit $?

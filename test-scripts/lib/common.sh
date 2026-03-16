@@ -1,8 +1,8 @@
 #!/bin/sh
-# Common functions for stage test scripts
+# Common functions for scenario test scripts.
 #
-# This library provides shared testing infrastructure used by all stage
-# scripts. It handles test execution, result tracking, and reporting.
+# This library provides shared testing infrastructure used by the live/install
+# validation scripts. It handles test execution, result tracking, and reporting.
 
 # Colors (if terminal supports it)
 if [ -t 1 ]; then
@@ -74,7 +74,7 @@ test_tool() {
 
     echo -ne "  ${BLUE}[TEST]${NC} ${tool}... "
 
-    # Run probe command without letting `set -e` abort the whole stage script.
+    # Run probe command without letting `set -e` abort the whole scenario script.
     set +e
     output=$(eval "$cmd" 2>&1)
     exit_code=$?
@@ -129,7 +129,7 @@ test_command() {
 
     echo -ne "  ${BLUE}[TEST]${NC} ${description}... "
 
-    # Run probe command without letting `set -e` abort the whole stage script.
+    # Run probe command without letting `set -e` abort the whole scenario script.
     set +e
     output=$(eval "$cmd" 2>&1)
     exit_code=$?
@@ -150,16 +150,45 @@ test_command() {
     fi
 }
 
+# Normalize a scenario label into marker-friendly uppercase tokens.
+scenario_marker_tokens() {
+    local label=$1
+    label=$(printf '%s' "$label" | sed \
+        -e 's/[[:space:]]\+Validation$//' \
+        -e 's/[[:space:]]\+Results$//')
+    printf '%s\n' "$label" \
+        | tr '[:lower:]-/' '[:upper:]  ' \
+        | tr -cs '[:upper:][:digit:]' ' ' \
+        | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g'
+}
+
+default_pass_marker() {
+    local tokens
+    tokens=$(scenario_marker_tokens "$1")
+    printf '%s PASSED\n' "$tokens"
+}
+
+default_fail_marker() {
+    local tokens
+    tokens=$(scenario_marker_tokens "$1")
+    printf '%s FAILED\n' "$tokens"
+}
+
 # Report final results
-# Usage: report_results <stage_number>
+# Usage: report_results <scenario_name> [pass_marker] [fail_marker]
 report_results() {
-    local stage=$1
+    local label=$1
+    local pass_marker=${2:-${SCENARIO_PASS_MARKER:-}}
+    local fail_marker=${3:-${SCENARIO_FAIL_MARKER:-}}
 
     local total_tests=$((PASSED_COUNT + FAILED_COUNT + BROKEN_COUNT))
 
+    [ -n "$pass_marker" ] || pass_marker=$(default_pass_marker "$label")
+    [ -n "$fail_marker" ] || fail_marker=$(default_fail_marker "$label")
+
     echo
     echo "═══════════════════════════════════════════════════════════"
-    echo -e "  ${BOLD}Stage $stage Results${NC}"
+    echo -e "  ${BOLD}${label} Results${NC}"
     echo "═══════════════════════════════════════════════════════════"
     echo -e "${GREEN}Passed:${NC} ${PASSED_COUNT}/$total_tests tests"
 
@@ -185,12 +214,12 @@ report_results() {
     echo "═══════════════════════════════════════════════════════════"
 
     if [ "${FAILED_COUNT}" -eq 0 ] && [ "${BROKEN_COUNT}" -eq 0 ]; then
-        echo -e "${GREEN}${BOLD}✓ STAGE $stage PASSED${NC}"
+        echo -e "${GREEN}${BOLD}✓ ${pass_marker}${NC}"
         echo
         echo "All tools are present and functional in this environment."
         return 0
     else
-        echo -e "${RED}${BOLD}✗ STAGE $stage FAILED${NC}"
+        echo -e "${RED}${BOLD}✗ ${fail_marker}${NC}"
         echo
         if [ "${FAILED_COUNT}" -gt 0 ]; then
             echo "Some tools are missing from PATH. Check package installation."
@@ -202,15 +231,14 @@ report_results() {
     fi
 }
 
-# Print stage header
-# Usage: stage_header <number> <name>
-stage_header() {
-    local number=$1
-    local name=$2
+# Print scenario header
+# Usage: scenario_header <name>
+scenario_header() {
+    local name=$1
 
     echo
     echo "═══════════════════════════════════════════════════════════"
-    echo -e "  ${CYAN}${BOLD}Stage $number: $name${NC}"
+    echo -e "  ${CYAN}${BOLD}${name}${NC}"
     echo "═══════════════════════════════════════════════════════════"
     echo
 }
