@@ -368,9 +368,9 @@ fn resolve_latest_successful_run_dir(
             continue;
         }
         let raw = fs::read(&manifest_path)
-            .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
+            .with_context(|| format!("reading run manifest '{}'", manifest_path.display()))?;
         let manifest: RunManifest = serde_json::from_slice(&raw)
-            .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
+            .with_context(|| format!("parsing run manifest '{}'", manifest_path.display()))?;
         if manifest.status != "success" {
             continue;
         }
@@ -401,9 +401,9 @@ fn load_run_manifest(run_dir: &Path) -> Result<Option<RunManifest>> {
         return Ok(None);
     }
     let raw = fs::read(&manifest_path)
-        .with_context(|| format!("reading stage run manifest '{}'", manifest_path.display()))?;
+        .with_context(|| format!("reading run manifest '{}'", manifest_path.display()))?;
     let manifest: RunManifest = serde_json::from_slice(&raw)
-        .with_context(|| format!("parsing stage run manifest '{}'", manifest_path.display()))?;
+        .with_context(|| format!("parsing run manifest '{}'", manifest_path.display()))?;
     Ok(Some(manifest))
 }
 
