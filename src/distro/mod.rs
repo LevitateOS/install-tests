@@ -180,13 +180,11 @@ pub struct InstalledScenarioFacts {
 pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
     let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
         .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
-    Ok(
-        match contract.scenarios.live_tools.install_experience {
-            InstallExperience::Ux => "ux",
-            InstallExperience::AutomatedSsh => "automated_ssh",
-        }
-        .to_string(),
-    )
+    Ok(match contract.scenarios.live_tools.install_experience {
+        InstallExperience::Ux => "ux",
+        InstallExperience::AutomatedSsh => "automated_ssh",
+    }
+    .to_string())
 }
 
 pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {
