@@ -19,13 +19,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Try multiple locations for common.sh
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
     . "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
-    . "/usr/local/lib/stage-tests/common.sh"
+elif [ -f "/usr/local/lib/scenario-tests/common.sh" ]; then
+    . "/usr/local/lib/scenario-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     echo "Tried:" >&2
     echo "  - $SCRIPT_DIR/lib/common.sh" >&2
-    echo "  - /usr/local/lib/stage-tests/common.sh" >&2
+    echo "  - /usr/local/lib/scenario-tests/common.sh" >&2
     exit 1
 fi
 
@@ -35,7 +35,7 @@ fi
 
 scenario_header "Live Tools Validation"
 
-info "This stage verifies that all daily driver tools are present"
+info "This scenario verifies that all daily driver tools are present"
 info "and FUNCTIONAL (actually executes them, not just checks existence)"
 echo
 

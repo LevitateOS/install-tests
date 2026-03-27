@@ -1,6 +1,6 @@
 //! Shared QEMU session helpers for spawning live and installed system VMs.
 //!
-//! Eliminates duplicated QEMU setup code across stages and install-tests binaries.
+//! Eliminates duplicated QEMU setup code across scenario runners and install-tests binaries.
 
 use crate::boot_injection::boot_injection_from_env;
 use crate::distro::DistroContext;
@@ -19,7 +19,7 @@ pub fn setup_ovmf_vars_at(ovmf_vars_path: &Path) -> Result<(PathBuf, PathBuf)> {
     let ovmf_vars_template = recqemu::find_ovmf_vars().context("OVMF_VARS not found")?;
     if let Some(parent) = ovmf_vars_path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("creating stage runtime dir '{}'", parent.display()))?;
+            .with_context(|| format!("creating scenario runtime dir '{}'", parent.display()))?;
     }
     if ovmf_vars_path.exists() {
         std::fs::remove_file(ovmf_vars_path)?;

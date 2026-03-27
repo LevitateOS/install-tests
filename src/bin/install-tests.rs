@@ -56,7 +56,7 @@ fn main() -> Result<()> {
             install_tests::enforce_policy_guard("install-tests run")?;
             bail!(
                 "Legacy serial wrapper harness is removed for `install-tests run`.\n\
-             Use SSH-based stage workflows instead (e.g. `just test 1 <distro>` / `just test-up-to N <distro>`).\n\
+             Use the scenario runner instead (e.g. `cargo xtask scenarios test live-tools <distro>` or `just scenario-test live-tools <distro>`).\n\
              Received args: step={:?}, phase={:?}, distro={}",
                 step,
                 phase,

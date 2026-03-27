@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
     . "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
-    . "/usr/local/lib/stage-tests/common.sh"
+elif [ -f "/usr/local/lib/scenario-tests/common.sh" ]; then
+    . "/usr/local/lib/scenario-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     exit 1

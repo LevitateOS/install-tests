@@ -45,11 +45,11 @@ cat /usr/local/bin/live-tools.sh
 ### Automated Testing (From Host)
 
 ```bash
-# Interactive mode - drops you at shell after test
-just stage 2 acorn
+# Interactive mode - drops you at shell after boot
+just scenario live-tools acorn
 
 # Automated mode - runs test, reports result, exits
-just test 2 acorn
+just scenario-test live-tools acorn
 ```
 
 ## Scenario Descriptions
@@ -100,7 +100,7 @@ set -euo pipefail
 
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/common.sh" || source "/usr/local/lib/stage-tests/common.sh"
+source "$SCRIPT_DIR/lib/common.sh" || source "/usr/local/lib/scenario-tests/common.sh"
 
 # Header
 scenario_header "Scenario Name"
@@ -176,13 +176,8 @@ These scripts are automatically installed on every ISO during the build process:
 
 - **Source:** `testing/install-tests/test-scripts/`
 - **Destination (on ISO):** `/usr/local/bin/*.sh`
-- **Libraries:** `/usr/local/lib/stage-tests/`
-
-See `AcornOS/src/component/definitions.rs` (STAGE_TESTS component) for build integration.
-
-Other build integrations:
-- `IuppiterOS/src/component/definitions.rs` (STAGE_TESTS component)
-- `leviso/src/component/definitions.rs` (FINAL component installs via `CustomOp::InstallStageTests`)
+- **Libraries:** `/usr/local/lib/scenario-tests/`
+- **Canonical installer:** `distro-builder/src/pipeline/scripts.rs`
 
 ## CI/Automation
 
@@ -209,7 +204,7 @@ This provides the best of both worlds:
 
 1. ✅ Phase 1: Test scripts created (this directory)
 2. ✅ Phase 2: Integrate into ISO builds
-3. ⏳ Phase 3: Add interactive stage mode
-4. ⏳ Phase 4: Update justfile commands
+3. ✅ Phase 3: Add interactive scenario entrypoints
+4. ✅ Phase 4: Update justfile commands
 5. ⏳ Phase 5: Add auto-run support
 6. ⏳ Phase 6: Documentation and testing

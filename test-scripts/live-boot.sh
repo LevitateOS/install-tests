@@ -11,8 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
     . "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/stage-tests/common.sh" ]; then
-    . "/usr/local/lib/stage-tests/common.sh"
+elif [ -f "/usr/local/lib/scenario-tests/common.sh" ]; then
+    . "/usr/local/lib/scenario-tests/common.sh"
 else
     echo "ERROR: Cannot find common.sh library" >&2
     exit 1
@@ -33,7 +33,7 @@ test_file_exists "/proc/cmdline" "Kernel command line"
 test_file_exists "/sys" "/sys filesystem"
 test_file_exists "/dev" "/dev filesystem"
 test_command "Shell is functional" "echo 'test' | grep 'test'"
-test_command "Root filesystem is writable" "touch /tmp/.stage-test && rm /tmp/.stage-test"
+test_command "Root filesystem is writable" "touch /tmp/.scenario-test && rm /tmp/.scenario-test"
 
 section_header "Live Boot First-Class Services"
 if command -v systemctl >/dev/null 2>&1; then
