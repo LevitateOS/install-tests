@@ -113,7 +113,7 @@ impl DistroContext for AcornContext {
 
     fn test_instrumentation_source(&self) -> &str {
         include_str!(
-            "../../../../distro-variants/acorn/profile/live-overlay/etc/profile.d/00-acorn-test.sh"
+            "../../../../distro-variants/acorn/ring2/overlays/live/etc/profile.d/00-acorn-test.sh"
         )
     }
 

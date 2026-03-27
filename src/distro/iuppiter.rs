@@ -116,7 +116,7 @@ impl DistroContext for IuppiterContext {
 
     fn test_instrumentation_source(&self) -> &str {
         include_str!(
-            "../../../../distro-variants/iuppiter/profile/live-overlay/etc/profile.d/00-iuppiter-test.sh"
+            "../../../../distro-variants/iuppiter/ring2/overlays/live/etc/profile.d/00-iuppiter-test.sh"
         )
     }
 
