@@ -265,7 +265,7 @@ fn verify_kernel_recipe_is_installed(
 
     check_kernel_preinstalled_via_recipe(
         &bundle.repo_root,
-        &bundle.variant_dir,
+        &bundle.paths,
         distro_id,
         kernel_output_dir,
         &spec,
@@ -326,7 +326,7 @@ fn verify_build_evidence_script(
 
     run_build_host_evidence_script(
         &bundle.repo_root,
-        &bundle.variant_dir,
+        &bundle.paths,
         kernel_output_dir,
         &run_output_dir,
         &spec,

@@ -6,11 +6,9 @@
 
 use anyhow::{Context, Result};
 use distro_contract::{
-    load_variant_contract_for_distro_from, AutomatedLoginStage, BootStage, RuntimePolicyStage,
-    ToolsStage,
+    load_variant_contract_for_distro_from, AutomatedLoginStage, BootStage, InstallExperience,
+    RuntimePolicyStage, ToolsStage,
 };
-use serde::Deserialize;
-use std::fs;
 use std::path::PathBuf;
 
 pub mod acorn;
@@ -171,24 +169,6 @@ pub fn context_for_distro(id: &str) -> Option<Box<dyn DistroContext>> {
 /// Available distro IDs for CLI help.
 pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn", "iuppiter", "ralph"];
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScenariosToml {
-    scenarios: ScenarioSectionsToml,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScenarioSectionsToml {
-    live_tools: LiveToolsScenarioToml,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LiveToolsScenarioToml {
-    install_experience: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct InstalledScenarioFacts {
     pub installed_boot: BootStage,
@@ -198,15 +178,15 @@ pub struct InstalledScenarioFacts {
 }
 
 pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
-    let scenarios_path = workspace_root()
-        .join("distro-variants")
-        .join(distro_id)
-        .join("scenarios.toml");
-    let raw = fs::read_to_string(&scenarios_path)
-        .with_context(|| format!("reading scenarios config '{}'", scenarios_path.display()))?;
-    let parsed: ScenariosToml = toml::from_str(&raw)
-        .with_context(|| format!("parsing scenarios config '{}'", scenarios_path.display()))?;
-    Ok(parsed.scenarios.live_tools.install_experience)
+    let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
+    Ok(
+        match contract.scenarios.live_tools.install_experience {
+            InstallExperience::Ux => "ux",
+            InstallExperience::AutomatedSsh => "automated_ssh",
+        }
+        .to_string(),
+    )
 }
 
 pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {
