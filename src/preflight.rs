@@ -173,12 +173,7 @@ fn verify_conformance_contract(
     let kernel_output_dir = kernel_output_dir_for_distro(distro_id);
 
     if let Err(err) = require_valid_contract(&bundle.contract) {
-        details.extend(
-            err.report
-                .violations
-                .into_iter()
-                .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
-        );
+        details.extend(err.report.violations.into_iter().map(|v| v.to_string()));
     }
 
     let runtime_report = validate_build_runtime_with_artifacts(
@@ -191,12 +186,7 @@ fn verify_conformance_contract(
             overlay_image: runtime_artifacts.overlay_image.clone(),
         },
     );
-    details.extend(
-        runtime_report
-            .violations
-            .into_iter()
-            .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
-    );
+    details.extend(runtime_report.violations.into_iter().map(|v| v.to_string()));
 
     if validate_live_boot {
         let live_boot_report = validate_live_boot_runtime(
@@ -213,7 +203,7 @@ fn verify_conformance_contract(
             live_boot_report
                 .violations
                 .into_iter()
-                .map(|v| format!("{:?}.{} [{:?}] {}", v.stage, v.field, v.code, v.message)),
+                .map(|v| v.to_string()),
         );
     }
 
