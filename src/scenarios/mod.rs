@@ -1114,7 +1114,7 @@ fn run_stage_script_over_ssh(
     }
 
     bail!(
-        "Stage script '{}' failed over SSH (exit {}):\n{}",
+        "Scenario script '{}' failed over SSH (exit {}):\n{}",
         script_path,
         result.exit_code,
         result.output.trim()

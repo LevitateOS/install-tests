@@ -13,21 +13,21 @@ impl OpenRcBase {
 
     pub fn boot_error_patterns(&self) -> &[&str] {
         &[
-            // === UEFI STAGE ===
+            // === UEFI PHASE ===
             "No bootable device",
             "Boot Failed",
             "Default Boot Device Missing",
             "Shell>",
             "ASSERT_EFI_ERROR",
             "map: Cannot find",
-            // === BOOTLOADER STAGE ===
+            // === BOOTLOADER PHASE ===
             "systemd-boot: Failed",
             "loader: Failed",
             "vmlinuz: not found",
             "initramfs: not found",
             "Error loading",
             "File not found",
-            // === KERNEL STAGE ===
+            // === KERNEL PHASE ===
             "Kernel panic",
             "not syncing",
             "VFS: Cannot open root device",
@@ -36,7 +36,7 @@ impl OpenRcBase {
             "can't find /init",
             "No root device",
             "EROFS:",
-            // === OPENRC INIT STAGE ===
+            // === OPENRC INIT PHASE ===
             "ERROR: cannot start",
             "Rootfs payload partition not found",
             "ERROR: ",
@@ -49,21 +49,21 @@ impl OpenRcBase {
 
     pub fn critical_boot_errors(&self) -> &[&str] {
         &[
-            // === UEFI STAGE ===
+            // === UEFI PHASE ===
             "No bootable device",
             "Boot Failed",
             "Default Boot Device Missing",
             "Shell>",
             "ASSERT_EFI_ERROR",
             "map: Cannot find",
-            // === BOOTLOADER STAGE ===
+            // === BOOTLOADER PHASE ===
             "systemd-boot: Failed",
             "loader: Failed",
             "vmlinuz: not found",
             "initramfs: not found",
             "Error loading",
             "File not found",
-            // === KERNEL STAGE ===
+            // === KERNEL PHASE ===
             "Kernel panic",
             "not syncing",
             "VFS: Cannot open root device",

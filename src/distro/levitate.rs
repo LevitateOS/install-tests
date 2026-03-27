@@ -36,21 +36,21 @@ impl DistroContext for LevitateContext {
 
     fn boot_error_patterns(&self) -> &[&str] {
         &[
-            // === UEFI STAGE ===
+            // === UEFI PHASE ===
             "No bootable device",
             "Boot Failed",
             "Default Boot Device Missing",
             "Shell>",
             "ASSERT_EFI_ERROR",
             "map: Cannot find",
-            // === BOOTLOADER STAGE ===
+            // === BOOTLOADER PHASE ===
             "systemd-boot: Failed",
             "loader: Failed",
             "vmlinuz: not found",
             "initramfs: not found",
             "Error loading",
             "File not found",
-            // === KERNEL STAGE ===
+            // === KERNEL PHASE ===
             "Kernel panic",
             "not syncing",
             "VFS: Cannot open root device",
@@ -60,7 +60,7 @@ impl DistroContext for LevitateContext {
             "No root device",
             "SQUASHFS error",
             "EROFS:", // EROFS filesystem error
-            // === INIT STAGE ===
+            // === INIT PHASE ===
             "emergency shell",
             "Emergency shell",
             "emergency.target",
@@ -76,21 +76,21 @@ impl DistroContext for LevitateContext {
 
     fn critical_boot_errors(&self) -> &[&str] {
         &[
-            // === UEFI STAGE ===
+            // === UEFI PHASE ===
             "No bootable device",
             "Boot Failed",
             "Default Boot Device Missing",
             "Shell>",
             "ASSERT_EFI_ERROR",
             "map: Cannot find",
-            // === BOOTLOADER STAGE ===
+            // === BOOTLOADER PHASE ===
             "systemd-boot: Failed",
             "loader: Failed",
             "vmlinuz: not found",
             "initramfs: not found",
             "Error loading",
             "File not found",
-            // === KERNEL STAGE ===
+            // === KERNEL PHASE ===
             "Kernel panic",
             "not syncing",
             "VFS: Cannot open root device",
@@ -100,7 +100,7 @@ impl DistroContext for LevitateContext {
             "No root device",
             "SQUASHFS error",
             "EROFS:", // EROFS filesystem error
-            // === INIT STAGE (critical) ===
+            // === INIT PHASE (critical) ===
             "emergency shell",
             "Emergency shell",
             "emergency.target",
