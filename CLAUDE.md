@@ -16,7 +16,7 @@ E2E test runner for LevitateOS installation. Boots ISO in QEMU, performs full in
 
 | Don't put here | Put it in |
 |----------------|-----------|
-| leviso unit tests | `leviso/tests/` |
+| Built-artifact validation | `leviso/tests/validation_tests.rs` |
 | Rootfs/UX tests | `testing/rootfs-tests/` |
 | Hardware compatibility | `testing/hardware-compat/` |
 
@@ -24,7 +24,7 @@ E2E test runner for LevitateOS installation. Boots ISO in QEMU, performs full in
 
 ```bash
 cargo build
-cargo test
+cargo check # Unit tests are prohibited; use focused integration/runtime checks.
 cargo run    # Run the test suite
 ```
 

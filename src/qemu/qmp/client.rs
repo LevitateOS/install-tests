@@ -349,29 +349,3 @@ fn char_to_qcode(ch: char) -> Result<QCodeResult> {
 
     Ok(QCodeResult { code, needs_shift })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_char_to_qcode_lowercase() {
-        let result = char_to_qcode('a').unwrap();
-        assert_eq!(result.code, "a");
-        assert!(!result.needs_shift);
-    }
-
-    #[test]
-    fn test_char_to_qcode_uppercase() {
-        let result = char_to_qcode('A').unwrap();
-        assert_eq!(result.code, "a");
-        assert!(result.needs_shift);
-    }
-
-    #[test]
-    fn test_char_to_qcode_special() {
-        let result = char_to_qcode('\n').unwrap();
-        assert_eq!(result.code, "ret");
-        assert!(!result.needs_shift);
-    }
-}

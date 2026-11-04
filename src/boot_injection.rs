@@ -158,16 +158,3 @@ fn create_boot_injection_iso(payload_path: &Path) -> Result<PathBuf> {
         tried.join("; ")
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_kv_csv() {
-        let pairs = parse_kv_csv("A=1,B=two words").expect("parse");
-        assert_eq!(pairs.len(), 2);
-        assert_eq!(pairs[0], ("A".to_string(), "1".to_string()));
-        assert_eq!(pairs[1], ("B".to_string(), "two words".to_string()));
-    }
-}

@@ -891,7 +891,8 @@ pub fn require_preflight_with_iso_for_distro(
                 "Return Ok() when overall_pass is false",
                 "Lower severity of check failures"
             ],
-            consequence = "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
+            consequence =
+                "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
             "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
              Failures:\n{}\n\n\
              Run 'cargo run -p distro-builder --bin distro-builder -- release build iso {} base-rootfs' to rebuild the ISO.\n\
@@ -902,80 +903,4 @@ pub fn require_preflight_with_iso_for_distro(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_dir(test_name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "install-tests-preflight-{test_name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
-    }
-
-    fn write_file(path: &Path, content: &str) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create parent");
-        }
-        fs::write(path, content).expect("write file");
-    }
-
-    #[test]
-    fn resolve_runtime_artifacts_prefers_product_native_names() {
-        let dir = temp_dir("product-native");
-        write_file(&dir.join("filesystem.erofs"), "rootfs");
-        write_file(&dir.join("initramfs-live.cpio.gz"), "initramfs");
-        write_file(&dir.join("initramfs-installed.img"), "install-initramfs");
-        write_file(&dir.join("overlayfs.erofs"), "overlay");
-        write_file(&dir.join(".live-rootfs-source.path"), "./rootfs-source\n");
-        fs::create_dir_all(dir.join("live-overlay")).expect("create live overlay");
-
-        let resolved =
-            resolve_runtime_artifacts(&dir, "levitate").expect("resolve runtime artifacts");
-        assert_eq!(resolved.rootfs_image, dir.join("filesystem.erofs"));
-        assert_eq!(resolved.initramfs_live, dir.join("initramfs-live.cpio.gz"));
-        assert_eq!(
-            resolved.initramfs_installed,
-            Some(dir.join("initramfs-installed.img"))
-        );
-        assert_eq!(resolved.overlay_image, dir.join("overlayfs.erofs"));
-        assert_eq!(
-            resolved.rootfs_source_pointer,
-            dir.join(".live-rootfs-source.path")
-        );
-        assert_eq!(resolved.live_overlay_dir, dir.join("live-overlay"));
-
-        fs::remove_dir_all(dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn live_boot_runtime_scope_uses_release_product_metadata() {
-        let dir = temp_dir("scope");
-        let manifest = RunManifest {
-            status: "success".to_string(),
-            created_at_utc: "20260313T120000Z".to_string(),
-            finished_at_utc: Some("20260313T120100Z".to_string()),
-            iso_path: Some(dir.join("levitate.iso").display().to_string()),
-            target_kind: Some("release-product".to_string()),
-            target_name: Some("live-boot".to_string()),
-        };
-        assert!(should_validate_live_boot_runtime(Some(&manifest)));
-
-        let base_manifest = RunManifest {
-            target_name: Some("base-rootfs".to_string()),
-            ..manifest
-        };
-        assert!(!should_validate_live_boot_runtime(Some(&base_manifest)));
-
-        fs::remove_dir_all(dir).expect("cleanup temp dir");
-    }
 }

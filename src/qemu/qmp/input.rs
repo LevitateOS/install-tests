@@ -168,15 +168,3 @@ pub fn send_key(client: &mut QmpClient, key: KeyCode) -> Result<()> {
 pub fn send_text(client: &mut QmpClient, text: &str) -> Result<()> {
     client.send_text(text)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_keycode_to_qcode() {
-        assert_eq!(KeyCode::Enter.to_qcode(), "ret");
-        assert_eq!(KeyCode::A.to_qcode(), "a");
-        assert_eq!(KeyCode::Num0.to_qcode(), "0");
-    }
-}

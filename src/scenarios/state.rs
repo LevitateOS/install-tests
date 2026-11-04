@@ -133,30 +133,3 @@ fn unix_timestamp_string() -> String {
         .unwrap_or_default();
     format!("{}s_since_epoch", d.as_secs())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reset_for_scenario_input_drops_later_results_only() {
-        let mut state = ScenarioState::default();
-        state.record(ScenarioId::BuildPreflight, true, "ok");
-        state.record(ScenarioId::LiveBoot, true, "ok");
-        state.record(ScenarioId::LiveTools, true, "ok");
-        state.record(ScenarioId::Install, true, "ok");
-
-        state.reset_for_scenario_input(ScenarioId::LiveTools, "fingerprint");
-
-        assert!(state.has_passed(ScenarioId::BuildPreflight));
-        assert!(state.has_passed(ScenarioId::LiveBoot));
-        assert!(!state.has_result(ScenarioId::LiveTools));
-        assert!(!state.has_result(ScenarioId::Install));
-    }
-
-    #[test]
-    fn canonical_state_path_uses_scenarios_dir() {
-        let path = state_path("levitate");
-        assert!(path.ends_with(".scenarios/levitate.json"));
-    }
-}
