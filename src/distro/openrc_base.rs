@@ -1,9 +1,9 @@
-//! Shared OpenRC base for AcornOS and IuppiterOS.
+//! OpenRC base for AcornOS.
 //!
-//! Both distros use OpenRC + systemd-boot + musl + busybox + ash.
+//! AcornOS uses OpenRC + systemd-boot + musl + busybox + ash.
 //! This struct provides all identical methods; variant structs delegate here.
 
-/// Shared OpenRC methods. Compose into AcornContext/IuppiterContext.
+/// Shared OpenRC methods. Compose into AcornContext.
 pub struct OpenRcBase;
 
 impl OpenRcBase {

@@ -18,7 +18,7 @@ Scenario and installation verification harness for distro variants.
 
 ## Distros
 
-Supported ids: `levitate`, `acorn`, `iuppiter`, `ralph`.
+Supported ids: `levitate`, `acorn`.
 
 ## Boot injection
 

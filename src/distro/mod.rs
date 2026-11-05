@@ -1,21 +1,19 @@
 //! Distro context for parameterized testing.
 //!
 //! The DistroContext trait enables the same test infrastructure to work with
-//! LevitateOS/RalphOS (systemd) and AcornOS/IuppiterOS (OpenRC) by abstracting
+//! LevitateOS (systemd) and AcornOS (OpenRC) by abstracting
 //! init system and bootloader differences.
 
 use anyhow::{Context, Result};
 use distro_contract::{
-    load_variant_contract_for_distro_from, AutomatedLoginCheckpoint, BootCheckpoint,
-    InstallExperience, RuntimePolicyCheckpoint, ToolsCheckpoint,
+    AutomatedLoginCheckpoint, BootCheckpoint, InstallExperience, RuntimePolicyCheckpoint,
+    ToolsCheckpoint, load_variant_contract_for_distro_from,
 };
 use std::path::PathBuf;
 
 pub mod acorn;
-pub mod iuppiter;
 pub mod levitate;
 mod openrc_base;
-pub mod ralph;
 
 /// Context for distro-specific test behavior.
 ///
@@ -160,14 +158,12 @@ pub fn context_for_distro(id: &str) -> Option<Box<dyn DistroContext>> {
     match id {
         "levitate" | "levitateos" => Some(Box::new(levitate::LevitateContext)),
         "acorn" | "acornos" => Some(Box::new(acorn::AcornContext)),
-        "iuppiter" | "iuppiteros" => Some(Box::new(iuppiter::IuppiterContext)),
-        "ralph" | "ralphos" => Some(Box::new(ralph::RalphContext)),
         _ => None,
     }
 }
 
 /// Available distro IDs for CLI help.
-pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn", "iuppiter", "ralph"];
+pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn"];
 
 #[derive(Debug, Clone)]
 pub struct InstalledScenarioFacts {

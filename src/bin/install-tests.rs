@@ -31,7 +31,7 @@ enum Commands {
         #[arg(long)]
         phase: Option<usize>,
 
-        /// Distro to test (levitate, acorn, iuppiter, ralph)
+        /// Distro to test (levitate, acorn)
         #[arg(long, default_value = "levitate")]
         distro: String,
     },

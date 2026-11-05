@@ -19,7 +19,7 @@ use install_tests::scenarios;
 #[command(name = "scenarios")]
 #[command(about = "Scenario runner for LevitateOS variants")]
 struct Cli {
-    /// Distro to test (levitate, acorn, iuppiter, ralph)
+    /// Distro to test (levitate, acorn)
     #[arg(long)]
     distro: String,
 

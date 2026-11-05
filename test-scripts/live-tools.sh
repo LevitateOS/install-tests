@@ -49,7 +49,6 @@ detect_expected_install_experience() {
 
     case "${ID:-}" in
         levitateos|acornos) printf '%s\n' "ux" ;;
-        ralphos|iuppiteros) printf '%s\n' "automated_ssh" ;;
         *)
             # Conservative fallback: default to headless automation profile.
             printf '%s\n' "automated_ssh"

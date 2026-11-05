@@ -1466,7 +1466,7 @@ fn install_layout_for_distro(distro_id: &str) -> Result<InstallLayout> {
 fn get_tool_validation_command(tool: &str) -> String {
     match tool {
         // Installation tools - most support --help
-        "recstrap" | "recfstab" | "recchroot" | "iuppiter-dar" => {
+        "recstrap" | "recfstab" | "recchroot" => {
             format!("{} --help >/dev/null 2>&1", tool)
         }
 
