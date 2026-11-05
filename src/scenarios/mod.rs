@@ -1,7 +1,7 @@
 //! Scenario-based development loop.
 //!
-//! Lightweight, incremental scenarios that gate progression and give fast
-//! feedback during development. Each scenario validates one thing.
+//! Independent named scenarios give focused feedback during development.
+//! Each scenario consumes existing artifacts and validates one behavior.
 //!
 //! # Scenarios
 //!
@@ -83,18 +83,6 @@ impl ScenarioId {
             Self::InstalledBoot => "Installed Boot",
             Self::AutomatedLogin => "Automated Login",
             Self::Runtime => "Runtime",
-        }
-    }
-
-    pub fn ordinal(self) -> usize {
-        match self {
-            Self::BuildPreflight => 0,
-            Self::LiveBoot => 1,
-            Self::LiveTools => 2,
-            Self::Install => 3,
-            Self::InstalledBoot => 4,
-            Self::AutomatedLogin => 5,
-            Self::Runtime => 6,
         }
     }
 
@@ -183,12 +171,12 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
     let input_fingerprint =
         scenario_input_fingerprint(canonical_distro_id, scenario, scenario_iso.as_ref())?;
 
-    let mut state = ScenarioState::load(canonical_distro_id);
+    let mut state = ScenarioState::load(canonical_distro_id)?;
     if !state.is_valid_for_scenario_input(scenario, &input_fingerprint) {
         println!(
             "{}",
             format!(
-                "Scenario input changed for {} — resetting this scenario and later results.",
+                "Scenario input changed for {} — resetting its cached result.",
                 scenario.display_name()
             )
             .yellow()
@@ -198,34 +186,9 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
     }
 
     if force {
-        state.results.retain(|key, _| {
-            ScenarioId::parse_key(key)
-                .map(|existing| existing.ordinal() < scenario.ordinal())
-                .unwrap_or(false)
-        });
+        state.results.remove(scenario.key());
         state.save(canonical_distro_id)?;
-        println!(
-            "{}",
-            format!(
-                "Forcing {} rerun (cleared cached results from this scenario onward).",
-                scenario.display_name()
-            )
-            .yellow()
-        );
-    }
-
-    if !force && scenario.ordinal() > 0 {
-        let previous = ScenarioId::ALL[scenario.ordinal() - 1];
-        if !state.has_passed(previous) {
-            bail!(
-                "{} is blocked: {} has not passed yet.\n\
-                 Run: cargo run --bin scenarios -- --distro {} --scenario {}",
-                scenario.display_name(),
-                previous.display_name(),
-                canonical_distro_id,
-                previous.key()
-            );
-        }
+        println!("Forcing {} rerun.", scenario.display_name());
     }
 
     if state.has_passed(scenario) {
@@ -290,55 +253,29 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
     }
 }
 
-/// Run all scenarios up to `target` (inclusive).
-pub fn run_up_to_scenario(distro_id: &str, target: ScenarioId) -> Result<bool> {
-    for scenario in ScenarioId::ALL {
-        if scenario.ordinal() > target.ordinal() {
-            break;
-        }
-        if !run_scenario(distro_id, scenario)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
 /// Print scenario status for a distro.
 pub fn print_status(distro_id: &str) -> Result<()> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let canonical_distro_id = ctx.id();
 
-    let state = ScenarioState::load(canonical_distro_id);
-    let valid = ScenarioId::ALL.iter().all(|scenario| {
-        if !state.has_result(*scenario) {
-            return true;
-        }
-        match scenario_input_fingerprint(
-            canonical_distro_id,
-            *scenario,
-            resolve_iso_artifact_for_scenario(canonical_distro_id, *scenario)
-                .ok()
-                .flatten()
-                .as_ref(),
-        ) {
-            Ok(fingerprint) => state.is_valid_for_scenario_input(*scenario, &fingerprint),
-            Err(_) => false,
-        }
-    });
-
+    let state = ScenarioState::load(canonical_distro_id)?;
     println!("{} Scenario Status", ctx.name().bold());
-    if !valid {
-        println!(
-            "{}",
-            "  (stale — scenario input changed or is missing, results will reset on next run)"
-                .yellow()
-        );
-    }
     println!();
-
     for scenario in ScenarioId::ALL {
-        let status = if state.has_passed(scenario) {
+        let current = if state.has_result(scenario) {
+            resolve_iso_artifact_for_scenario(canonical_distro_id, scenario)
+                .and_then(|iso| {
+                    scenario_input_fingerprint(canonical_distro_id, scenario, iso.as_ref())
+                })
+                .map(|fingerprint| state.is_valid_for_scenario_input(scenario, &fingerprint))
+                .unwrap_or(false)
+        } else {
+            true
+        };
+        let status = if !current {
+            "[STALE]".yellow()
+        } else if state.has_passed(scenario) {
             "[PASS]".green()
         } else if state.has_result(scenario) {
             "[FAIL]".red()
@@ -353,22 +290,15 @@ pub fn print_status(distro_id: &str) -> Result<()> {
         );
     }
     println!();
-    println!(
-        "  Highest passed: {}",
-        state
-            .highest_passed()
-            .map(|scenario| scenario.display_name().to_string())
-            .unwrap_or_else(|| "none".to_string())
-            .bold()
-    );
     Ok(())
 }
 
 /// Reset all scenario state for a distro.
 pub fn reset_state(distro_id: &str) -> Result<()> {
     let canonical_distro_id = context_for_distro(distro_id)
-        .map(|ctx| ctx.id().to_string())
-        .unwrap_or_else(|| distro_id.to_string());
+        .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?
+        .id()
+        .to_string();
     let path = state::state_path(&canonical_distro_id);
     if path.exists() {
         std::fs::remove_file(&path)?;
@@ -400,12 +330,12 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
         verify_live_boot_ssh_login(&mut console, ssh_host_port)?;
 
-        run_stage_script_over_ssh(
+        run_scenario_script_over_ssh(
             ssh_host_port,
             &installed_script_path(&live_boot_evidence.script_path),
             Some(&live_boot_evidence.pass_marker),
         )?;
-        run_stage_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT, None)?;
+        run_scenario_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT, None)?;
 
         Ok(
             "Boot markers detected + SSH login probe passed + live-boot script checks passed"
@@ -786,11 +716,11 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     console.login("root", default_password, Duration::from_secs(15))?;
 
     // Verify shell works
-    let result = console.exec("echo STAGE_LOGIN_OK", Duration::from_secs(5))?;
+    let result = console.exec("echo SCENARIO_LOGIN_OK", Duration::from_secs(5))?;
     let _ = child.kill();
     let _ = child.wait();
 
-    if result.output.contains("STAGE_LOGIN_OK") {
+    if result.output.contains("SCENARIO_LOGIN_OK") {
         Ok("Login succeeded, shell functional".to_string())
     } else {
         bail!(
@@ -1095,7 +1025,7 @@ fn ssh_exec(ssh_host_port: u16, remote_cmd: &str) -> Result<SshExecOutput> {
     })
 }
 
-fn run_stage_script_over_ssh(
+fn run_scenario_script_over_ssh(
     ssh_host_port: u16,
     script_path: &str,
     pass_marker: Option<&str>,

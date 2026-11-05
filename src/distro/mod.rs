@@ -6,8 +6,8 @@
 
 use anyhow::{Context, Result};
 use distro_contract::{
-    AutomatedLoginCheckpoint, BootCheckpoint, InstallExperience, RuntimePolicyCheckpoint,
-    ToolsCheckpoint, load_variant_contract_for_distro_from,
+    load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario, InstallExperience,
+    RuntimePolicyScenario, ToolsScenario,
 };
 use std::path::PathBuf;
 
@@ -167,10 +167,10 @@ pub const AVAILABLE_DISTROS: &[&str] = &["levitate", "acorn"];
 
 #[derive(Debug, Clone)]
 pub struct InstalledScenarioFacts {
-    pub installed_boot: BootCheckpoint,
-    pub automated_login: AutomatedLoginCheckpoint,
-    pub installed_tools: ToolsCheckpoint,
-    pub runtime_policy: RuntimePolicyCheckpoint,
+    pub installed_boot: BootScenario,
+    pub automated_login: AutomatedLoginScenario,
+    pub installed_tools: ToolsScenario,
+    pub runtime_policy: RuntimePolicyScenario,
 }
 
 pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {

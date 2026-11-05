@@ -27,13 +27,26 @@ pub struct ScenarioResult {
 }
 
 impl ScenarioState {
-    /// Load state from disk, or return default if missing/corrupt.
-    pub fn load(distro_id: &str) -> Self {
+    /// Load state from disk; only an absent file means no results exist.
+    pub fn load(distro_id: &str) -> Result<Self> {
         let path = state_path(distro_id);
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Reading scenario state '{}'", path.display()))
+            }
+        };
+        serde_json::from_str(&contents).with_context(|| {
+            format!(
+                "Invalid scenario state '{}'. Reset it with: cargo xtask scenarios reset {}",
+                path.display(),
+                distro_id
+            )
+        })
     }
 
     /// Save state to disk.
@@ -56,18 +69,11 @@ impl ScenarioState {
             .unwrap_or(false)
     }
 
-    /// Update scenario input fingerprint and clear affected scenario results.
-    ///
-    /// A scenario input change invalidates that scenario and every later scenario
-    /// in the canonical ladder while preserving earlier results.
+    /// Update this scenario's input fingerprint and invalidate only its result.
     pub fn reset_for_scenario_input(&mut self, scenario: ScenarioId, fingerprint: &str) {
         self.input_fingerprints
             .insert(scenario.key().to_string(), fingerprint.to_string());
-        self.results.retain(|key, _| {
-            ScenarioId::parse_key(key)
-                .map(|existing| existing.ordinal() < scenario.ordinal())
-                .unwrap_or(false)
-        });
+        self.results.remove(scenario.key());
     }
 
     /// Record a scenario result.
@@ -91,28 +97,6 @@ impl ScenarioState {
             .unwrap_or(false)
     }
 
-    /// Returns true if state contains any result at or above `scenario`.
-    pub fn has_any_results_from(&self, scenario: ScenarioId) -> bool {
-        self.results.keys().any(|key| {
-            ScenarioId::parse_key(key)
-                .map(|existing| existing.ordinal() >= scenario.ordinal())
-                .unwrap_or(false)
-        })
-    }
-
-    /// Highest contiguous scenario that passed.
-    pub fn highest_passed(&self) -> Option<ScenarioId> {
-        let mut highest = None;
-        for scenario in ScenarioId::ALL {
-            if self.has_passed(scenario) {
-                highest = Some(scenario);
-                continue;
-            }
-            break;
-        }
-        highest
-    }
-
     /// Returns true if a result exists for the given scenario.
     pub fn has_result(&self, scenario: ScenarioId) -> bool {
         self.results.contains_key(scenario.key())
@@ -120,9 +104,10 @@ impl ScenarioState {
 }
 
 pub(crate) fn state_path(distro_id: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.scenarios")
-        .join(format!("{}.json", distro_id))
+    let root = std::env::var_os("LEVITATE_SCENARIO_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.scenarios"));
+    root.join(format!("{}.json", distro_id))
 }
 
 fn unix_timestamp_string() -> String {

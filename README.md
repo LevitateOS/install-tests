@@ -7,9 +7,7 @@ Scenario and installation verification harness for distro variants.
 - Scenario loop (recommended):
   - `cargo xtask scenarios boot live-boot levitate`
   - `cargo xtask scenarios test live-tools levitate`
-  - `cargo xtask scenarios test-up-to runtime levitate`
   - `cargo run --bin scenarios -- --distro levitate --scenario build-preflight`
-  - `cargo run --bin scenarios -- --distro levitate --up-to-scenario runtime`
   - `cargo run --bin scenarios -- --distro levitate --status`
 - Step catalog:
   - `cargo run --bin install-tests -- list --distro levitate`
@@ -34,3 +32,7 @@ For interactive and `just` workflows, this is usually passed by `cargo xtask sce
 - Scenario preflight enforces contract + artifact checks before QEMU starts.
 - `live-boot` includes SSH readiness/login verification after shell-ready.
 - Use `just scenario*` and `just release-build*` wrappers in repo root for the default operator flow.
+
+Scenarios run independently and consume existing artifacts. Build products explicitly with `just release-build <product> <distro>`. See the workspace `architecture.md` for ownership and output locations.
+
+Scenario results are cached per input fingerprint. Use `--force` to rerun one scenario, `--status` to inspect current/stale results, and `--reset` to remove saved state. `LEVITATE_SCENARIO_STATE_DIR` overrides the default workspace `.scenarios` directory. Corrupt state is reported with a reset command.

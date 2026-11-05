@@ -37,3 +37,6 @@ recshuttle = { path = "../../tools/recshuttle" }
 fsdbg = { path = "../fsdbg" }
 libc = "0.2"
 toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
