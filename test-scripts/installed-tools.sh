@@ -23,7 +23,20 @@ info "Testing daily driver tools on installed system"
 echo
 
 section_header "Essential Tools"
-test_tool "sudo" "sudo --version"
+. /etc/os-release
+case "${ID:-}" in
+    levitateos)
+        test_tool "sudo" "sudo --version"
+        test_command "sudo policy syntax" "visudo -c"
+        ;;
+    acornos)
+        test_tool "doas" "doas -C /etc/doas.conf"
+        ;;
+    *)
+        echo "ERROR: Unsupported installed distro '${ID:-unknown}'" >&2
+        exit 1
+        ;;
+esac
 test_tool "ip" "ip -V"
 test_tool "ssh" "ssh -V"
 test_tool "mount" "mount --version"
@@ -31,8 +44,10 @@ test_tool "umount" "umount --version"
 test_tool "dmesg" "dmesg --version || dmesg -h"
 
 section_header "Shell & Core Utils"
-test_tool "bash" "bash --version"
-test_tool "ash" "ash -c 'echo test'" || test_tool "sh" "sh -c 'echo test'"
+case "$ID" in
+    levitateos) test_tool "bash" "bash --version" ;;
+    acornos) test_tool "ash" "ash -c 'echo test'" ;;
+esac
 
 report_results "Installed Tools"
 exit $?

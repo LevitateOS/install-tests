@@ -764,11 +764,12 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
     let mut found = Vec::new();
 
     for tool in &tools {
-        let result = console.exec(
-            &format!("which {} 2>/dev/null && echo FOUND", tool),
-            Duration::from_secs(5),
-        )?;
-        if result.output.contains("FOUND") {
+        let command = match *tool {
+            "sudo" | "doas" => get_tool_validation_command(tool),
+            _ => format!("command -v {} >/dev/null", tool),
+        };
+        let result = console.exec(&command, Duration::from_secs(5))?;
+        if result.success() {
             found.push(*tool);
         } else {
             missing.push(*tool);
@@ -1439,9 +1440,10 @@ fn get_tool_validation_command(tool: &str) -> String {
         "sed" => "sed --version >/dev/null 2>&1".to_string(),
         "awk" | "gawk" => "awk --version >/dev/null 2>&1".to_string(),
 
-        // SSH/sudo
+        // SSH and privilege escalation. OpenDoas has no --version option.
         "ssh" => "ssh -V 2>&1 >/dev/null".to_string(),
-        "sudo" | "doas" => format!("{} --version >/dev/null 2>&1", tool),
+        "sudo" => "sudo --version >/dev/null 2>&1".to_string(),
+        "doas" => "doas -C /etc/doas.conf >/dev/null 2>&1".to_string(),
 
         // Shell and basic tools (busybox applets)
         "ash" | "bash" | "sh" => format!("{} --version >/dev/null 2>&1", tool),

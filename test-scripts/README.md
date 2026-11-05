@@ -87,7 +87,7 @@ just scenario-test live-tools acorn
 
 ### Installed Tools
 **Purpose:** Verify all tools work on installed system
-**Tests:** sudo, ssh, networking, shell, etc.
+**Tests:** sudo on Levitate, doas on Acorn, SSH, networking, shell, etc.
 **Environment:** Installed system
 
 ## Writing Test Scripts
