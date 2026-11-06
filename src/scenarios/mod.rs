@@ -503,7 +503,6 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
 
         let mut verify = vec![
             ("Root filesystem", format!("test -f {target}/etc/os-release")),
-            ("Boot partition", format!("ls {target}/boot/EFI")),
             ("Kernel on ESP", format!("ls {target}/boot/vmlinuz")),
             ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
             ("fstab root entry", format!("awk '$2==\"/\" {{ok=1}} END{{exit(ok?0:1)}}' {target}/etc/fstab")),

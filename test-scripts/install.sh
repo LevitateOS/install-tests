@@ -27,8 +27,6 @@ TARGET="${SCENARIO_INSTALL_TARGET:?SCENARIO_INSTALL_TARGET is not set}"
 
 section_header "Installation Artifacts"
 test_file_exists "$TARGET/bin" "Root filesystem extracted"
-test_file_exists "$TARGET/boot/EFI" "EFI boot partition"
-test_file_exists "$TARGET/etc/fstab" "fstab generated"
 
 section_header "Bootloader"
 test_command "Bootloader installed" "ls $TARGET/boot/EFI/BOOT/BOOTX64.EFI"
