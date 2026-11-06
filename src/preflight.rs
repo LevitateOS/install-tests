@@ -15,12 +15,14 @@
 //!
 //! If preflight fails, we know the ISO is broken WITHOUT waiting for QEMU.
 
+use crate::repo_root;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use distro_builder::build_host::{
     check_kernel_preinstalled_via_recipe, run_build_host_evidence_script, BuildHostEvidenceSpec,
     BuildHostKernelSpec,
 };
+use distro_builder::run_history::{self, RunMetadata};
 use distro_contract::{
     load_variant_contract_bundle_for_distro_from, require_valid_contract,
     validate_build_runtime_with_artifacts, validate_live_boot_runtime, BuildRuntimeArtifacts,
@@ -29,9 +31,6 @@ use distro_contract::{
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
 use fsdbg::iso::IsoReader;
-use leviso_cheat_guard::cheat_bail;
-use crate::repo_root;
-use distro_builder::run_history::{self, RunMetadata};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -757,25 +756,12 @@ pub fn require_preflight(
             }
         }
 
-        cheat_bail!(
-            protects = "Installation tests verify REAL artifacts, not broken/incomplete ones",
-            severity = "CRITICAL",
-            cheats = [
-                "Skip preflight verification entirely",
-                "Mark missing items as optional",
-                "Remove items from required lists",
-                "Return Ok() when overall_pass is false",
-                "Lower severity of check failures"
-            ],
-            consequence =
-                "Tests pass with broken artifacts. Users download and burn a non-functional ISO.",
-            "Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
+        anyhow::bail!("Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
              Failures:\n{}\n\n\
              Run 'cargo run -p distro-builder --bin distro-builder -- release build iso {} base-rootfs' to rebuild the ISO.\n\
              ALL verification checks must pass before running tests.",
             all_failures.join("\n"),
-            distro_id
-        );
+            distro_id);
     }
 
     Ok(())

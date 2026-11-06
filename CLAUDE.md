@@ -4,7 +4,7 @@
 
 E2E test runner for LevitateOS installation. Boots ISO in QEMU, performs full installation, reboots into installed system, verifies success.
 
-**This is THE crate for installation tests.** Not `leviso/tests/`.
+**This is THE crate for installation tests.**
 
 ## What Belongs Here
 
@@ -16,7 +16,7 @@ E2E test runner for LevitateOS installation. Boots ISO in QEMU, performs full in
 
 | Don't put here | Put it in |
 |----------------|-----------|
-| Built-artifact validation | `leviso/tests/validation_tests.rs` |
+| Built-artifact validation | `testing/fsdbg/` |
 | Rootfs/UX tests | `testing/rootfs-tests/` |
 | Hardware compatibility | `testing/hardware-compat/` |
 
@@ -42,11 +42,3 @@ The test does what users do:
 7. Verify system works
 
 If this test passes, users CAN install. If it fails, fix the installation process.
-
-## Key Rules
-
-1. **Short timeouts** - 100-200ms, fail fast
-2. **No host dependencies** - Must work in CI
-3. **No flaky tests** - Add proper synchronization if timing-sensitive
-
-See `.teams/KNOWLEDGE_anti-cheat-testing.md` for anti-cheat principles.

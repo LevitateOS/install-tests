@@ -4,11 +4,6 @@
 //! - QEMU sessions and the serial console (`qemu`)
 //! - Named install-test scenarios (`scenarios`)
 //! - Distro context for multi-distro support
-//!
-//! # STOP. READ. THEN ACT.
-//!
-//! This is the CORRECT location for E2E installation tests. Read before writing.
-
 
 pub mod boot_injection;
 pub mod distro;
