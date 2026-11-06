@@ -23,22 +23,6 @@ impl DistroContext for AcornContext {
         "acorn"
     }
 
-    fn live_boot_success_patterns(&self) -> &[&str] {
-        &[recqemu::serial::protocol::SHELL_READY_MARKER]
-    }
-
-    fn boot_error_patterns(&self) -> &[&str] {
-        BASE.boot_error_patterns()
-    }
-
-    fn critical_boot_errors(&self) -> &[&str] {
-        BASE.critical_boot_errors()
-    }
-
-    fn service_failure_patterns(&self) -> &[&str] {
-        BASE.service_failure_patterns()
-    }
-
     fn live_boot_stall_timeout_secs(&self) -> u64 {
         BASE.live_boot_stall_timeout_secs()
     }

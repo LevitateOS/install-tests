@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use distro_contract::{
+    ScenarioContract,
     load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario, InstallExperience,
     RuntimePolicyScenario, ToolsScenario,
 };
@@ -33,24 +34,6 @@ pub trait DistroContext: Send + Sync {
     // ═══════════════════════════════════════════════════════════════════════════
     // Boot Detection Patterns
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /// Patterns indicating successful live ISO boot.
-    ///
-    /// Any of these appearing in console output signals boot success.
-    fn live_boot_success_patterns(&self) -> &[&str];
-
-    /// Patterns indicating successful installed system boot.
-    /// Patterns indicating fatal boot error.
-    ///
-    /// If any of these appear, the test fails immediately.
-    fn boot_error_patterns(&self) -> &[&str];
-
-    /// Patterns indicating critical boot errors (always fatal).
-    fn critical_boot_errors(&self) -> &[&str];
-
-    /// Patterns indicating service failures to track (not immediately fatal).
-    #[allow(dead_code)]
-    fn service_failure_patterns(&self) -> &[&str];
 
     /// Max silence window tolerated during live boot before declaring stall.
     ///
@@ -179,6 +162,13 @@ pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
         InstallExperience::AutomatedSsh => "automated_ssh",
     }
     .to_string())
+}
+
+/// The variant's whole scenario contract.
+pub fn load_scenarios(distro_id: &str) -> Result<ScenarioContract> {
+    Ok(load_variant_contract_for_distro_from(&workspace_root(), distro_id)
+        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?
+        .scenarios)
 }
 
 pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {

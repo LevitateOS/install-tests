@@ -500,21 +500,11 @@ fn wait_for_live_tools_serial_readiness(
     ctx: &dyn DistroContext,
 ) -> Result<()> {
     let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
-    // Live-tools is validated over SSH. Serial readiness can be either the explicit
-    // shell marker or a stable login prompt on ttyS0.
-    let live_tools_success_patterns = [
-        recqemu::serial::protocol::SHELL_READY_MARKER,
-        "Login as 'root' (no password)",
-        " login:",
-    ];
-    Console::wait_for_boot_with_patterns(
-        console,
-        stall_timeout,
-        &live_tools_success_patterns,
-        ctx.boot_error_patterns(),
-        false,
-    )
-    .with_context(|| "waiting for live-tools serial readiness".to_string())
+    // Live-tools is validated over SSH; the serial console may run the
+    // install UX rather than a shell.
+    console
+        .wait_for_live_tools_with_context(stall_timeout, ctx)
+        .context("waiting for live-tools serial readiness")
 }
 
 fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
@@ -643,8 +633,15 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
     let _ = child.wait();
 
     match result {
-        Ok(()) => {
-            let evidence = "Installed system boot markers detected".to_string();
+        Ok(failed_services) => {
+            let evidence = if failed_services.is_empty() {
+                "Installed system boot markers detected".to_string()
+            } else {
+                format!(
+                    "Installed system boot markers detected; failed services seen: {}",
+                    failed_services.join(" | ")
+                )
+            };
             scenario_run.finish_success(
                 &evidence,
                 Some(install_runtime.disk_path.as_path()),
