@@ -3,12 +3,14 @@
 //! `distro_spec::shared::live_boot`).
 
 use anyhow::{anyhow, bail, Context, Result};
-use distro_spec::shared::live_boot::{BOOT_INJECTION_FILE, BOOT_INJECTION_ISO_LABEL};
+use distro_spec::shared::live_boot::{
+    BOOT_INJECTION_FILE, BOOT_INJECTION_FW_CFG, BOOT_INJECTION_ISO_LABEL,
+};
+use recqemu::QemuBuilder;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use distro_spec::shared::live_boot::BOOT_INJECTION_FW_CFG as FW_CFG_NAME;
 
 /// Environment variables through which the scenarios binary hands an
 /// injection to the scenario runs: a payload file, or `KEY=VALUE,...` pairs.
@@ -33,6 +35,13 @@ impl Drop for BootInjection {
 }
 
 impl BootInjection {
+    /// Hand the payload to the guest on both channels the live init reads.
+    pub fn attach(&self, builder: QemuBuilder) -> QemuBuilder {
+        builder
+            .fw_cfg_file(BOOT_INJECTION_FW_CFG, &self.payload_file)
+            .extra_cdrom(&self.media_iso_file)
+    }
+
     /// Inject an existing payload file (KEY=VALUE lines).
     pub fn from_file(path: &Path) -> Result<Self> {
         if !path.is_file() {

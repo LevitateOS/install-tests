@@ -1,7 +1,7 @@
 //! The QEMU VMs the scenarios boot: one spawn function, and a session that
 //! stops its VM when dropped (so no error path leaks QEMU).
 
-use crate::boot_injection::{boot_injection_from_env, BootInjection, FW_CFG_NAME};
+use crate::boot_injection::{boot_injection_from_env, BootInjection};
 use crate::qemu::Console;
 use anyhow::{Context, Result};
 use recqemu::QemuBuilder;
@@ -78,9 +78,7 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     };
     let injection = boot_injection_from_env()?;
     if let Some(injection) = &injection {
-        builder = builder
-            .fw_cfg_file(FW_CFG_NAME, &injection.payload_file)
-            .extra_cdrom(&injection.media_iso_file);
+        builder = injection.attach(builder);
     }
 
     let mut child = builder.build_piped().spawn().context("Failed to spawn QEMU")?;

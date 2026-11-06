@@ -991,7 +991,7 @@ impl ScenarioRun {
             created_at_utc: now_utc_sortable()?,
             source_install_run_id,
         };
-        run.write_manifest("building", None, None, None, None)?;
+        run.write_manifest(run_history::STATUS_BUILDING, None, None, None, None)?;
         Ok(run)
     }
 

@@ -10,7 +10,7 @@ use recpart::types::{ApplyResult, DiskListResult, CONFIRM_TOKEN};
 use recpart::InstallMode;
 use recshuttle::Remote;
 
-use crate::DistroContext;
+use crate::distro::DistroContext;
 
 /// What the test system needs beyond the shipped tools.
 pub struct TestSystem<'a> {

@@ -35,7 +35,7 @@ pub trait SerialExecutorExt {
 }
 
 /// The live boot's fatal patterns plus the live init's rootfs-missing message.
-fn live_fatal(live_boot: &BootScenario) -> Vec<String> {
+pub fn live_fatal(live_boot: &BootScenario) -> Vec<String> {
     let mut fatal = live_boot.fatal_patterns.clone();
     fatal.push(ROOTFS_MISSING_MESSAGE.to_string());
     fatal
