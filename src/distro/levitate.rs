@@ -128,27 +128,4 @@ impl DistroContext for LevitateContext {
         "multi-user.target"
     }
 
-    fn live_tools(&self) -> &[&str] {
-        &[
-            // === Core Installation Tools ===
-            "recstrap",
-            "recfstab",
-            "recchroot",
-            "sfdisk",
-            "mkfs.ext4",
-            // === Network & Connectivity (daily driver) ===
-            "ip",   // iproute2
-            "ping", // iputils
-            "curl", // curl
-            // === Hardware Diagnostics (daily driver) ===
-            "lspci", // pciutils
-            "lsusb", // usbutils
-            // === Editors & Viewers (daily driver) ===
-            "vi",   // vim-minimal (Rocky default)
-            "less", // less
-            // === System Utilities (daily driver) ===
-            "grep", // grep (coreutils)
-            "find", // findutils
-        ]
-    }
 }

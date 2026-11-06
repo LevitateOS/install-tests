@@ -119,7 +119,6 @@ pub trait DistroContext: Send + Sync {
     /// Expected hostname pattern to check (may include partial match).
     fn hostname_check_pattern(&self) -> &str;
 
-
     // ═══════════════════════════════════════════════════════════════════════════
     // Summary Display
     // ═══════════════════════════════════════════════════════════════════════════
@@ -130,8 +129,6 @@ pub trait DistroContext: Send + Sync {
     /// Boot target name for display (e.g., "multi-user.target", "default runlevel").
     fn boot_target_name(&self) -> &str;
 
-    /// Tools expected to be present in the live ISO environment.
-    fn live_tools(&self) -> &[&str];
 }
 
 /// Create a DistroContext based on the distro ID string.

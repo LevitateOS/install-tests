@@ -375,7 +375,8 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
     // Check for key tools expected in the live environment
-    let tools: Vec<&str> = ctx.live_tools().to_vec();
+    let required_tools = crate::distro::load_scenarios(ctx.id())?.live_tools.required_tools;
+    let tools: Vec<&str> = required_tools.iter().map(String::as_str).collect();
     let mut missing = Vec::new();
     let mut found = Vec::new();
     let mut broken = Vec::new();
