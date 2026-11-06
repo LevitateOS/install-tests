@@ -104,7 +104,8 @@ pub fn install(
                 .find(|p| p.mountpoint == "/")
                 .context("recpart planned no root partition")?;
             let device = applied
-                .mounted
+                .handoff
+                .mount_map
                 .iter()
                 .find(|m| m.path == target)
                 .map(|m| m.device.clone())
