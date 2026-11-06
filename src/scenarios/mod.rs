@@ -503,7 +503,7 @@ fn wait_for_live_tools_serial_readiness(
     // Live-tools is validated over SSH. Serial readiness can be either the explicit
     // shell marker or a stable login prompt on ttyS0.
     let live_tools_success_patterns = [
-        "___SHELL_READY___",
+        recqemu::serial::protocol::SHELL_READY_MARKER,
         "Login as 'root' (no password)",
         " login:",
     ];

@@ -31,7 +31,7 @@ impl DistroContext for LevitateContext {
         // Live boot requires an actually interactive shell on the serial console.
         // These markers are emitted by `/etc/profile.d/00-live-test.sh` only when
         // an interactive shell is active on ttyS0.
-        &["___SHELL_READY___"]
+        &[recqemu::serial::protocol::SHELL_READY_MARKER]
     }
 
     fn boot_error_patterns(&self) -> &[&str] {
@@ -209,10 +209,6 @@ impl DistroContext for LevitateContext {
 
     fn hostname_check_pattern(&self) -> &str {
         "levitate"
-    }
-
-    fn test_instrumentation_source(&self) -> &str {
-        include_str!("../../../../distro-spec/src/shared/auth/files/00-levitate-test.sh")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -4,7 +4,6 @@
 //! - QEMU backends (serial and QMP)
 //! - Named install-test scenarios (`scenarios`)
 //! - Distro context for multi-distro support
-//! - Executor trait for abstracting I/O backends
 //!
 //! # STOP. READ. THEN ACT.
 //!
@@ -16,7 +15,6 @@ use std::process::Command;
 
 pub mod boot_injection;
 pub mod distro;
-pub mod executor;
 pub mod preflight;
 pub mod qemu;
 pub mod scenarios;
@@ -26,7 +24,6 @@ pub use boot_injection::{
     boot_injection_from_env, BootInjection, FW_CFG_NAME as BOOT_INJECTION_FW_CFG_NAME,
 };
 pub use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
-pub use executor::{ExecResult, Executor};
 pub use preflight::{
     require_preflight, require_preflight_for_distro, require_preflight_with_iso_for_distro,
     run_preflight, run_preflight_for_distro, run_preflight_with_iso, run_preflight_with_iso_distro,

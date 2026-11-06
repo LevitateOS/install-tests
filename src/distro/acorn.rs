@@ -24,7 +24,7 @@ impl DistroContext for AcornContext {
     }
 
     fn live_boot_success_patterns(&self) -> &[&str] {
-        &["___SHELL_READY___"]
+        &[recqemu::serial::protocol::SHELL_READY_MARKER]
     }
 
     fn boot_error_patterns(&self) -> &[&str] {
@@ -109,12 +109,6 @@ impl DistroContext for AcornContext {
 
     fn hostname_check_pattern(&self) -> &str {
         "acorn"
-    }
-
-    fn test_instrumentation_source(&self) -> &str {
-        include_str!(
-            "../../../../distro-variants/acorn/ring2/overlays/live/etc/profile.d/00-acorn-test.sh"
-        )
     }
 
     fn init_system_name(&self) -> &str {

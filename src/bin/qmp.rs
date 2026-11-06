@@ -5,8 +5,8 @@
 //!
 //! # Limitations
 //!
-//! QMP cannot capture command output without OCR. It cannot honestly
-//! implement the Executor trait. Use this for visual verification only.
+//! QMP cannot capture command output without OCR. Use this for visual
+//! verification only.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};

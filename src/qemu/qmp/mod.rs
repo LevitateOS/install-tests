@@ -22,12 +22,9 @@
 //! | Debugging boot issues | serial | Full text output |
 //! | Testing graphical installers | qmp | Required for GUI interaction |
 //!
-//! # Note on Executor Trait
-//!
-//! QMP intentionally does NOT implement the Executor trait. QMP cannot capture
-//! command output or exit codes without OCR — any Executor impl would be
-//! fraudulent (sleeping then returning success). Use the serial backend for
-//! step-based testing. QMP is for visual-only workflows (smoke tests, screenshots).
+//! QMP cannot capture command output or exit codes without OCR, so it runs
+//! no commands: use the serial console for that. QMP is for visual-only
+//! workflows (smoke tests, screenshots).
 
 mod capture;
 mod client;

@@ -136,8 +136,6 @@ pub trait DistroContext: Send + Sync {
     /// Expected hostname pattern to check (may include partial match).
     fn hostname_check_pattern(&self) -> &str;
 
-    /// Path to test instrumentation script to copy to installed system.
-    fn test_instrumentation_source(&self) -> &str;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Summary Display
