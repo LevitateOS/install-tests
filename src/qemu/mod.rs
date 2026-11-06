@@ -1,14 +1,6 @@
-//! QEMU infrastructure for E2E installation tests.
-//!
-//! Provides builders and console control for running installation steps in QEMU.
-//!
-//! # Architecture
-//!
-//! QEMU command lines come from `recqemu::QemuBuilder`; this module adds
-//! the test sessions and harness adapters:
-//!
-//! - `session` - live/installed VM spawns used by the scenarios
-//! - `serial` - boot waits for `recqemu::Console` with distro patterns
+//! QEMU for the scenarios. Command lines come from `recqemu::QemuBuilder`;
+//! `session` spawns the live and installed VMs, and `serial` adds the
+//! distro's boot patterns to `recqemu::Console`.
 
 pub mod serial;
 pub mod session;

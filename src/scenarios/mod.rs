@@ -323,10 +323,6 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
     })
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Scenario implementations
-// ═══════════════════════════════════════════════════════════════════════════
-
 /// Live Boot scenario — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let live_boot_evidence = load_live_boot_evidence_spec(ctx.id())?;
@@ -357,12 +353,9 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 
 /// Live Tools scenario — expected binaries in the live environment.
 ///
-/// IMPORTANT: This doesn't just check if tools exist (which would be lazy).
-/// It actually EXECUTES each tool to verify:
-/// - Binary can execute (not just exist in PATH)
-/// - Required libraries are present (no missing .so files)
-/// - Environment is configured (proc/sys/dev available)
-/// - Tool is functional (not broken/corrupted)
+/// Each tool is run with a harmless invocation where it has one (see
+/// [`check_tool`]), so missing libraries or a broken binary fail, not just
+/// absence from PATH. The live overlay's behavior is checked too.
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let mut vm = session::spawn(VmSpec {
         iso: Some(iso_path),
@@ -374,7 +367,6 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     wait_for_live_tools_serial_readiness(console, ctx)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    // Check for key tools expected in the live environment
     let required_tools = crate::distro::load_scenarios(ctx.id())?.live_tools.required_tools;
     let tools: Vec<&str> = required_tools.iter().map(String::as_str).collect();
     let mut missing = Vec::new();
@@ -392,7 +384,6 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 
     let overlay_evidence = verify_live_overlay_behavior(console)?;
 
-    // Report failures
     if !missing.is_empty() || !broken.is_empty() {
         let mut error_msg = String::new();
 
@@ -531,7 +522,6 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         };
         let (target, step_count) = install::install(&remote, ctx, &system)?;
 
-        // Verify key artifacts exist
         let mut verify = vec![
             ("Root filesystem", format!("test -f {target}/etc/os-release")),
             ("Boot partition", format!("ls {target}/boot/EFI")),
@@ -646,7 +636,6 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
 
     console.login("root", &default_password(ctx)?, LOGIN_TIMEOUT)?;
 
-    // Verify shell works
     let result = console.exec("echo SCENARIO_LOGIN_OK", COMMAND_TIMEOUT)?;
 
     if result.output.contains("SCENARIO_LOGIN_OK") {
@@ -698,10 +687,6 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
 
     Ok(format!("All {} daily driver tools present", found.len()))
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════════════════
 
 pub fn resolve_iso_artifact_for_scenario(
     distro_id: &str,
