@@ -30,4 +30,8 @@ impl DistroContext for LevitateContext {
     fn uses_initramfs(&self) -> bool {
         true
     }
+
+    fn init_system(&self) -> recab::InitSystem {
+        recab::InitSystem::Systemd
+    }
 }

@@ -35,4 +35,8 @@ impl DistroContext for AcornContext {
     fn uses_initramfs(&self) -> bool {
         false
     }
+
+    fn init_system(&self) -> recab::InitSystem {
+        recab::InitSystem::OpenRc
+    }
 }

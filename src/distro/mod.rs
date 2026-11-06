@@ -36,6 +36,9 @@ pub trait DistroContext: Send + Sync {
     /// Whether the installed system boots through an initramfs (its kernel
     /// then needs no built-in root filesystem driver).
     fn uses_initramfs(&self) -> bool;
+
+    /// The installed system's init system.
+    fn init_system(&self) -> recab::InitSystem;
 }
 
 /// Create a DistroContext based on the distro ID string.

@@ -34,8 +34,8 @@ const TRIAL_REBOOT_TIMEOUT: Duration = Duration::from_secs(300);
 const COMMIT_WAIT: Duration = Duration::from_secs(200);
 /// Where the scenario mounts slot B to break and repair it.
 const SLOT_MOUNT: &str = "/run/ab-update-slot";
-/// A unit that always fails, so slot B's trial comes up degraded.
-const FAILING_UNIT: &str = "ab-update-fail.service";
+/// A service that always fails, so slot B's trial comes up degraded.
+const FAILING_SERVICE: &str = "ab-update-fail";
 
 pub(super) fn run(ctx: &dyn DistroContext, iso: &Path) -> Result<String> {
     if install_mode_for_distro(ctx.id())? != InstallMode::Ab {
@@ -97,7 +97,7 @@ impl Machine<'_> {
         expect(&st, Slot::A, true, "after install")?;
         ensure!(st.next_boot == Some(Slot::A), "after install the next boot is {:?}, not A", st.next_boot);
         ensure!(sys.sh("findmnt -n -o SOURCE /var")?.contains("/dev/"), "/var is not its own partition");
-        sys.sh(&format!("systemctl is-enabled {}", recab::UNIT_NAME))?;
+        sys.sh(&format!("test -L /{}", self.ctx.init_system().trial_service_link()))?;
         let identity = sys.identity()?;
 
         // Stage the release into slot B.
@@ -118,7 +118,8 @@ impl Machine<'_> {
             entry("b")
         );
         sys.sh(&format!(
-            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && printf '[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n' > {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} && ln -s /etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} && umount {SLOT_MOUNT}"
+            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
+            failing_service(self.ctx.init_system(), true)
         ))?;
         sys.sh("recab set-next B")?;
         let st = sys.status()?;
@@ -138,7 +139,8 @@ impl Machine<'_> {
 
         // Repair B: the healthy trial commits itself.
         sys.sh(&format!(
-            "mount {slot_b} {SLOT_MOUNT} && rm {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} && umount {SLOT_MOUNT}"
+            "mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
+            failing_service(self.ctx.init_system(), false)
         ))?;
         sys.sh("recab set-next B")?;
         sys.reboot()?;
@@ -218,7 +220,7 @@ impl Booted {
 
     /// The machine-id and SSH host key fingerprints, which `stage` carries.
     fn identity(&mut self) -> Result<String> {
-        self.sh("cat /etc/machine-id; for k in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$k\"; done")
+        self.sh("cat /etc/machine-id 2>/dev/null; for k in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$k\"; done")
     }
 
     /// Wait for recab-trial.service to commit the running trial.
@@ -240,7 +242,7 @@ impl Booted {
         // appended partition, which a CD drive does not expose: a read-only
         // partition-scanning loop device over the CD does.
         let rootfs = self.sh(&format!(
-            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\"; else l=$(losetup --find --show --read-only --partscan {}) && udevadm settle && echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
+            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\"; else l=$(losetup --find --show --read-only --partscan {}) && for i in $(seq 50); do [ -e \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\" ] && break; sleep 0.1; done; echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
             shell_quote(&media)
         ))?;
         let mut stage = format!(
@@ -282,12 +284,12 @@ impl Booted {
     /// Reboot; the VM runs with -no-reboot, so QEMU exits and the next
     /// `boot` starts it again with the same disk and UEFI variables.
     fn reboot(mut self) -> Result<()> {
-        let _ = self.console().exec("systemctl reboot", Duration::from_secs(2));
+        let _ = self.console().exec("reboot", Duration::from_secs(2));
         self.vm.wait_for_exit(SHUTDOWN_TIMEOUT)
     }
 
     fn poweroff(mut self) -> Result<()> {
-        let _ = self.console().exec("systemctl poweroff", Duration::from_secs(2));
+        let _ = self.console().exec("poweroff", Duration::from_secs(2));
         self.vm.wait_for_exit(SHUTDOWN_TIMEOUT)
     }
 }
@@ -299,4 +301,27 @@ fn expect(st: &Status, active: Slot, committed: bool, when: &str) -> Result<()> 
         if committed { "committed" } else { "uncommitted" }
     );
     Ok(())
+}
+
+/// Shell that adds (or removes) a service that always fails to slot B,
+/// mounted at [`SLOT_MOUNT`], enabled in the init system's normal boot.
+fn failing_service(init: recab::InitSystem, add: bool) -> String {
+    let (script, link, content) = match init {
+        recab::InitSystem::Systemd => (
+            format!("{SLOT_MOUNT}/etc/systemd/system/{FAILING_SERVICE}.service"),
+            format!("{SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_SERVICE}.service"),
+            "[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n",
+        ),
+        recab::InitSystem::OpenRc => (
+            format!("{SLOT_MOUNT}/etc/init.d/{FAILING_SERVICE}"),
+            format!("{SLOT_MOUNT}/etc/runlevels/default/{FAILING_SERVICE}"),
+            "#!/sbin/openrc-run\\nstart() {\\n\\treturn 1\\n}\\n",
+        ),
+    };
+    let target = script.trim_start_matches(SLOT_MOUNT);
+    if add {
+        format!("printf '{content}' > {script} && chmod 755 {script} && ln -s {target} {link}")
+    } else {
+        format!("rm {script} {link}")
+    }
 }

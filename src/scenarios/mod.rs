@@ -550,8 +550,8 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
                     format!("grep -q '\"known_good_slot\": \"A\"' {target}/var/lib/recab/state.json"),
                 ));
                 verify.push((
-                    "recab-trial.service enabled",
-                    format!("test -L {target}/etc/systemd/system/sysinit.target.wants/{}", recab::UNIT_NAME),
+                    "recab's trial service enabled",
+                    format!("test -L {target}/{}", ctx.init_system().trial_service_link()),
                 ));
             }
         }
