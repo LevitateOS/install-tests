@@ -30,19 +30,9 @@ use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
 use fsdbg::iso::IsoReader;
 use leviso_cheat_guard::cheat_bail;
-use serde::Deserialize;
-use std::fs;
+use crate::repo_root;
+use distro_builder::run_history::{self, RunMetadata};
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Deserialize)]
-struct RunManifest {
-    status: String,
-    created_at_utc: String,
-    finished_at_utc: Option<String>,
-    iso_path: Option<String>,
-    target_kind: Option<String>,
-    target_name: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 struct ResolvedRuntimeArtifacts {
@@ -153,8 +143,7 @@ fn verify_conformance_contract(
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
-    let workspace_root = workspace_root();
-    let bundle = match load_variant_contract_bundle_for_distro_from(&workspace_root, distro_id) {
+    let bundle = match load_variant_contract_bundle_for_distro_from(&repo_root(), distro_id) {
         Ok(bundle) => bundle,
         Err(err) => {
             println!("{}", "FAIL".red().bold());
@@ -170,7 +159,7 @@ fn verify_conformance_contract(
     };
 
     let mut details = Vec::new();
-    let kernel_output_dir = kernel_output_dir_for_distro(distro_id);
+    let kernel_output_dir = run_history::kernel_output_dir(&repo_root(), distro_id);
 
     if let Err(err) = require_valid_contract(&bundle.contract) {
         details.extend(err.report.violations.into_iter().map(|v| v.to_string()));
@@ -300,7 +289,7 @@ fn verify_build_evidence_script(
             distro_id,
         )
         .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))?;
-        let release_root = release_product_root_dir_for_distro(distro_id, "base-rootfs");
+        let release_root = run_history::release_product_dir(&repo_root(), distro_id, "base-rootfs");
         let run_output_dir = resolve_latest_successful_run_dir(&release_root, &iso_filename)
             .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))?
             .unwrap_or(release_root);
@@ -324,92 +313,37 @@ fn verify_build_evidence_script(
     .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))
 }
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn distro_output_dir_for_distro(distro_id: &str) -> PathBuf {
-    workspace_root().join(".artifacts/out").join(distro_id)
-}
-
-fn release_product_root_dir_for_distro(distro_id: &str, product_name: &str) -> PathBuf {
-    distro_output_dir_for_distro(distro_id)
-        .join("releases")
-        .join(product_name)
-}
-
-fn kernel_output_dir_for_distro(distro_id: &str) -> PathBuf {
-    workspace_root()
-        .join(".artifacts/kernel")
-        .join(distro_id)
-        .join("current")
-}
-
+/// The newest successful run under `run_root` whose ISO is still on disk.
 fn resolve_latest_successful_run_dir(
     run_root: &Path,
     iso_filename: &str,
 ) -> Result<Option<PathBuf>> {
-    if !run_root.is_dir() {
-        return Ok(None);
-    }
-
-    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
-    for entry in fs::read_dir(run_root)
-        .with_context(|| format!("reading run output directory '{}'", run_root.display()))?
-    {
-        let entry = entry
-            .with_context(|| format!("iterating run output directory '{}'", run_root.display()))?;
-        let run_dir = entry.path();
-        if !run_dir.is_dir() {
+    let mut best: Option<(String, PathBuf)> = None;
+    for run in run_history::load_run_metadata(run_root)? {
+        if run.status != run_history::STATUS_SUCCESS {
             continue;
         }
-        let manifest_path = run_dir.join("run-manifest.json");
-        if !manifest_path.is_file() {
-            continue;
-        }
-        let raw = fs::read(&manifest_path)
-            .with_context(|| format!("reading run manifest '{}'", manifest_path.display()))?;
-        let manifest: RunManifest = serde_json::from_slice(&raw)
-            .with_context(|| format!("parsing run manifest '{}'", manifest_path.display()))?;
-        if manifest.status != "success" {
-            continue;
-        }
-
-        let sort_key = manifest
-            .finished_at_utc
-            .clone()
-            .unwrap_or(manifest.created_at_utc.clone());
-        let iso_candidate = manifest
+        let run_dir = run_root.join(&run.run_id);
+        let iso = run
             .iso_path
             .as_ref()
             .map(PathBuf::from)
             .filter(|p| p.is_file())
             .unwrap_or_else(|| run_dir.join(iso_filename));
-        if !iso_candidate.is_file() {
+        if !iso.is_file() {
             continue;
         }
-        candidates.push((sort_key, run_dir));
+        let key = run.finished_at_utc.unwrap_or(run.created_at_utc);
+        if best.as_ref().is_none_or(|(k, _)| key > *k) {
+            best = Some((key, run_dir));
+        }
     }
-
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(candidates.into_iter().next().map(|(_, run_dir)| run_dir))
+    Ok(best.map(|(_, run_dir)| run_dir))
 }
 
-fn load_run_manifest(run_dir: &Path) -> Result<Option<RunManifest>> {
-    let manifest_path = run_dir.join("run-manifest.json");
-    if !manifest_path.is_file() {
-        return Ok(None);
-    }
-    let raw = fs::read(&manifest_path)
-        .with_context(|| format!("reading run manifest '{}'", manifest_path.display()))?;
-    let manifest: RunManifest = serde_json::from_slice(&raw)
-        .with_context(|| format!("parsing run manifest '{}'", manifest_path.display()))?;
-    Ok(Some(manifest))
-}
-
-fn should_validate_live_boot_runtime(run_manifest: Option<&RunManifest>) -> bool {
+fn should_validate_live_boot_runtime(run_manifest: Option<&RunMetadata>) -> bool {
     if let Some(manifest) = run_manifest {
-        return manifest.target_kind.as_deref() == Some("release-product")
+        return manifest.target_kind.as_deref() == Some(run_history::TARGET_KIND_RELEASE_PRODUCT)
             && matches!(
                 manifest.target_name.as_deref(),
                 Some("live-boot") | Some("live-tools")
@@ -463,7 +397,7 @@ fn run_preflight_with_iso_distro_layout(
         .map(|filename| iso_dir.join(filename))
         .filter(|path| path.is_file())
         .or_else(|| find_iso_file(iso_dir));
-    let run_manifest = load_run_manifest(iso_dir)?;
+    let run_manifest = run_history::read_run_manifest(iso_dir)?;
     let runtime_artifacts = resolve_runtime_artifacts(iso_dir, distro_id)?;
     let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
 
@@ -562,7 +496,7 @@ struct CanonicalRuntimeArtifactNames {
 fn canonical_runtime_artifact_names_for_distro(
     distro_id: &str,
 ) -> Result<CanonicalRuntimeArtifactNames> {
-    let bundle = load_variant_contract_bundle_for_distro_from(&workspace_root(), distro_id)
+    let bundle = load_variant_contract_bundle_for_distro_from(&repo_root(), distro_id)
         .with_context(|| format!("loading variant contract for '{}'", distro_id))?;
     Ok(CanonicalRuntimeArtifactNames {
         rootfs_image: required_transform_output_name(

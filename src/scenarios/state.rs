@@ -106,7 +106,7 @@ impl ScenarioState {
 pub(crate) fn state_path(distro_id: &str) -> PathBuf {
     let root = std::env::var_os("LEVITATE_SCENARIO_STATE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.scenarios"));
+        .unwrap_or_else(|| crate::repo_root().join(".scenarios"));
     root.join(format!("{}.json", distro_id))
 }
 

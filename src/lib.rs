@@ -24,3 +24,9 @@ pub use preflight::{
     PreflightCheck, PreflightResult,
 };
 pub use qemu::{Console, SerialExecutorExt};
+
+/// The LevitateOS checkout this crate sits in.
+pub(crate) fn repo_root() -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    root.canonicalize().unwrap_or(root)
+}

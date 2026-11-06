@@ -31,7 +31,9 @@ use distro_builder::live_ux::{
 };
 use distro_contract::InstallExperience;
 use crate::qemu::session::VmSpec;
-use serde::{Deserialize, Serialize};
+use crate::repo_root;
+use distro_builder::run_history;
+use serde::Serialize;
 use state::ScenarioState;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -128,14 +130,6 @@ pub struct ScenarioIsoArtifact {
     pub product_name: &'static str,
     pub path: PathBuf,
     pub filename: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReleaseRunManifest {
-    status: String,
-    iso_path: Option<String>,
-    target_kind: Option<String>,
-    target_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -683,8 +677,8 @@ pub fn resolve_iso_artifact_for_scenario(
     let Some(product_name) = scenario.release_product() else {
         return Ok(None);
     };
-    let release_root = release_product_root_dir(distro_id, product_name);
-    let run_id = distro_builder::run_history::latest_successful_run_id(&release_root)?.ok_or_else(|| {
+    let release_root = run_history::release_product_dir(&repo_root(), distro_id, product_name);
+    let run_id = run_history::latest_successful_run_id(&release_root)?.ok_or_else(|| {
         anyhow::anyhow!(
             "scenario '{}' for '{}' requires release product '{}', but no successful runs were found under '{}'.\n\
              Build it first: cargo run -p distro-builder --bin distro-builder -- release build iso {} {}",
@@ -697,7 +691,7 @@ pub fn resolve_iso_artifact_for_scenario(
         )
     })?;
     let run_dir = release_root.join(&run_id);
-    let manifest = load_release_run_manifest(&run_dir)?.ok_or_else(|| {
+    let manifest = run_history::read_run_manifest(&run_dir)?.ok_or_else(|| {
         anyhow::anyhow!(
             "release product '{}' for '{}' is missing run-manifest metadata under '{}'.",
             product_name,
@@ -705,7 +699,7 @@ pub fn resolve_iso_artifact_for_scenario(
             run_dir.display()
         )
     })?;
-    if manifest.status != "success" {
+    if manifest.status != run_history::STATUS_SUCCESS {
         bail!(
             "latest '{}' release run for '{}' is not successful under '{}'",
             product_name,
@@ -713,7 +707,7 @@ pub fn resolve_iso_artifact_for_scenario(
             run_dir.display()
         );
     }
-    if manifest.target_kind.as_deref() != Some("release-product")
+    if manifest.target_kind.as_deref() != Some(run_history::TARGET_KIND_RELEASE_PRODUCT)
         || manifest.target_name.as_deref() != Some(product_name)
     {
         bail!(
@@ -787,26 +781,6 @@ fn scenario_input_fingerprint(
         ),
     };
     Ok(format!("{input};{harness}"))
-}
-
-fn load_release_run_manifest(run_dir: &Path) -> Result<Option<ReleaseRunManifest>> {
-    let manifest_path = run_dir.join("run-manifest.json");
-    if !manifest_path.is_file() {
-        return Ok(None);
-    }
-    let raw = fs::read(&manifest_path)
-        .with_context(|| format!("reading release run manifest '{}'", manifest_path.display()))?;
-    let manifest: ReleaseRunManifest = serde_json::from_slice(&raw)
-        .with_context(|| format!("parsing release run manifest '{}'", manifest_path.display()))?;
-    Ok(Some(manifest))
-}
-
-fn release_product_root_dir(distro_id: &str, product_name: &str) -> PathBuf {
-    workspace_root()
-        .join(".artifacts/out")
-        .join(distro_id)
-        .join("releases")
-        .join(product_name)
 }
 
 fn verify_live_boot_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
@@ -997,7 +971,7 @@ impl ScenarioRun {
     ) -> Result<Self> {
         let scenario_root_dir = scenario_runtime_root_dir(distro_id, scenario);
         let (run_id, output_dir) =
-            distro_builder::run_history::allocate_run_dir(&scenario_root_dir)?;
+            run_history::allocate_run_dir(&scenario_root_dir)?;
         let run = Self {
             run_id,
             distro_id: distro_id.to_string(),
@@ -1019,13 +993,13 @@ impl ScenarioRun {
     ) -> Result<()> {
         let evidence_path = self.write_evidence(evidence)?;
         self.write_manifest(
-            "success",
+            run_history::STATUS_SUCCESS,
             Some(now_utc_sortable()?),
             Some(evidence_path.as_path()),
             disk_path,
             ovmf_vars_path,
         )?;
-        distro_builder::run_history::prune_old_runs(
+        run_history::prune_old_runs(
             &self.scenario_root_dir,
             SCENARIO_RUNTIME_RETENTION_COUNT,
         )
@@ -1039,7 +1013,7 @@ impl ScenarioRun {
     ) -> Result<()> {
         let evidence_path = self.write_evidence(evidence)?;
         self.write_manifest(
-            "failed",
+            run_history::STATUS_FAILED,
             Some(now_utc_sortable()?),
             Some(evidence_path.as_path()),
             disk_path,
@@ -1069,7 +1043,7 @@ impl ScenarioRun {
             ovmf_vars_path: ovmf_vars_path.map(|p| p.display().to_string()),
             source_install_run_id: self.source_install_run_id.clone(),
         };
-        let manifest_path = distro_builder::run_history::manifest_path(&self.output_dir);
+        let manifest_path = run_history::run_manifest_path(&self.output_dir);
         write_json_atomic(&manifest_path, &metadata).with_context(|| {
             format!(
                 "writing scenario runtime metadata '{}'",
@@ -1099,7 +1073,7 @@ impl ScenarioRun {
 
 pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenarioRuntime> {
     let scenario_root = scenario_runtime_root_dir(distro_id, ScenarioId::Install);
-    let run_id = distro_builder::run_history::latest_successful_run_id(&scenario_root)?
+    let run_id = run_history::latest_successful_run_id(&scenario_root)?
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "install scenario runtime not found for '{}': no successful runs under '{}'.\n\
@@ -1140,16 +1114,9 @@ pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenario
 }
 
 fn scenario_runtime_root_dir(distro_id: &str, scenario: ScenarioId) -> PathBuf {
-    workspace_root()
-        .join(".artifacts/out")
-        .join(distro_id)
+    run_history::distro_output_dir(&repo_root(), distro_id)
         .join(SCENARIO_ROOT_DIRNAME)
         .join(scenario.scenario_output_dirname())
-}
-
-fn workspace_root() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    root.canonicalize().unwrap_or(root)
 }
 
 fn installed_script_path(script_filename: &str) -> String {

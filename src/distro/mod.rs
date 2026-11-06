@@ -7,7 +7,6 @@ use distro_contract::{
     load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario,
     RuntimePolicyScenario, ToolsScenario,
 };
-use std::path::PathBuf;
 
 pub mod acorn;
 pub mod levitate;
@@ -61,13 +60,13 @@ pub struct InstalledScenarioFacts {
 
 /// The variant's whole scenario contract.
 pub fn load_scenarios(distro_id: &str) -> Result<ScenarioContract> {
-    Ok(load_variant_contract_for_distro_from(&workspace_root(), distro_id)
+    Ok(load_variant_contract_for_distro_from(&crate::repo_root(), distro_id)
         .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?
         .scenarios)
 }
 
 pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {
-    let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
+    let contract = load_variant_contract_for_distro_from(&crate::repo_root(), distro_id)
         .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
     Ok(InstalledScenarioFacts {
         installed_boot: contract.scenarios.installed_boot,
@@ -75,8 +74,4 @@ pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenari
         installed_tools: contract.scenarios.installed_tools,
         runtime_policy: contract.scenarios.runtime_policy,
     })
-}
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
