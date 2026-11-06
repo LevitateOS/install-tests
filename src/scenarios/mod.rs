@@ -15,6 +15,7 @@
 
 pub mod state;
 
+mod ab_update;
 mod install;
 use crate::distro::{context_for_distro, load_installed_scenario_facts, load_scenarios, DistroContext};
 use crate::preflight::require_preflight;
@@ -42,7 +43,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/live-boot-ssh-preflight.sh";
 const SCENARIO_RUNTIME_RETENTION_COUNT: usize = 5;
-const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
+pub(super) const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
 const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
 
 const PRODUCT_BASE_ROOTFS: &str = "base-rootfs";
@@ -59,10 +60,11 @@ pub enum ScenarioId {
     InstalledBoot,
     AutomatedLogin,
     Runtime,
+    AbUpdate,
 }
 
 impl ScenarioId {
-    pub const ALL: [ScenarioId; 7] = [
+    pub const ALL: [ScenarioId; 8] = [
         ScenarioId::BuildPreflight,
         ScenarioId::LiveBoot,
         ScenarioId::LiveTools,
@@ -70,6 +72,7 @@ impl ScenarioId {
         ScenarioId::InstalledBoot,
         ScenarioId::AutomatedLogin,
         ScenarioId::Runtime,
+        ScenarioId::AbUpdate,
     ];
 
     pub fn key(self) -> &'static str {
@@ -81,6 +84,7 @@ impl ScenarioId {
             Self::InstalledBoot => "installed-boot",
             Self::AutomatedLogin => "automated-login",
             Self::Runtime => "runtime",
+            Self::AbUpdate => "ab-update",
         }
     }
 
@@ -93,6 +97,7 @@ impl ScenarioId {
             Self::InstalledBoot => "Installed Boot",
             Self::AutomatedLogin => "Automated Login",
             Self::Runtime => "Runtime",
+            Self::AbUpdate => "A/B Update",
         }
     }
 
@@ -106,6 +111,7 @@ impl ScenarioId {
             "installed-boot" | "installed_boot" => Some(Self::InstalledBoot),
             "automated-login" | "automated_login" => Some(Self::AutomatedLogin),
             "runtime" => Some(Self::Runtime),
+            "ab-update" | "ab_update" => Some(Self::AbUpdate),
             _ => None,
         }
     }
@@ -114,7 +120,8 @@ impl ScenarioId {
         match self {
             Self::BuildPreflight => Some(PRODUCT_BASE_ROOTFS),
             Self::LiveBoot => Some(PRODUCT_LIVE_BOOT),
-            Self::LiveTools | Self::Install => Some(PRODUCT_LIVE_TOOLS),
+            // ab-update stages the live-tools release into the installed system.
+            Self::LiveTools | Self::Install | Self::AbUpdate => Some(PRODUCT_LIVE_TOOLS),
             Self::InstalledBoot | Self::AutomatedLogin | Self::Runtime => None,
         }
     }
@@ -230,6 +237,13 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
         ScenarioId::InstalledBoot => run_installed_boot(&*ctx),
         ScenarioId::AutomatedLogin => run_automated_login(&*ctx),
         ScenarioId::Runtime => run_daily_driver_tools(&*ctx),
+        ScenarioId::AbUpdate => ab_update::run(
+            &*ctx,
+            &scenario_iso
+                .as_ref()
+                .expect("ab-update scenario requires ISO")
+                .path,
+        ),
     };
 
     match &result {
@@ -489,7 +503,13 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     if disk_path.exists() {
         std::fs::remove_file(&disk_path)?;
     }
-    recqemu::create_disk(&disk_path, "20G")?;
+    // An A/B layout holds two 20 GiB root slots and at least 4 GiB of state
+    // (recpart's defaults); the image is sparse either way.
+    let disk_size = match install_mode_for_distro(ctx.id())? {
+        InstallMode::Ab => "48G",
+        InstallMode::Mutable => "20G",
+    };
+    recqemu::create_disk(&disk_path, disk_size)?;
 
     let ovmf_vars_path = session::setup_ovmf_vars_at(
         &scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME),
@@ -499,6 +519,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         disk: Some(&disk_path),
         ovmf_vars: Some(&ovmf_vars_path),
         ssh: true,
+        ..Default::default()
     })?;
     let ssh_host_port = vm.ssh_port()?;
     let console = &mut vm.console;
@@ -528,12 +549,16 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
 
         let mut verify = vec![
             ("Root filesystem", format!("test -f {target}/etc/os-release")),
-            ("Kernel on ESP", format!("ls {target}/boot/vmlinuz")),
             ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
             ("fstab root entry", format!("awk '$2==\"/\" {{ok=1}} END{{exit(ok?0:1)}}' {target}/etc/fstab")),
         ];
+        let kernel_dir = match system.mode {
+            InstallMode::Mutable => format!("{target}/boot"),
+            InstallMode::Ab => format!("{target}/boot/{}-a", ctx.id()),
+        };
+        verify.push(("Kernel on ESP", format!("ls {kernel_dir}/vmlinuz")));
         if system.uses_initramfs {
-            verify.push(("Initramfs on ESP", format!("ls {target}/boot/initramfs.img")));
+            verify.push(("Initramfs on ESP", format!("ls {kernel_dir}/initramfs.img")));
         }
         match system.mode {
             InstallMode::Mutable => verify.push((
@@ -797,6 +822,13 @@ fn scenario_input_fingerprint(
         fs::metadata(&harness_path)?.len()
     );
     let input = match iso_artifact {
+        Some(iso) if scenario == ScenarioId::AbUpdate => format!(
+            "iso:{}:{}:{};install-runtime:{}",
+            iso.product_name,
+            iso.path.display(),
+            mtime(&iso.path)?,
+            resolve_latest_install_runtime(distro_id)?.run_id
+        ),
         Some(iso) => format!(
             "iso:{}:{}:{}",
             iso.product_name,
@@ -1360,6 +1392,13 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
             eprintln!("  Common causes:");
             eprintln!("    - Packages not installed in rootfs");
             eprintln!("    - PATH misconfigured");
+        }
+        ScenarioId::AbUpdate => {
+            eprintln!("  Common causes:");
+            eprintln!("    - The variant installs mutable (rootfs_mutability)");
+            eprintln!("    - recab or recstrap missing from the installed rootfs");
+            eprintln!("    - The slot B entry or kernel not written by recab stage");
+            eprintln!("    - One-shot boot variables not kept in the UEFI variable store");
         }
         _ => {}
     }

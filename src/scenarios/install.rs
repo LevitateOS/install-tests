@@ -82,13 +82,36 @@ pub fn install(
     if system.uses_initramfs {
         boot_files.push("initramfs.img");
     }
+    // An A/B system keeps each slot's kernel in its own ESP directory, so an
+    // update to one slot never replaces the kernel the other slot boots.
+    let boot_dir = |slot: Option<&str>| match slot {
+        Some(slot) => format!("/{}-{slot}", ctx.id()),
+        None => String::new(),
+    };
+    let installed_slot = match system.mode {
+        InstallMode::Mutable => None,
+        InstallMode::Ab => Some(
+            applied
+                .handoff
+                .mode_context
+                .install_target_slot
+                .clone()
+                .context("recpart reported no install slot")?
+                .to_lowercase(),
+        ),
+    };
+    let installed_dir = boot_dir(installed_slot.as_deref());
+    run(
+        "Create the kernel directory on the ESP",
+        format!("mkdir -p {}", shell_quote(&format!("{target}/boot{installed_dir}"))),
+    )?;
     for file in &boot_files {
         run(
             &format!("Copy {file} to the ESP"),
             format!(
                 "cp {} {}",
                 shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/{file}")),
-                shell_quote(&format!("{target}/boot/{file}"))
+                shell_quote(&format!("{target}/boot{installed_dir}/{file}"))
             ),
         )?;
     }
@@ -114,16 +137,14 @@ pub fn install(
                 .find(|m| m.path == target)
                 .map(|m| m.device.clone())
                 .with_context(|| format!("recpart did not mount {} at {target}", root.name))?;
-            entries.push((format!("{}.conf", ctx.id()), ctx.name().to_string(), device, "rw"));
+            entries.push((format!("{}.conf", ctx.id()), ctx.name().to_string(), device, "rw", String::new()));
             format!("{}.conf", ctx.id())
         }
         InstallMode::Ab => {
+            // Both slots get an entry now: its root= is the record of which
+            // partition is which slot. The other slot's kernel arrives when
+            // `recab stage` writes a system into it.
             let slots = &applied.handoff.mode_context;
-            let installed = slots
-                .install_target_slot
-                .clone()
-                .context("recpart reported no install slot")?
-                .to_lowercase();
             for (slot, device) in [("a", &slots.slot_a_device), ("b", &slots.slot_b_device)] {
                 let device = device.clone().with_context(|| format!("no slot {slot} device"))?;
                 entries.push((
@@ -131,9 +152,10 @@ pub fn install(
                     format!("{} (Slot {})", ctx.name(), slot.to_uppercase()),
                     device,
                     "ro",
+                    boot_dir(Some(slot)),
                 ));
             }
-            format!("{}-{installed}.conf", ctx.id())
+            format!("{}-{}.conf", ctx.id(), installed_slot.as_deref().unwrap_or("a"))
         }
     };
 
@@ -142,16 +164,16 @@ pub fn install(
         &format!("{target}/boot/loader/loader.conf"),
         &format!("default {default_entry}\ntimeout 5\neditor 0\nconsole-mode max\n"),
     )?;
-    for (name, title, device, mount_mode) in &entries {
+    for (name, title, device, mount_mode, dir) in &entries {
         let partuuid = run(
             &format!("Read PARTUUID of {device}"),
             format!("blkid -s PARTUUID -o value {}", shell_quote(device)),
         )?
         .trim()
         .to_string();
-        let mut entry = format!("title {title}\nlinux /vmlinuz\n");
+        let mut entry = format!("title {title}\nlinux {dir}/vmlinuz\n");
         if system.uses_initramfs {
-            entry.push_str("initrd /initramfs.img\n");
+            entry.push_str(&format!("initrd {dir}/initramfs.img\n"));
         }
         entry.push_str(&format!(
             "options root=PARTUUID={partuuid} {mount_mode} rootwait {VGA_CONSOLE} {SERIAL_CONSOLE}\n"

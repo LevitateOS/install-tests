@@ -21,6 +21,8 @@ pub struct VmSpec<'a> {
     pub ovmf_vars: Option<&'a Path>,
     /// Forward a host port to the guest's sshd.
     pub ssh: bool,
+    /// An image attached as a CD the guest can read but does not boot.
+    pub media: Option<&'a Path>,
 }
 
 /// A running VM; dropping it stops QEMU (and then removes the injection's
@@ -46,6 +48,19 @@ impl Vm {
     pub fn ssh_port(&self) -> Result<u16> {
         self.ssh_port.context("this VM was started without SSH forwarding")
     }
+
+    /// Wait for QEMU to exit on its own, as it does when the guest reboots
+    /// or powers off (VMs run with -no-reboot).
+    pub fn wait_for_exit(&mut self, timeout: std::time::Duration) -> Result<()> {
+        let started = std::time::Instant::now();
+        while started.elapsed() < timeout {
+            if self.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        anyhow::bail!("the guest did not shut down within {}s", timeout.as_secs())
+    }
 }
 
 /// Boot a VM with serial on piped stdio (UEFI, headless, no reboot), plus
@@ -59,6 +74,9 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
         .no_reboot();
     if let Some(iso) = spec.iso {
         builder = builder.cdrom(iso).cdrom_as_disk();
+    }
+    if let Some(media) = spec.media {
+        builder = builder.extra_cdrom(media);
     }
     if let Some(disk) = spec.disk {
         builder = builder

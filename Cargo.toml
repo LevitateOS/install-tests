@@ -19,5 +19,6 @@ distro-builder = { path = "../../distro/builder" }
 recqemu = { path = "../../tools/recqemu" }
 recshuttle = { path = "../../tools/recshuttle" }
 recpart = { path = "../../tools/recpart" }
+recab = { path = "../../tools/recab" }
 fsdbg = { path = "../fsdbg" }
 
