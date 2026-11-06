@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Canonical fw_cfg path consumed by initramfs.
-pub const FW_CFG_NAME: &str = "opt/levitate/boot-injection";
+pub use distro_spec::shared::live_boot::BOOT_INJECTION_FW_CFG as FW_CFG_NAME;
 
 const ENV_INJECT_FILE: &str = "LEVITATE_BOOT_INJECTION_FILE";
 const ENV_INJECT_KV: &str = "LEVITATE_BOOT_INJECTION_KV";
@@ -140,7 +140,11 @@ fn create_boot_injection_iso(payload_path: &Path) -> Result<PathBuf> {
             ],
         ),
     ] {
-        args.push(format!("boot-injection.env={}", payload_path.display()));
+        args.push(format!(
+            "{}={}",
+            distro_spec::shared::live_boot::BOOT_INJECTION_FILE,
+            payload_path.display()
+        ));
         match Command::new(tool).args(&args).status() {
             Ok(status) if status.success() => return Ok(iso_path),
             Ok(status) => {

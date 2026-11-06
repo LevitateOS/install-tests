@@ -18,7 +18,8 @@ use super::{CheckResult, Step, StepResult};
 use crate::distro::DistroContext;
 use crate::executor::Executor;
 use anyhow::Result;
-use distro_spec::levitate::{ROOTFS_CDROM_PATH, ROOTFS_NAME};
+use distro_spec::levitate::ROOTFS_NAME;
+use distro_spec::shared::live_boot::ROOTFS_HANDLE;
 use leviso_cheat_guard::cheat_ensure;
 use std::time::{Duration, Instant};
 
@@ -68,7 +69,7 @@ impl Step for MountInstallMedia {
 
         // Verify rootfs image is accessible
         let rootfs_check = executor.exec(
-            &format!("ls -la {}", ROOTFS_CDROM_PATH),
+            &format!("ls -la {}", ROOTFS_HANDLE),
             Duration::from_secs(5),
         )?;
 
@@ -84,7 +85,7 @@ impl Step for MountInstallMedia {
             ],
             consequence = "No base system to install, extraction fails, user stuck",
             "Rootfs not found at {}. ISO must contain live/{}",
-            ROOTFS_CDROM_PATH,
+            ROOTFS_HANDLE,
             ROOTFS_NAME
         );
 
