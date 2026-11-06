@@ -574,6 +574,14 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
                     "systemd-boot entry slot B",
                     format!("cat {target}/boot/loader/entries/{}-b.conf", ctx.id()),
                 ));
+                verify.push((
+                    "recab state names slot A known-good",
+                    format!("grep -q '\"known_good_slot\": \"A\"' {target}/var/lib/recab/state.json"),
+                ));
+                verify.push((
+                    "recab-trial.service enabled",
+                    format!("test -L {target}/etc/systemd/system/sysinit.target.wants/{}", recab::UNIT_NAME),
+                ));
             }
         }
         verify.push(("Sync filesystem", "sync".to_string()));

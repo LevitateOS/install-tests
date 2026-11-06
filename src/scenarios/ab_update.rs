@@ -89,6 +89,7 @@ struct Booted {
 impl Machine<'_> {
     fn exercise(&self) -> Result<String> {
         let mut steps = Vec::new();
+        let entry = |slot: &str| format!("/boot/loader/entries/{}-{slot}.conf", self.ctx.id());
 
         // Installed: slot A runs, is the known-good default, and supervises trials.
         let mut sys = self.boot(true)?;
@@ -97,40 +98,27 @@ impl Machine<'_> {
         ensure!(st.next_boot == Some(Slot::A), "after install the next boot is {:?}, not A", st.next_boot);
         ensure!(sys.sh("findmnt -n -o SOURCE /var")?.contains("/dev/"), "/var is not its own partition");
         sys.sh(&format!("systemctl is-enabled {}", recab::UNIT_NAME))?;
+        let identity = sys.identity()?;
 
         // Stage the release into slot B.
-        let media = sys.sh("blkid -t TYPE=iso9660 -o device | head -n1")?;
-        ensure!(!media.is_empty(), "the update medium is not attached");
-        sys.sh(&format!("mkdir -p {MEDIA_MOUNT} && mount -o ro {} {MEDIA_MOUNT}", shell_quote(&media)))?;
-        // The rootfs is a file in the ISO, or (the default layout) an
-        // appended partition, which a CD drive does not expose: a read-only
-        // partition-scanning loop device over the CD does.
-        let rootfs = sys.sh(&format!(
-            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\";  else l=$(losetup --find --show --read-only --partscan {}) && udevadm settle && echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
-            shell_quote(&media)
-        ))?;
-        let mut stage = format!(
-            "recab stage --rootfs {} --kernel {MEDIA_MOUNT}/{KERNEL_ISO_PATH}",
-            shell_quote(&rootfs)
-        );
-        if self.ctx.uses_initramfs() {
-            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/{INITRAMFS_LIVE_ISO_PATH}"));
-        }
-        sys.run(&stage, STAGE_TIMEOUT)?;
-        sys.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
+        sys.stage_from_media(self.ctx)?;
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after stage")?;
         ensure!(!st.trial_pending, "stage alone must not schedule a boot");
-        let entry_b = format!("/boot/loader/entries/{}-b.conf", self.ctx.id());
-        ensure!(sys.sh(&format!("cat {entry_b}"))?.contains("panic="), "slot B's entry has no panic=");
+        let staged = sys.sh(&format!("cat {}", entry("b")))?;
+        ensure!(
+            staged.contains("panic=") && staged.contains("rd.emergency=reboot"),
+            "slot B's staged entry lacks panic= or the trial options:\n{staged}"
+        );
         steps.push("staged slot B from the release image");
 
         // A trial that comes up degraded reboots back to A by itself.
         let slot_b = format!(
-            "/dev/disk/by-partuuid/$(sed -n 's/.*root=PARTUUID=\\([^ ]*\\).*/\\1/p' {entry_b})"
+            "/dev/disk/by-partuuid/$(sed -n 's/.*root=PARTUUID=\\([^ ]*\\).*/\\1/p' {})",
+            entry("b")
         );
         sys.sh(&format!(
-            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} &&  printf '[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n' > {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} &&  ln -s /etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} &&  umount {SLOT_MOUNT}"
+            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && printf '[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n' > {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} && ln -s /etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} && umount {SLOT_MOUNT}"
         ))?;
         sys.sh("recab set-next B")?;
         let st = sys.status()?;
@@ -142,44 +130,60 @@ impl Machine<'_> {
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after a degraded trial")?;
         ensure!(!st.trial_pending, "the trial of slot B was never booted: {st:?}");
-        steps.push("a degraded trial of slot B rebooted into slot A by itself");
+        ensure!(
+            st.last_trial.as_ref().is_some_and(|t| t.slot == Slot::B && !t.committed),
+            "the failed trial of slot B was not recorded: {st:?}"
+        );
+        steps.push("a degraded trial of slot B rebooted into slot A by itself and was recorded");
 
         // Repair B: the healthy trial commits itself.
         sys.sh(&format!(
-            "mount {slot_b} {SLOT_MOUNT} &&  rm {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} &&  umount {SLOT_MOUNT}"
+            "mount {slot_b} {SLOT_MOUNT} && rm {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} && umount {SLOT_MOUNT}"
         ))?;
         sys.sh("recab set-next B")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
         let hostname = sys.sh("cat /etc/hostname")?;
         ensure!(hostname == self.ctx.default_hostname(), "slot B's hostname is '{hostname}'");
-        sys.run(
-            "for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1",
-            COMMIT_WAIT,
-        )
-        .context("the healthy trial of slot B was not committed")?;
+        ensure!(sys.identity()? == identity, "slot B did not keep the machine-id and SSH host keys");
+        sys.wait_committed()?;
         let st = sys.status()?;
         expect(&st, Slot::B, true, "after the healthy trial")?;
         ensure!(st.default_slot == Some(Slot::B), "the commit did not make B the default: {st:?}");
         ensure!(st.rollback_slot == Some(Slot::A), "after the commit rollback should return to A: {st:?}");
-        steps.push("a healthy trial of slot B, with the machine's accounts and hostname, committed itself");
+        let committed_entry = sys.sh(&format!("cat {}", entry("b")))?;
+        ensure!(
+            !committed_entry.contains("rd.emergency=reboot"),
+            "slot B kept the trial options after its commit:\n{committed_entry}"
+        );
+        steps.push("a healthy trial of slot B, with the machine's identity, committed itself");
         sys.reboot()?;
 
-        let mut sys = self.boot(false)?;
+        // A second generation: from the committed slot B, stage A again.
+        let mut sys = self.boot(true)?;
         expect(&sys.status()?, Slot::B, true, "on the boot after the commit")?;
-        steps.push("slot B stays the default");
+        sys.stage_from_media(self.ctx)?;
+        sys.sh("recab set-next A")?;
+        sys.reboot()?;
+        let mut sys = self.boot(false)?;
+        ensure!(sys.identity()? == identity, "slot A, staged from B, did not keep the machine's identity");
+        sys.wait_committed()?;
+        let st = sys.status()?;
+        expect(&st, Slot::A, true, "after the second-generation trial")?;
+        ensure!(st.rollback_slot == Some(Slot::B), "after the commit rollback should return to B: {st:?}");
+        steps.push("slot A, staged from the committed slot B, committed itself");
 
         // Roll back to the previous system.
         sys.sh("recab rollback")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
         let st = sys.status()?;
-        expect(&st, Slot::A, true, "after rollback")?;
-        ensure!(st.rollback_slot == Some(Slot::B), "after rollback B should remain a rollback target: {st:?}");
-        steps.push("rolled back to slot A");
+        expect(&st, Slot::B, true, "after rollback")?;
+        ensure!(st.rollback_slot == Some(Slot::A), "after rollback A should remain a rollback target: {st:?}");
+        steps.push("rolled back to slot B");
         sys.poweroff()?;
 
-        Ok(format!("A/B update verified across 6 boots: {}", steps.join("; ")))
+        Ok(format!("A/B update verified across 7 boots: {}", steps.join("; ")))
     }
 
     /// Boot without logging in, and wait for the guest to reboot by itself.
@@ -210,6 +214,45 @@ impl Machine<'_> {
 impl Booted {
     fn console(&mut self) -> &mut Console {
         &mut self.vm.console
+    }
+
+    /// The machine-id and SSH host key fingerprints, which `stage` carries.
+    fn identity(&mut self) -> Result<String> {
+        self.sh("cat /etc/machine-id; for k in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$k\"; done")
+    }
+
+    /// Wait for recab-trial.service to commit the running trial.
+    fn wait_committed(&mut self) -> Result<()> {
+        self.run(
+            "for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1",
+            COMMIT_WAIT,
+        )
+        .context("the healthy trial was not committed")?;
+        Ok(())
+    }
+
+    /// Stage the inactive slot from the attached release ISO.
+    fn stage_from_media(&mut self, ctx: &dyn DistroContext) -> Result<()> {
+        let media = self.sh("blkid -t TYPE=iso9660 -o device | head -n1")?;
+        ensure!(!media.is_empty(), "the update medium is not attached");
+        self.sh(&format!("mkdir -p {MEDIA_MOUNT} && mount -o ro {} {MEDIA_MOUNT}", shell_quote(&media)))?;
+        // The rootfs is a file in the ISO, or (the default layout) an
+        // appended partition, which a CD drive does not expose: a read-only
+        // partition-scanning loop device over the CD does.
+        let rootfs = self.sh(&format!(
+            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\"; else l=$(losetup --find --show --read-only --partscan {}) && udevadm settle && echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
+            shell_quote(&media)
+        ))?;
+        let mut stage = format!(
+            "recab stage --rootfs {} --kernel {MEDIA_MOUNT}/{KERNEL_ISO_PATH}",
+            shell_quote(&rootfs)
+        );
+        if ctx.uses_initramfs() {
+            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/{INITRAMFS_LIVE_ISO_PATH}"));
+        }
+        self.run(&stage, STAGE_TIMEOUT)?;
+        self.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
+        Ok(())
     }
 
     fn run(&mut self, command: &str, timeout: Duration) -> Result<String> {

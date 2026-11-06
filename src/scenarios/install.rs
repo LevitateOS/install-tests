@@ -15,8 +15,6 @@ use crate::distro::DistroContext;
 /// serial port the tests read.
 const VGA_CONSOLE: &str = "console=tty0";
 const SERIAL_CONSOLE: &str = "console=ttyS0,115200n8";
-/// Seconds before a panicked kernel reboots.
-const PANIC_REBOOT_SECS: u32 = 10;
 
 /// What the test system needs beyond the shipped tools.
 pub struct TestSystem<'a> {
@@ -80,109 +78,73 @@ pub fn install(
         "Generate fstab (recfstab)",
         format!("recfstab {t} >> {}", shell_quote(&format!("{target}/etc/fstab"))),
     )?;
-    let mut boot_files = vec!["vmlinuz"];
-    if system.uses_initramfs {
-        boot_files.push("initramfs.img");
-    }
-    // An A/B system keeps each slot's kernel in its own ESP directory, so an
-    // update to one slot never replaces the kernel the other slot boots.
-    let boot_dir = |slot: Option<&str>| match slot {
-        Some(slot) => format!("/{}-{slot}", ctx.id()),
-        None => String::new(),
-    };
-    let installed_slot = match system.mode {
-        InstallMode::Mutable => None,
-        InstallMode::Ab => Some(
-            applied
-                .handoff
-                .mode_context
-                .install_target_slot
-                .clone()
-                .context("recpart reported no install slot")?
-                .to_lowercase(),
-        ),
-    };
-    let installed_dir = boot_dir(installed_slot.as_deref());
-    run(
-        "Create the kernel directory on the ESP",
-        format!("mkdir -p {}", shell_quote(&format!("{target}/boot{installed_dir}"))),
-    )?;
-    for file in &boot_files {
-        run(
-            &format!("Copy {file} to the ESP"),
-            format!(
-                "cp {} {}",
-                shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/{file}")),
-                shell_quote(&format!("{target}/boot{installed_dir}/{file}"))
-            ),
-        )?;
-    }
     run(
         "Install bootloader (recchroot)",
         format!("recchroot {t} -- {}", ctx.install_bootloader_cmd()),
     )?;
-
-    // Boot entries name their root by PARTUUID, which the kernel resolves
-    // with or without an initramfs.
-    let mut entries = Vec::new();
-    let default_entry = match system.mode {
+    let live_boot = |file: &str| shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/{file}"));
+    match system.mode {
+        InstallMode::Ab => {
+            // recab owns the A/B boot layout: both slot entries, slot A's
+            // kernel, loader.conf, its state, the trial service, and the
+            // firmware's default. It runs here, outside the chroot, where the
+            // firmware variables are reachable.
+            let slots = &applied.handoff.mode_context;
+            let device = |slot: &Option<String>, name: &str| {
+                slot.clone().with_context(|| format!("recpart reported no slot {name} device"))
+            };
+            let mut init = format!(
+                "recab init --root {t} --slot-a {} --slot-b {} --kernel {}",
+                shell_quote(&device(&slots.slot_a_device, "A")?),
+                shell_quote(&device(&slots.slot_b_device, "B")?),
+                live_boot("vmlinuz"),
+            );
+            if system.uses_initramfs {
+                init.push_str(&format!(" --initrd {}", live_boot("initramfs.img")));
+            }
+            init.push_str(&format!(" --options {}", shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}"))));
+            run("Set up the A/B boot layout (recab init)", init)?;
+        }
         InstallMode::Mutable => {
-            let root = applied
-                .partition_map
-                .iter()
-                .find(|p| p.mountpoint == "/")
-                .context("recpart planned no root partition")?;
+            let mut boot_files = vec!["vmlinuz"];
+            if system.uses_initramfs {
+                boot_files.push("initramfs.img");
+            }
+            for file in &boot_files {
+                run(
+                    &format!("Copy {file} to the ESP"),
+                    format!("cp {} {}", live_boot(file), shell_quote(&format!("{target}/boot/{file}"))),
+                )?;
+            }
             let device = applied
                 .handoff
                 .mount_map
                 .iter()
                 .find(|m| m.path == target)
                 .map(|m| m.device.clone())
-                .with_context(|| format!("recpart did not mount {} at {target}", root.name))?;
-            entries.push((format!("{}.conf", ctx.id()), ctx.name().to_string(), device, "rw", String::new()));
-            format!("{}.conf", ctx.id())
-        }
-        InstallMode::Ab => {
-            // Both slots get an entry now: its root= is the record of which
-            // partition is which slot. The other slot's kernel arrives when
-            // `recab stage` writes a system into it.
-            let slots = &applied.handoff.mode_context;
-            for (slot, device) in [("a", &slots.slot_a_device), ("b", &slots.slot_b_device)] {
-                let device = device.clone().with_context(|| format!("no slot {slot} device"))?;
-                entries.push((
-                    format!("{}-{slot}.conf", ctx.id()),
-                    format!("{} (Slot {})", ctx.name(), slot.to_uppercase()),
-                    device,
-                    "ro",
-                    boot_dir(Some(slot)),
-                ));
+                .context("recpart mounted nothing at the install target")?;
+            // The root is named by PARTUUID, which the kernel resolves with
+            // or without an initramfs.
+            let partuuid = run(
+                &format!("Read PARTUUID of {device}"),
+                format!("blkid -s PARTUUID -o value {}", shell_quote(&device)),
+            )?
+            .trim()
+            .to_string();
+            let mut entry = format!("title {}\nlinux /vmlinuz\n", ctx.name());
+            if system.uses_initramfs {
+                entry.push_str("initrd /initramfs.img\n");
             }
-            format!("{}-{}.conf", ctx.id(), installed_slot.as_deref().unwrap_or("a"))
+            entry.push_str(&format!(
+                "options root=PARTUUID={partuuid} rw rootwait {VGA_CONSOLE} {SERIAL_CONSOLE}\n"
+            ));
+            write_file(&mut run, &format!("{target}/boot/loader/entries/{}.conf", ctx.id()), &entry)?;
+            write_file(
+                &mut run,
+                &format!("{target}/boot/loader/loader.conf"),
+                &format!("default {}.conf\ntimeout 5\neditor 0\nconsole-mode max\n", ctx.id()),
+            )?;
         }
-    };
-
-    write_file(
-        &mut run,
-        &format!("{target}/boot/loader/loader.conf"),
-        &format!("default {default_entry}\ntimeout 5\neditor 0\nconsole-mode max\n"),
-    )?;
-    for (name, title, device, mount_mode, dir) in &entries {
-        let partuuid = run(
-            &format!("Read PARTUUID of {device}"),
-            format!("blkid -s PARTUUID -o value {}", shell_quote(device)),
-        )?
-        .trim()
-        .to_string();
-        let mut entry = format!("title {title}\nlinux {dir}/vmlinuz\n");
-        if system.uses_initramfs {
-            entry.push_str(&format!("initrd {dir}/initramfs.img\n"));
-        }
-        // panic=: a kernel that panics reboots instead of hanging, which on
-        // an A/B trial boot returns the machine to the known-good slot.
-        entry.push_str(&format!(
-            "options root=PARTUUID={partuuid} {mount_mode} rootwait panic={PANIC_REBOOT_SECS} {VGA_CONSOLE} {SERIAL_CONSOLE}\n"
-        ));
-        write_file(&mut run, &format!("{target}/boot/loader/entries/{name}"), &entry)?;
     }
 
     write_file(
@@ -204,13 +166,6 @@ pub fn install(
             shell_quote(&ctx.enable_serial_getty_cmd())
         ),
     )?;
-    if system.mode == InstallMode::Ab {
-        run(
-            "Enable A/B trial supervision (recab)",
-            format!("recchroot {t} -- recab install-unit"),
-        )?;
-    }
-
     Ok((target, steps))
 }
 
