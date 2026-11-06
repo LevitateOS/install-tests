@@ -710,13 +710,13 @@ pub fn resolve_iso_artifact_for_scenario(
     let run_id = run_history::latest_successful_run_id(&release_root)?.ok_or_else(|| {
         anyhow::anyhow!(
             "scenario '{}' for '{}' requires release product '{}', but no successful runs were found under '{}'.\n\
-             Build it first: cargo run -p distro-builder --bin distro-builder -- release build iso {} {}",
+             Build it first: cargo xtask build {} {}",
             scenario.key(),
             distro_id,
             product_name,
             release_root.display(),
-            distro_id,
-            product_name
+            product_name,
+            distro_id
         )
     })?;
     let run_dir = release_root.join(&run_id);
@@ -1324,7 +1324,7 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
             eprintln!();
             eprintln!("  Try:");
             eprintln!(
-                "    - Rebuild live-boot ISO: cargo run -p distro-builder --bin distro-builder -- release build iso <distro> live-boot"
+                "    - Rebuild live-boot ISO: cargo xtask build live-boot <distro>"
             );
         }
         ScenarioId::LiveTools => {

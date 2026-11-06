@@ -758,7 +758,7 @@ pub fn require_preflight(
 
         anyhow::bail!("Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
              Failures:\n{}\n\n\
-             Run 'cargo run -p distro-builder --bin distro-builder -- release build iso {} base-rootfs' to rebuild the ISO.\n\
+             Rebuild the ISO: cargo xtask build base-rootfs {}\n\
              ALL verification checks must pass before running tests.",
             all_failures.join("\n"),
             distro_id);

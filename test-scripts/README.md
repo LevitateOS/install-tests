@@ -46,10 +46,10 @@ cat /usr/local/bin/live-tools.sh
 
 ```bash
 # Interactive mode - drops you at shell after boot
-just scenario live-tools acorn
+cargo xtask run live-tools acorn
 
 # Automated mode - runs test, reports result, exits
-just scenario-test live-tools acorn
+cargo xtask test live-tools acorn
 ```
 
 ## Scenario Descriptions
