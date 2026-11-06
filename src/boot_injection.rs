@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 
-/// Environment variables through which the scenarios binary hands an
+/// Environment variables through which `cargo xtask test` hands an
 /// injection to the scenario runs: a payload file, or `KEY=VALUE,...` pairs.
 pub const ENV_INJECT_FILE: &str = "LEVITATE_BOOT_INJECTION_FILE";
 pub const ENV_INJECT_KV: &str = "LEVITATE_BOOT_INJECTION_KV";
@@ -84,7 +84,7 @@ impl BootInjection {
     }
 }
 
-/// The injection the scenarios binary handed over (file wins over pairs).
+/// The injection `cargo xtask test` handed over (file wins over pairs).
 pub fn boot_injection_from_env() -> Result<Option<BootInjection>> {
     if let Ok(path) = std::env::var(ENV_INJECT_FILE) {
         return BootInjection::from_file(Path::new(&path)).map(Some);

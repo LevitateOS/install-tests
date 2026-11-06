@@ -189,7 +189,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
 
     if state.has_passed(scenario) {
         println!(
-            "{} {} already passed (use --reset to clear).",
+            "{} {} already passed (rerun with --force).",
             "[SKIP]".green(),
             scenario.display_name()
         );
@@ -253,38 +253,63 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
     }
 }
 
-/// Print scenario status for a distro.
-pub fn print_status(distro_id: &str) -> Result<()> {
+/// Where a scenario stands for a distro.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScenarioStatus {
+    NotRun,
+    Pass,
+    Fail,
+    /// Has a result, but its inputs changed since.
+    Stale,
+}
+
+/// Each scenario's status for a distro, in run order.
+pub fn scenario_statuses(distro_id: &str) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
     let ctx = context_for_distro(distro_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
     let canonical_distro_id = ctx.id();
-
     let state = ScenarioState::load(canonical_distro_id)?;
-    println!("{} Scenario Status", ctx.name().bold());
-    println!();
-    for scenario in ScenarioId::ALL {
-        let current = if state.has_result(scenario) {
-            resolve_iso_artifact_for_scenario(canonical_distro_id, scenario)
+    Ok(ScenarioId::ALL
+        .into_iter()
+        .map(|scenario| {
+            if !state.has_result(scenario) {
+                return (scenario, ScenarioStatus::NotRun);
+            }
+            let current = resolve_iso_artifact_for_scenario(canonical_distro_id, scenario)
                 .and_then(|iso| {
                     scenario_input_fingerprint(canonical_distro_id, scenario, iso.as_ref())
                 })
                 .map(|fingerprint| state.is_valid_for_scenario_input(scenario, &fingerprint))
-                .unwrap_or(false)
-        } else {
-            true
-        };
-        let status = if !current {
-            "[STALE]".yellow()
-        } else if state.has_passed(scenario) {
-            "[PASS]".green()
-        } else if state.has_result(scenario) {
-            "[FAIL]".red()
-        } else {
-            "[    ]".dimmed()
+                .unwrap_or(false);
+            let status = if !current {
+                ScenarioStatus::Stale
+            } else if state.has_passed(scenario) {
+                ScenarioStatus::Pass
+            } else {
+                ScenarioStatus::Fail
+            };
+            (scenario, status)
+        })
+        .collect())
+}
+
+/// Print scenario status for a distro.
+pub fn print_status(distro_id: &str) -> Result<()> {
+    let ctx = context_for_distro(distro_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
+    println!("{} Scenario Status", ctx.name().bold());
+    println!();
+    for (scenario, status) in scenario_statuses(distro_id)? {
+        let label = match status {
+            ScenarioStatus::Stale => "[STALE]".yellow(),
+            ScenarioStatus::Pass => "[PASS]".green(),
+            ScenarioStatus::Fail => "[FAIL]".red(),
+            ScenarioStatus::NotRun => "[    ]".dimmed(),
         };
         println!(
             "  {} {:<15} {}",
-            status,
+            label,
             scenario.key(),
             scenario.display_name()
         );
@@ -1086,7 +1111,7 @@ pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenario
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "install scenario runtime not found for '{}': no successful runs under '{}'.\n\
-                 Run: cargo run --bin scenarios -- --distro {} --scenario install",
+                 Run: cargo xtask test install {}",
                 distro_id,
                 scenario_root.display(),
                 distro_id
@@ -1098,7 +1123,7 @@ pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenario
     if !disk_path.is_file() {
         bail!(
             "install scenario disk image missing for '{}' run '{}': '{}'.\n\
-             Re-run install: cargo run --bin scenarios -- --distro {} --scenario install",
+             Re-run install: cargo xtask test install {} --force",
             distro_id,
             run_id,
             disk_path.display(),
@@ -1108,7 +1133,7 @@ pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenario
     if !ovmf_vars_path.is_file() {
         bail!(
             "install scenario OVMF vars missing for '{}' run '{}': '{}'.\n\
-             Re-run install: cargo run --bin scenarios -- --distro {} --scenario install",
+             Re-run install: cargo xtask test install {} --force",
             distro_id,
             run_id,
             ovmf_vars_path.display(),

@@ -42,7 +42,7 @@ impl ScenarioState {
         };
         serde_json::from_str(&contents).with_context(|| {
             format!(
-                "Invalid scenario state '{}'. Reset it with: cargo xtask scenarios reset {}",
+                "Invalid scenario state '{}'. Reset it with: cargo xtask reset {}",
                 path.display(),
                 distro_id
             )
