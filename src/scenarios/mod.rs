@@ -25,6 +25,11 @@ use colored::Colorize;
 use distro_contract::{load_variant_contract_for_distro_from, RootfsMutability};
 use recpart::InstallMode;
 use recshuttle::Remote;
+use distro_builder::live_ux::{
+    INSTALL_ENTRYPOINT, INSTALL_EXPERIENCE_MARKER, INSTALL_UX_PROFILE, PROBE_PREFIX, SMOKE_ENV,
+    SPLIT_HELPER, SPLIT_SMOKE_OK,
+};
+use distro_contract::InstallExperience;
 use crate::qemu::session::VmSpec;
 use serde::{Deserialize, Serialize};
 use state::ScenarioState;
@@ -406,53 +411,30 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         bail!("{}", error_msg.trim());
     }
 
-    let expected_install_experience = crate::distro::load_install_experience_profile(ctx.id())
-        .with_context(|| {
-            format!(
-                "loading canonical install experience profile for '{}'",
-                ctx.id()
-            )
-        })?;
-    let install_experience_marker =
-        Remote::new(ssh_host_port).exec("cat /usr/lib/levitate/install-experience")
-            .with_context(|| "reading install-experience marker".to_string())?;
-    if install_experience_marker.exit_code != 0 {
+    let expected = crate::distro::load_scenarios(ctx.id())?.live_tools.install_experience;
+    let remote = Remote::new(ssh_host_port);
+    let marker = remote.run(
+        "reading the install-experience marker",
+        &format!("cat /{INSTALL_EXPERIENCE_MARKER}"),
+    )?;
+    let actual_install_experience = marker.lines().next().unwrap_or("").trim().to_string();
+    if actual_install_experience != expected.as_str() {
         bail!(
-            "install-experience marker missing or unreadable: {}",
-            install_experience_marker.output.trim()
+            "install-experience mismatch: expected '{}', found '{actual_install_experience}'",
+            expected.as_str()
         );
     }
-    let actual_install_experience = install_experience_marker
-        .output
-        .trim()
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim();
-    if actual_install_experience != expected_install_experience {
-        bail!(
-            "install-experience mismatch: expected '{}', found '{}'",
-            expected_install_experience,
-            actual_install_experience
-        );
-    }
-
-    let entrypoint_check = Remote::new(ssh_host_port).exec("test -x /usr/local/bin/levitate-install-entrypoint",
-    )
-    .with_context(|| "checking install entrypoint script presence".to_string())?;
-    if entrypoint_check.exit_code != 0 {
-        bail!(
-            "missing executable install entrypoint at /usr/local/bin/levitate-install-entrypoint"
-        );
-    }
+    remote.run(
+        "checking the install entrypoint",
+        &format!("test -x /{INSTALL_ENTRYPOINT}"),
+    )?;
     let mut ux_split_evidence: Option<String> = None;
-    if expected_install_experience == "ux" {
-        let ux_hook_check = Remote::new(ssh_host_port).exec("test -r /etc/profile.d/30-install-ux.sh")
-            .with_context(|| "checking install UX profile hook presence".to_string())?;
-        if ux_hook_check.exit_code != 0 {
-            bail!("missing install UX profile hook at /etc/profile.d/30-install-ux.sh");
-        }
-        ux_split_evidence = Some(verify_install_ux_split_behavior(ssh_host_port)?);
+    if expected == InstallExperience::Ux {
+        remote.run(
+            "checking the install UX profile hook",
+            &format!("test -r /{INSTALL_UX_PROFILE}"),
+        )?;
+        ux_split_evidence = Some(verify_install_ux_split_behavior(&remote)?);
     }
 
     let install_profile_evidence = match ux_split_evidence {
@@ -855,7 +837,11 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
         ),
         (
             "Injected boot payload",
-            "ls -l /run/boot-injection /run/boot-injection/* 2>/dev/null || true; cat /run/boot-injection/source /run/boot-injection/payload.env 2>/dev/null || true",
+            &format!(
+                "ls -l {d} {d}/* 2>/dev/null || true; cat {d}/source {e} 2>/dev/null || true",
+                d = distro_spec::shared::live_boot::BOOT_INJECTION_DIR,
+                e = distro_spec::shared::live_boot::BOOT_INJECTION_ENV
+            ),
         ),
         (
             "sshd auth settings",
@@ -926,58 +912,34 @@ fn run_scenario_script_over_ssh(
     );
 }
 
-fn verify_install_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
-    let probe = Remote::new(ssh_host_port).exec("/usr/local/bin/levitate-install-entrypoint --probe",
-    )
-    .with_context(|| "probing install UX helper selection".to_string())?;
-    if probe.exit_code != 0 {
-        bail!(
-            "install helper probe failed (exit {}): {}\n\
-             Expected probe command: /usr/local/bin/levitate-install-entrypoint --probe",
-            probe.exit_code,
-            probe.output.trim()
-        );
-    }
-
+fn verify_install_ux_split_behavior(remote: &Remote) -> Result<String> {
+    let probe = remote.run(
+        "probing the install helper",
+        &format!("/{INSTALL_ENTRYPOINT} --probe"),
+    )?;
     let helper = probe
-        .output
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("install-entrypoint-helper="))
+        .find_map(|line| line.strip_prefix(PROBE_PREFIX))
         .unwrap_or("")
         .trim();
-    let helper_ok =
-        helper == "levitate-install-docs-split" || helper.ends_with("/levitate-install-docs-split");
-    if !helper_ok {
+    if helper != SPLIT_HELPER && !helper.ends_with(&format!("/{SPLIT_HELPER}")) {
         bail!(
-            "install UX helper mismatch: expected 'levitate-install-docs-split', found '{}'.\n\
-             Probe output: {}\n\
-             Remediation: ensure the live install payload installs levitate-install-docs-split into PATH.",
+            "install UX helper mismatch: expected '{SPLIT_HELPER}', found '{}'.\nProbe output: {}",
             if helper.is_empty() { "<empty>" } else { helper },
-            probe.output.trim()
+            probe.trim()
         );
     }
-
-    let smoke = Remote::new(ssh_host_port).exec("LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint",
-    )
-    .with_context(|| "running install UX split-pane smoke launch".to_string())?;
-    if smoke.exit_code != 0 {
+    let smoke = remote.run(
+        "running the split-pane smoke launch",
+        &format!("{SMOKE_ENV}=1 /{INSTALL_ENTRYPOINT}"),
+    )?;
+    if !smoke.contains(SPLIT_SMOKE_OK) {
         bail!(
-            "install UX split-pane smoke launch failed (exit {}): {}\n\
-             Expected command: LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint",
-            smoke.exit_code,
-            smoke.output.trim()
+            "split-pane smoke output lacks '{SPLIT_SMOKE_OK}':\n{}",
+            smoke.trim()
         );
     }
-    if !smoke.output.contains("split-smoke:ok") {
-        bail!(
-            "install UX split-pane smoke output missing success marker 'split-smoke:ok'.\n\
-             Command output: {}\n\
-             Remediation: run `levitate-install-docs-split --smoke` in the live environment and fix pane launch wiring.",
-            smoke.output.trim()
-        );
-    }
-
     Ok("install UX split-pane smoke verified (shell-left + docs-right)".to_string())
 }
 

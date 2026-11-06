@@ -1,7 +1,7 @@
 //! The QEMU VMs the scenarios boot: one spawn function, and a session that
 //! stops its VM when dropped (so no error path leaks QEMU).
 
-use crate::boot_injection::boot_injection_from_env;
+use crate::boot_injection::{boot_injection_from_env, BootInjection, FW_CFG_NAME};
 use crate::qemu::Console;
 use anyhow::{Context, Result};
 use recqemu::QemuBuilder;
@@ -26,9 +26,11 @@ pub struct VmSpec<'a> {
     pub ssh: bool,
 }
 
-/// A running VM; dropping it stops QEMU.
+/// A running VM; dropping it stops QEMU (and then removes the injection's
+/// temporary files, which QEMU reads while it runs).
 pub struct Vm {
     child: Child,
+    _injection: Option<BootInjection>,
     pub console: Console,
     /// Host port forwarded to the guest's sshd, when requested.
     pub ssh_port: Option<u16>,
@@ -77,11 +79,11 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
         builder = builder.user_network();
         None
     };
-    if let Some(injection) = boot_injection_from_env()? {
-        builder = builder.fw_cfg_file(&injection.fw_cfg_name, injection.payload_file);
-        if let Some(media_iso_file) = injection.media_iso_file {
-            builder = builder.extra_cdrom(media_iso_file);
-        }
+    let injection = boot_injection_from_env()?;
+    if let Some(injection) = &injection {
+        builder = builder
+            .fw_cfg_file(FW_CFG_NAME, &injection.payload_file)
+            .extra_cdrom(&injection.media_iso_file);
     }
 
     let mut child = builder.build_piped().spawn().context("Failed to spawn QEMU")?;
@@ -95,6 +97,7 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     };
     Ok(Vm {
         child,
+        _injection: injection,
         console,
         ssh_port,
     })

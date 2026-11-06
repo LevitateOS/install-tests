@@ -82,14 +82,14 @@ fn apply_boot_injection_env(cli: &Cli) -> Result<()> {
         if !path.is_file() {
             bail!("--inject-file is not a readable file: {}", path.display());
         }
-        std::env::set_var("LEVITATE_BOOT_INJECTION_FILE", path);
+        std::env::set_var(install_tests::boot_injection::ENV_INJECT_FILE, path);
         return Ok(());
     }
     if let Some(kv) = &cli.inject {
         if kv.trim().is_empty() {
             bail!("--inject cannot be empty");
         }
-        std::env::set_var("LEVITATE_BOOT_INJECTION_KV", kv);
+        std::env::set_var(install_tests::boot_injection::ENV_INJECT_KV, kv);
     }
     Ok(())
 }

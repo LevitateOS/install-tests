@@ -1,161 +1,126 @@
-use anyhow::{anyhow, Context, Result};
+//! Boot injection: KEY=VALUE settings handed to a live boot through the test
+//! channels the live init reads (a QEMU fw_cfg entry, else a small ISO; see
+//! `distro_spec::shared::live_boot`).
+
+use anyhow::{anyhow, bail, Context, Result};
+use distro_spec::shared::live_boot::{BOOT_INJECTION_FILE, BOOT_INJECTION_ISO_LABEL};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Canonical fw_cfg path consumed by initramfs.
 pub use distro_spec::shared::live_boot::BOOT_INJECTION_FW_CFG as FW_CFG_NAME;
 
-const ENV_INJECT_FILE: &str = "LEVITATE_BOOT_INJECTION_FILE";
-const ENV_INJECT_KV: &str = "LEVITATE_BOOT_INJECTION_KV";
+/// Environment variables through which the scenarios binary hands an
+/// injection to the scenario runs: a payload file, or `KEY=VALUE,...` pairs.
+pub const ENV_INJECT_FILE: &str = "LEVITATE_BOOT_INJECTION_FILE";
+pub const ENV_INJECT_KV: &str = "LEVITATE_BOOT_INJECTION_KV";
 
-#[derive(Debug, Clone)]
+/// A payload file and the ISO carrying it; temporary files are removed on drop.
+#[derive(Debug)]
 pub struct BootInjection {
-    pub fw_cfg_name: String,
     pub payload_file: PathBuf,
-    pub media_iso_file: Option<PathBuf>,
+    pub media_iso_file: PathBuf,
+    owns_payload: bool,
 }
 
-/// Parse a boot injection spec from environment variables.
-///
-/// - `LEVITATE_BOOT_INJECTION_FILE=/abs/path/to/payload.env`
-/// - `LEVITATE_BOOT_INJECTION_KV=KEY=VALUE,FOO=BAR`
-///
-/// If both are present, `..._FILE` wins.
+impl Drop for BootInjection {
+    fn drop(&mut self) {
+        if self.owns_payload {
+            let _ = std::fs::remove_file(&self.payload_file);
+        }
+        let _ = std::fs::remove_file(&self.media_iso_file);
+    }
+}
+
+impl BootInjection {
+    /// Inject an existing payload file (KEY=VALUE lines).
+    pub fn from_file(path: &Path) -> Result<Self> {
+        if !path.is_file() {
+            bail!("boot injection payload '{}' is not a file", path.display());
+        }
+        Ok(Self {
+            payload_file: path.to_path_buf(),
+            media_iso_file: create_boot_injection_iso(path)?,
+            owns_payload: false,
+        })
+    }
+
+    /// Inject `KEY=VALUE` pairs separated by commas; `None` when there are none.
+    pub fn from_pairs(raw: &str) -> Result<Option<Self>> {
+        let mut lines = Vec::new();
+        for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            match part.split_once('=') {
+                Some((key, _)) if !key.trim().is_empty() => lines.push(part.to_string()),
+                _ => bail!("invalid boot injection entry '{part}', expected KEY=VALUE"),
+            }
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let path = temp_path("env")?;
+        std::fs::write(&path, format!("{}\n", lines.join("\n")))
+            .with_context(|| format!("writing boot injection payload '{}'", path.display()))?;
+        let media_iso_file = match create_boot_injection_iso(&path) {
+            Ok(iso) => iso,
+            Err(err) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(err);
+            }
+        };
+        Ok(Some(Self {
+            payload_file: path,
+            media_iso_file,
+            owns_payload: true,
+        }))
+    }
+}
+
+/// The injection the scenarios binary handed over (file wins over pairs).
 pub fn boot_injection_from_env() -> Result<Option<BootInjection>> {
     if let Ok(path) = std::env::var(ENV_INJECT_FILE) {
-        let payload = PathBuf::from(path);
-        if !payload.is_file() {
-            return Err(anyhow!(
-                "{} points to non-file '{}'",
-                ENV_INJECT_FILE,
-                payload.display()
-            ));
-        }
-        let media_iso = create_boot_injection_iso(&payload)?;
-        return Ok(Some(BootInjection {
-            fw_cfg_name: FW_CFG_NAME.to_string(),
-            payload_file: payload,
-            media_iso_file: Some(media_iso),
-        }));
+        return BootInjection::from_file(Path::new(&path)).map(Some);
     }
-
-    let raw = match std::env::var(ENV_INJECT_KV) {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => return Ok(None),
-    };
-
-    let entries = parse_kv_csv(&raw)?;
-    let payload = write_env_payload_file(&entries)?;
-    let media_iso = create_boot_injection_iso(&payload)?;
-    Ok(Some(BootInjection {
-        fw_cfg_name: FW_CFG_NAME.to_string(),
-        payload_file: payload,
-        media_iso_file: Some(media_iso),
-    }))
+    match std::env::var(ENV_INJECT_KV) {
+        Ok(raw) => BootInjection::from_pairs(&raw),
+        Err(_) => Ok(None),
+    }
 }
 
-fn parse_kv_csv(raw: &str) -> Result<Vec<(String, String)>> {
-    let mut out = Vec::new();
-    for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        let (k, v) = part
-            .split_once('=')
-            .ok_or_else(|| anyhow!("invalid key/value '{}', expected KEY=VALUE", part))?;
-        let key = k.trim();
-        if key.is_empty() {
-            return Err(anyhow!("empty key in '{}'", part));
-        }
-        out.push((key.to_string(), v.to_string()));
-    }
-    if out.is_empty() {
-        return Err(anyhow!("no key/value pairs found in {}", ENV_INJECT_KV));
-    }
-    Ok(out)
-}
-
-fn write_env_payload_file(entries: &[(String, String)]) -> Result<PathBuf> {
-    let pid = std::process::id();
+fn temp_path(extension: &str) -> Result<PathBuf> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock before UNIX_EPOCH")?
-        .as_millis();
-    let path = std::env::temp_dir().join(format!("levitate-boot-injection-{pid}-{ts}.env"));
-    write_env_payload_path(&path, entries)?;
-    Ok(path)
+        .as_nanos();
+    Ok(std::env::temp_dir().join(format!(
+        "levitate-boot-injection-{}-{ts}.{extension}",
+        std::process::id()
+    )))
 }
 
-fn write_env_payload_path(path: &Path, entries: &[(String, String)]) -> Result<()> {
-    let mut lines = Vec::with_capacity(entries.len());
-    for (k, v) in entries {
-        lines.push(format!("{k}={v}"));
-    }
-    std::fs::write(path, format!("{}\n", lines.join("\n")))
-        .with_context(|| format!("writing boot injection payload '{}'", path.display()))?;
-    Ok(())
-}
-
+/// An ISO whose root holds the payload as `BOOT_INJECTION_FILE`, built with
+/// the first ISO tool found.
 fn create_boot_injection_iso(payload_path: &Path) -> Result<PathBuf> {
-    let pid = std::process::id();
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_millis();
-    let iso_path = std::env::temp_dir().join(format!("levitate-boot-injection-{pid}-{ts}.iso"));
-
+    let iso_path = temp_path("iso")?;
+    let graft = format!("{BOOT_INJECTION_FILE}={}", payload_path.display());
     let mut tried = Vec::new();
-    for (tool, mut args) in [
-        (
-            "xorriso",
-            vec![
-                "-as".to_string(),
-                "mkisofs".to_string(),
-                "-quiet".to_string(),
-                "-V".to_string(),
-                "LEVITATE_INJECT".to_string(),
-                "-o".to_string(),
-                iso_path.display().to_string(),
-                "-graft-points".to_string(),
-            ],
-        ),
-        (
-            "genisoimage",
-            vec![
-                "-quiet".to_string(),
-                "-V".to_string(),
-                "LEVITATE_INJECT".to_string(),
-                "-o".to_string(),
-                iso_path.display().to_string(),
-                "-graft-points".to_string(),
-            ],
-        ),
-        (
-            "mkisofs",
-            vec![
-                "-quiet".to_string(),
-                "-V".to_string(),
-                "LEVITATE_INJECT".to_string(),
-                "-o".to_string(),
-                iso_path.display().to_string(),
-                "-graft-points".to_string(),
-            ],
-        ),
+    for (tool, prefix) in [
+        ("xorriso", &["-as", "mkisofs"][..]),
+        ("genisoimage", &[][..]),
+        ("mkisofs", &[][..]),
     ] {
-        args.push(format!(
-            "{}={}",
-            distro_spec::shared::live_boot::BOOT_INJECTION_FILE,
-            payload_path.display()
-        ));
-        match Command::new(tool).args(&args).status() {
+        let status = Command::new(tool)
+            .args(prefix)
+            .args(["-quiet", "-V", BOOT_INJECTION_ISO_LABEL, "-o"])
+            .arg(&iso_path)
+            .arg("-graft-points")
+            .arg(&graft)
+            .status();
+        match status {
             Ok(status) if status.success() => return Ok(iso_path),
-            Ok(status) => {
-                tried.push(format!("{tool} exited with status {status}"));
-            }
-            Err(err) => {
-                tried.push(format!("{tool} unavailable: {err}"));
-            }
+            Ok(status) => tried.push(format!("{tool} exited with status {status}")),
+            Err(err) => tried.push(format!("{tool} unavailable: {err}")),
         }
     }
-
     Err(anyhow!(
         "failed to build boot-injection ISO from '{}': {}",
         payload_path.display(),

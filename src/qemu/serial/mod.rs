@@ -67,6 +67,8 @@ impl SerialExecutorExt for Console {
         let scenarios = load_scenarios(ctx.id())?;
         let mut success = scenarios.live_boot.success_patterns.clone();
         success.extend(scenarios.live_tools.serial_ready_patterns.iter().cloned());
+        // The live issue text the live overlay writes also means the console is up.
+        success.push(distro_builder::live_ux::LIVE_LOGIN_HINT.to_string());
         self.wait_for_boot(
             stall_timeout,
             &BootPatterns {

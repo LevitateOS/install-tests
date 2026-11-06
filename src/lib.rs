@@ -20,9 +20,6 @@ pub mod qemu;
 pub mod scenarios;
 
 // Re-export commonly used items
-pub use boot_injection::{
-    boot_injection_from_env, BootInjection, FW_CFG_NAME as BOOT_INJECTION_FW_CFG_NAME,
-};
 pub use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
 pub use preflight::{
     require_preflight, require_preflight_for_distro, require_preflight_with_iso_for_distro,

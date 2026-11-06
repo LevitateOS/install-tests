@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use distro_contract::{
     ScenarioContract,
-    load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario, InstallExperience,
+    load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario,
     RuntimePolicyScenario, ToolsScenario,
 };
 use std::path::PathBuf;
@@ -57,16 +57,6 @@ pub struct InstalledScenarioFacts {
     pub automated_login: AutomatedLoginScenario,
     pub installed_tools: ToolsScenario,
     pub runtime_policy: RuntimePolicyScenario,
-}
-
-pub fn load_install_experience_profile(distro_id: &str) -> Result<String> {
-    let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
-        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
-    Ok(match contract.scenarios.live_tools.install_experience {
-        InstallExperience::Ux => "ux",
-        InstallExperience::AutomatedSsh => "automated_ssh",
-    }
-    .to_string())
 }
 
 /// The variant's whole scenario contract.
