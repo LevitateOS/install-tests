@@ -15,6 +15,8 @@ use crate::distro::DistroContext;
 /// serial port the tests read.
 const VGA_CONSOLE: &str = "console=tty0";
 const SERIAL_CONSOLE: &str = "console=ttyS0,115200n8";
+/// Seconds before a panicked kernel reboots.
+const PANIC_REBOOT_SECS: u32 = 10;
 
 /// What the test system needs beyond the shipped tools.
 pub struct TestSystem<'a> {
@@ -175,8 +177,10 @@ pub fn install(
         if system.uses_initramfs {
             entry.push_str(&format!("initrd {dir}/initramfs.img\n"));
         }
+        // panic=: a kernel that panics reboots instead of hanging, which on
+        // an A/B trial boot returns the machine to the known-good slot.
         entry.push_str(&format!(
-            "options root=PARTUUID={partuuid} {mount_mode} rootwait {VGA_CONSOLE} {SERIAL_CONSOLE}\n"
+            "options root=PARTUUID={partuuid} {mount_mode} rootwait panic={PANIC_REBOOT_SECS} {VGA_CONSOLE} {SERIAL_CONSOLE}\n"
         ));
         write_file(&mut run, &format!("{target}/boot/loader/entries/{name}"), &entry)?;
     }
@@ -200,6 +204,12 @@ pub fn install(
             shell_quote(&ctx.enable_serial_getty_cmd())
         ),
     )?;
+    if system.mode == InstallMode::Ab {
+        run(
+            "Enable A/B trial supervision (recab)",
+            format!("recchroot {t} -- recab install-unit"),
+        )?;
+    }
 
     Ok((target, steps))
 }

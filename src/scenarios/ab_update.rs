@@ -1,8 +1,8 @@
 //! The A/B update scenario. On a copy of the latest install disk, the
 //! installed system writes the release's system into its inactive slot with
 //! `recab stage`, then the slot state machine is checked across real reboots:
-//! a trial boot, automatic fallback from an uncommitted trial, commit, and
-//! rollback to the previous slot.
+//! a degraded trial that reboots back by itself, a healthy trial that
+//! recab-trial.service commits, and rollback to the previous slot.
 
 use anyhow::{bail, ensure, Context, Result};
 use recab::{Slot, Status};
@@ -29,6 +29,13 @@ const MEDIA_MOUNT: &str = "/run/ab-update-media";
 const STAGE_TIMEOUT: Duration = Duration::from_secs(900);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
+/// A degraded trial: boot, startup, recab's decision, and the reboot.
+const TRIAL_REBOOT_TIMEOUT: Duration = Duration::from_secs(300);
+const COMMIT_WAIT: Duration = Duration::from_secs(200);
+/// Where the scenario mounts slot B to break and repair it.
+const SLOT_MOUNT: &str = "/run/ab-update-slot";
+/// A unit that always fails, so slot B's trial comes up degraded.
+const FAILING_UNIT: &str = "ab-update-fail.service";
 
 pub(super) fn run(ctx: &dyn DistroContext, iso: &Path) -> Result<String> {
     if install_mode_for_distro(ctx.id())? != InstallMode::Ab {
@@ -83,14 +90,15 @@ impl Machine<'_> {
     fn exercise(&self) -> Result<String> {
         let mut steps = Vec::new();
 
-        // Installed: slot A runs and is the known-good default.
+        // Installed: slot A runs, is the known-good default, and supervises trials.
         let mut sys = self.boot(true)?;
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after install")?;
         ensure!(st.next_boot == Some(Slot::A), "after install the next boot is {:?}, not A", st.next_boot);
         ensure!(sys.sh("findmnt -n -o SOURCE /var")?.contains("/dev/"), "/var is not its own partition");
+        sys.sh(&format!("systemctl is-enabled {}", recab::UNIT_NAME))?;
 
-        // Stage the release into slot B and try it once.
+        // Stage the release into slot B.
         let media = sys.sh("blkid -t TYPE=iso9660 -o device | head -n1")?;
         ensure!(!media.is_empty(), "the update medium is not attached");
         sys.sh(&format!("mkdir -p {MEDIA_MOUNT} && mount -o ro {} {MEDIA_MOUNT}", shell_quote(&media)))?;
@@ -98,8 +106,7 @@ impl Machine<'_> {
         // appended partition, which a CD drive does not expose: a read-only
         // partition-scanning loop device over the CD does.
         let rootfs = sys.sh(&format!(
-            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\"; \
-             else l=$(losetup --find --show --read-only --partscan {}) && udevadm settle && echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
+            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\";  else l=$(losetup --find --show --read-only --partscan {}) && udevadm settle && echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
             shell_quote(&media)
         ))?;
         let mut stage = format!(
@@ -111,46 +118,56 @@ impl Machine<'_> {
         }
         sys.run(&stage, STAGE_TIMEOUT)?;
         sys.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
-        steps.push("staged slot B from the release image");
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after stage")?;
         ensure!(!st.trial_pending, "stage alone must not schedule a boot");
+        let entry_b = format!("/boot/loader/entries/{}-b.conf", self.ctx.id());
+        ensure!(sys.sh(&format!("cat {entry_b}"))?.contains("panic="), "slot B's entry has no panic=");
+        steps.push("staged slot B from the release image");
 
+        // A trial that comes up degraded reboots back to A by itself.
+        let slot_b = format!(
+            "/dev/disk/by-partuuid/$(sed -n 's/.*root=PARTUUID=\\([^ ]*\\).*/\\1/p' {entry_b})"
+        );
+        sys.sh(&format!(
+            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} &&  printf '[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n' > {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} &&  ln -s /etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} &&  umount {SLOT_MOUNT}"
+        ))?;
         sys.sh("recab set-next B")?;
         let st = sys.status()?;
         ensure!(st.trial_pending && st.next_boot == Some(Slot::B), "set-next B did not schedule a trial: {st:?}");
         sys.reboot()?;
-
-        // The trial boot runs slot B, uncommitted; the machine's identity came along.
+        self.run_unattended(TRIAL_REBOOT_TIMEOUT)
+            .context("the degraded trial of slot B did not reboot by itself")?;
         let mut sys = self.boot(false)?;
         let st = sys.status()?;
-        expect(&st, Slot::B, false, "on the trial boot")?;
-        ensure!(st.next_boot == Some(Slot::A), "an uncommitted trial must fall back to A, next boot is {:?}", st.next_boot);
-        let hostname = sys.sh("cat /etc/hostname")?;
-        ensure!(hostname == self.ctx.default_hostname(), "slot B's hostname is '{hostname}'");
-        steps.push("trial-booted slot B with the machine's accounts and hostname");
-        sys.reboot()?;
+        expect(&st, Slot::A, true, "after a degraded trial")?;
+        ensure!(!st.trial_pending, "the trial of slot B was never booted: {st:?}");
+        steps.push("a degraded trial of slot B rebooted into slot A by itself");
 
-        // Not committed: the next boot falls back to A by itself.
-        let mut sys = self.boot(false)?;
-        expect(&sys.status()?, Slot::A, true, "after an uncommitted trial")?;
-        steps.push("fell back to slot A after an uncommitted trial");
-
-        // Try B again and commit it.
+        // Repair B: the healthy trial commits itself.
+        sys.sh(&format!(
+            "mount {slot_b} {SLOT_MOUNT} &&  rm {SLOT_MOUNT}/etc/systemd/system/{FAILING_UNIT} {SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_UNIT} &&  umount {SLOT_MOUNT}"
+        ))?;
         sys.sh("recab set-next B")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
-        expect(&sys.status()?, Slot::B, false, "on the second trial boot")?;
-        sys.sh("recab commit")?;
+        let hostname = sys.sh("cat /etc/hostname")?;
+        ensure!(hostname == self.ctx.default_hostname(), "slot B's hostname is '{hostname}'");
+        sys.run(
+            "for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1",
+            COMMIT_WAIT,
+        )
+        .context("the healthy trial of slot B was not committed")?;
         let st = sys.status()?;
-        expect(&st, Slot::B, true, "after commit")?;
-        ensure!(st.default_slot == Some(Slot::B), "commit did not make B the default: {st:?}");
-        ensure!(st.rollback_slot == Some(Slot::A), "after commit rollback should return to A: {st:?}");
+        expect(&st, Slot::B, true, "after the healthy trial")?;
+        ensure!(st.default_slot == Some(Slot::B), "the commit did not make B the default: {st:?}");
+        ensure!(st.rollback_slot == Some(Slot::A), "after the commit rollback should return to A: {st:?}");
+        steps.push("a healthy trial of slot B, with the machine's accounts and hostname, committed itself");
         sys.reboot()?;
 
         let mut sys = self.boot(false)?;
-        expect(&sys.status()?, Slot::B, true, "on the boot after commit")?;
-        steps.push("committed slot B, which stays the default");
+        expect(&sys.status()?, Slot::B, true, "on the boot after the commit")?;
+        steps.push("slot B stays the default");
 
         // Roll back to the previous system.
         sys.sh("recab rollback")?;
@@ -163,6 +180,16 @@ impl Machine<'_> {
         sys.poweroff()?;
 
         Ok(format!("A/B update verified across 6 boots: {}", steps.join("; ")))
+    }
+
+    /// Boot without logging in, and wait for the guest to reboot by itself.
+    fn run_unattended(&self, timeout: Duration) -> Result<()> {
+        let mut vm = session::spawn(VmSpec {
+            disk: Some(self.disk),
+            ovmf_vars: Some(self.vars),
+            ..Default::default()
+        })?;
+        vm.wait_for_exit(timeout)
     }
 
     fn boot(&self, with_media: bool) -> Result<Booted> {
