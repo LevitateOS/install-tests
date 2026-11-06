@@ -11,10 +11,6 @@ default-run = "scenarios"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qmp"
-path = "src/bin/qmp.rs"
-
-[[bin]]
 name = "scenarios"
 path = "src/bin/scenarios.rs"
 
@@ -32,8 +28,6 @@ recqemu = { path = "../../tools/recqemu" }
 recshuttle = { path = "../../tools/recshuttle" }
 recpart = { path = "../../tools/recpart" }
 fsdbg = { path = "../fsdbg" }
-libc = "0.2"
-toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

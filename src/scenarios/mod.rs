@@ -25,6 +25,7 @@ use colored::Colorize;
 use distro_contract::{load_variant_contract_for_distro_from, RootfsMutability};
 use recpart::InstallMode;
 use recshuttle::Remote;
+use crate::qemu::session::VmSpec;
 use serde::{Deserialize, Serialize};
 use state::ScenarioState;
 use std::fs;
@@ -205,9 +206,13 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
     println!("{} {}", ">>".cyan(), scenario.display_name(),);
 
     let result = match scenario {
-        ScenarioId::BuildPreflight => {
-            Ok("Preflight conformance + artifact checks passed".to_string())
-        }
+        ScenarioId::BuildPreflight => Ok(format!(
+            "Preflight conformance + artifact checks passed for {}",
+            scenario_iso
+                .as_ref()
+                .map(|iso| iso.path.display().to_string())
+                .unwrap_or_default()
+        )),
         ScenarioId::LiveBoot => run_live_boot(
             &*ctx,
             &scenario_iso
@@ -325,29 +330,29 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 /// Live Boot scenario — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let live_boot_evidence = load_live_boot_evidence_spec(ctx.id())?;
-    let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
+    let mut vm = session::spawn(VmSpec {
+        iso: Some(iso_path),
+        ssh: true,
+        ..Default::default()
+    })?;
+    let ssh_host_port = vm.ssh_port()?;
+    let console = &mut vm.console;
     let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
 
-    let result = (|| -> Result<String> {
-        console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
-        verify_live_boot_ssh_login(&mut console, ssh_host_port)?;
+    console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
+    verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-        run_scenario_script_over_ssh(
-            ssh_host_port,
-            &installed_script_path(&live_boot_evidence.script_path),
-            Some(&live_boot_evidence.pass_marker),
-        )?;
-        run_scenario_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT, None)?;
+    run_scenario_script_over_ssh(
+        ssh_host_port,
+        &installed_script_path(&live_boot_evidence.script_path),
+        Some(&live_boot_evidence.pass_marker),
+    )?;
+    run_scenario_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT, None)?;
 
-        Ok(
-            "Boot markers detected + SSH login probe passed + live-boot script checks passed"
-                .to_string(),
-        )
-    })();
-
-    let _ = child.kill();
-    let _ = child.wait();
-    result
+    Ok(
+        "Boot markers detected + SSH login probe passed + live-boot script checks passed"
+            .to_string(),
+    )
 }
 
 /// Live Tools scenario — expected binaries in the live environment.
@@ -359,140 +364,120 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 /// - Environment is configured (proc/sys/dev available)
 /// - Tool is functional (not broken/corrupted)
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let (mut child, mut console, ssh_host_port) = spawn_live_qemu_with_ssh(ctx, iso_path)?;
-    let result = (|| -> Result<String> {
-        wait_for_live_tools_serial_readiness(&mut console, ctx)?;
-        verify_live_boot_ssh_login(&mut console, ssh_host_port)?;
+    let mut vm = session::spawn(VmSpec {
+        iso: Some(iso_path),
+        ssh: true,
+        ..Default::default()
+    })?;
+    let ssh_host_port = vm.ssh_port()?;
+    let console = &mut vm.console;
+    wait_for_live_tools_serial_readiness(console, ctx)?;
+    verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-        // Check for key tools expected in the live environment
-        let tools: Vec<&str> = ctx.live_tools().to_vec();
-        let mut missing = Vec::new();
-        let mut found = Vec::new();
-        let mut broken = Vec::new();
+    // Check for key tools expected in the live environment
+    let tools: Vec<&str> = ctx.live_tools().to_vec();
+    let mut missing = Vec::new();
+    let mut found = Vec::new();
+    let mut broken = Vec::new();
 
-        for tool in &tools {
-            // Get the validation command for this tool
-            let validation_cmd = get_tool_validation_command(tool);
+    let remote = Remote::new(ssh_host_port);
+    for tool in &tools {
+        match check_tool(tool, |cmd| Ok(remote.exec(cmd)?.exit_code))? {
+            ToolCheck::Works => found.push(*tool),
+            ToolCheck::Missing => missing.push(*tool),
+            ToolCheck::Broken(code) => broken.push((*tool, code)),
+        }
+    }
 
-            let result = Remote::new(ssh_host_port).exec(&validation_cmd)?;
-            if result.exit_code == 0 {
-                // Tool executed successfully - it works!
-                found.push(*tool);
-            } else if result.exit_code == 127
-                || result.output.contains("command not found")
-                || result.output.contains("not found")
-            {
-                // Exit code 127 = command not found
-                missing.push(*tool);
-            } else {
-                // Tool exists but failed to execute properly
-                broken.push((*tool, result.exit_code, result.output.trim().to_string()));
+    let overlay_evidence = verify_live_overlay_behavior(console)?;
+
+    // Report failures
+    if !missing.is_empty() || !broken.is_empty() {
+        let mut error_msg = String::new();
+
+        if !missing.is_empty() {
+            error_msg.push_str(&format!(
+                "Missing tools (not in PATH): {}\n",
+                missing.join(", ")
+            ));
+        }
+
+        if !broken.is_empty() {
+            error_msg.push_str("Broken tools (exist but failed to execute):\n");
+            for (tool, code) in &broken {
+                error_msg.push_str(&format!("  {tool} (exit {code})\n"));
             }
         }
 
-        let overlay_evidence = verify_live_overlay_behavior(&mut console)?;
+        error_msg.push_str(&format!("\nWorking tools: {}", found.join(", ")));
 
-        // Report failures
-        if !missing.is_empty() || !broken.is_empty() {
-            let mut error_msg = String::new();
+        bail!("{}", error_msg.trim());
+    }
 
-            if !missing.is_empty() {
-                error_msg.push_str(&format!(
-                    "Missing tools (not in PATH): {}\n",
-                    missing.join(", ")
-                ));
-            }
+    let expected_install_experience = crate::distro::load_install_experience_profile(ctx.id())
+        .with_context(|| {
+            format!(
+                "loading canonical install experience profile for '{}'",
+                ctx.id()
+            )
+        })?;
+    let install_experience_marker =
+        Remote::new(ssh_host_port).exec("cat /usr/lib/levitate/install-experience")
+            .with_context(|| "reading install-experience marker".to_string())?;
+    if install_experience_marker.exit_code != 0 {
+        bail!(
+            "install-experience marker missing or unreadable: {}",
+            install_experience_marker.output.trim()
+        );
+    }
+    let actual_install_experience = install_experience_marker
+        .output
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim();
+    if actual_install_experience != expected_install_experience {
+        bail!(
+            "install-experience mismatch: expected '{}', found '{}'",
+            expected_install_experience,
+            actual_install_experience
+        );
+    }
 
-            if !broken.is_empty() {
-                error_msg.push_str("Broken tools (exist but failed to execute):\n");
-                for (tool, code, output) in &broken {
-                    error_msg.push_str(&format!(
-                        "  {} (exit {}): {}\n",
-                        tool,
-                        code,
-                        if output.is_empty() {
-                            "no output"
-                        } else {
-                            &output.lines().next().unwrap_or("unknown error")
-                        }
-                    ));
-                }
-            }
-
-            error_msg.push_str(&format!("\nWorking tools: {}", found.join(", ")));
-
-            bail!("{}", error_msg.trim());
+    let entrypoint_check = Remote::new(ssh_host_port).exec("test -x /usr/local/bin/levitate-install-entrypoint",
+    )
+    .with_context(|| "checking install entrypoint script presence".to_string())?;
+    if entrypoint_check.exit_code != 0 {
+        bail!(
+            "missing executable install entrypoint at /usr/local/bin/levitate-install-entrypoint"
+        );
+    }
+    let mut ux_split_evidence: Option<String> = None;
+    if expected_install_experience == "ux" {
+        let ux_hook_check = Remote::new(ssh_host_port).exec("test -r /etc/profile.d/30-install-ux.sh")
+            .with_context(|| "checking install UX profile hook presence".to_string())?;
+        if ux_hook_check.exit_code != 0 {
+            bail!("missing install UX profile hook at /etc/profile.d/30-install-ux.sh");
         }
+        ux_split_evidence = Some(verify_install_ux_split_behavior(ssh_host_port)?);
+    }
 
-        let expected_install_experience = crate::distro::load_install_experience_profile(ctx.id())
-            .with_context(|| {
-                format!(
-                    "loading canonical install experience profile for '{}'",
-                    ctx.id()
-                )
-            })?;
-        let install_experience_marker =
-            Remote::new(ssh_host_port).exec("cat /usr/lib/levitate/install-experience")
-                .with_context(|| "reading install-experience marker".to_string())?;
-        if install_experience_marker.exit_code != 0 {
-            bail!(
-                "install-experience marker missing or unreadable: {}",
-                install_experience_marker.output.trim()
-            );
-        }
-        let actual_install_experience = install_experience_marker
-            .output
-            .trim()
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim();
-        if actual_install_experience != expected_install_experience {
-            bail!(
-                "install-experience mismatch: expected '{}', found '{}'",
-                expected_install_experience,
-                actual_install_experience
-            );
-        }
+    let install_profile_evidence = match ux_split_evidence {
+        Some(evidence) => format!(
+            "install profile '{}' verified; {}",
+            actual_install_experience, evidence
+        ),
+        None => format!("install profile '{}' verified", actual_install_experience),
+    };
 
-        let entrypoint_check = Remote::new(ssh_host_port).exec("test -x /usr/local/bin/levitate-install-entrypoint",
-        )
-        .with_context(|| "checking install entrypoint script presence".to_string())?;
-        if entrypoint_check.exit_code != 0 {
-            bail!(
-                "missing executable install entrypoint at /usr/local/bin/levitate-install-entrypoint"
-            );
-        }
-        let mut ux_split_evidence: Option<String> = None;
-        if expected_install_experience == "ux" {
-            let ux_hook_check = Remote::new(ssh_host_port).exec("test -r /etc/profile.d/30-install-ux.sh")
-                .with_context(|| "checking install UX profile hook presence".to_string())?;
-            if ux_hook_check.exit_code != 0 {
-                bail!("missing install UX profile hook at /etc/profile.d/30-install-ux.sh");
-            }
-            ux_split_evidence = Some(verify_install_ux_split_behavior(ssh_host_port)?);
-        }
-
-        let install_profile_evidence = match ux_split_evidence {
-            Some(evidence) => format!(
-                "install profile '{}' verified; {}",
-                actual_install_experience, evidence
-            ),
-            None => format!("install profile '{}' verified", actual_install_experience),
-        };
-
-        Ok(format!(
-            "All {} tools verified working (actually executed): {}; {}; {}",
-            found.len(),
-            found.join(", "),
-            install_profile_evidence,
-            overlay_evidence
-        ))
-    })();
-
-    let _ = child.kill();
-    let _ = child.wait();
-    result
+    Ok(format!(
+        "All {} tools verified working (actually executed): {}; {}; {}",
+        found.len(),
+        found.join(", "),
+        install_profile_evidence,
+        overlay_evidence
+    ))
 }
 
 fn wait_for_live_tools_serial_readiness(
@@ -515,11 +500,17 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     }
     recqemu::create_disk(&disk_path, "20G")?;
 
-    let ovmf_vars_path = scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME);
-    let (ovmf, ovmf_vars) = session::setup_ovmf_vars_at(&ovmf_vars_path)?;
-
-    let (mut child, mut console, ssh_host_port) =
-        session::spawn_live_with_disk_with_ssh(iso_path, &disk_path, &ovmf, &ovmf_vars)?;
+    let ovmf_vars_path = session::setup_ovmf_vars_at(
+        &scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME),
+    )?;
+    let mut vm = session::spawn(VmSpec {
+        iso: Some(iso_path),
+        disk: Some(&disk_path),
+        ovmf_vars: Some(&ovmf_vars_path),
+        ssh: true,
+    })?;
+    let ssh_host_port = vm.ssh_port()?;
+    let console = &mut vm.console;
 
     // The installation runs over SSH; the serial console only marks the
     // boot boundary.
@@ -531,17 +522,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         )?;
         remote.wait_ready(Duration::from_secs(ctx.live_boot_stall_timeout_secs()))?;
 
-        let installed_facts = load_installed_scenario_facts(ctx.id())?;
-        let root_password = installed_facts
-            .automated_login
-            .default_password
-            .clone()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "missing canonical automated-login default_password for '{}'",
-                    ctx.id()
-                )
-            })?;
+        let root_password = default_password(ctx)?;
         let system = install::TestSystem {
             mode: install_mode_for_distro(ctx.id())?,
             root_password: &root_password,
@@ -551,7 +532,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
 
         // Verify key artifacts exist
         let mut verify = vec![
-            ("Root filesystem", format!("ls {target}/bin/busybox")),
+            ("Root filesystem", format!("test -f {target}/etc/os-release")),
             ("Boot partition", format!("ls {target}/boot/EFI")),
             ("Kernel on ESP", format!("ls {target}/boot/vmlinuz")),
             ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
@@ -586,8 +567,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     })();
 
     remote.power_off();
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(vm);
 
     match install_result {
         Ok(step_count) => {
@@ -621,16 +601,11 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
         ScenarioId::InstalledBoot,
         Some(install_runtime.run_id.clone()),
     )?;
-    let ovmf = recqemu::find_ovmf()?;
-    let (mut child, mut console) = session::spawn_installed(
-        &install_runtime.disk_path,
-        &ovmf,
-        &install_runtime.ovmf_vars_path,
-    )?;
+    let mut vm = installed_vm(&install_runtime)?;
+    let console = &mut vm.console;
 
-    let result = console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx);
-    let _ = child.kill();
-    let _ = child.wait();
+    let result = console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx);
+    drop(vm);
 
     match result {
         Ok(failed_services) => {
@@ -663,34 +638,15 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
 
 fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let ovmf = recqemu::find_ovmf()?;
+    let mut vm = installed_vm(&install_runtime)?;
+    let console = &mut vm.console;
 
-    let (mut child, mut console) = session::spawn_installed(
-        &install_runtime.disk_path,
-        &ovmf,
-        &install_runtime.ovmf_vars_path,
-    )?;
+    console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx)?;
 
-    console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
-
-    // Attempt login
-    let facts = load_installed_scenario_facts(ctx.id())?;
-    let default_password = facts
-        .automated_login
-        .default_password
-        .as_deref()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing canonical automated-login default_password for '{}'",
-                ctx.id()
-            )
-        })?;
-    console.login("root", default_password, Duration::from_secs(15))?;
+    console.login("root", &default_password(ctx)?, LOGIN_TIMEOUT)?;
 
     // Verify shell works
-    let result = console.exec("echo SCENARIO_LOGIN_OK", Duration::from_secs(5))?;
-    let _ = child.kill();
-    let _ = child.wait();
+    let result = console.exec("echo SCENARIO_LOGIN_OK", COMMAND_TIMEOUT)?;
 
     if result.output.contains("SCENARIO_LOGIN_OK") {
         Ok("Login succeeded, shell functional".to_string())
@@ -704,27 +660,12 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
 
 fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
     let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let ovmf = recqemu::find_ovmf()?;
+    let mut vm = installed_vm(&install_runtime)?;
+    let console = &mut vm.console;
 
-    let (mut child, mut console) = session::spawn_installed(
-        &install_runtime.disk_path,
-        &ovmf,
-        &install_runtime.ovmf_vars_path,
-    )?;
-
-    console.wait_for_installed_boot_with_context(Duration::from_secs(90), ctx)?;
+    console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx)?;
     let facts = load_installed_scenario_facts(ctx.id())?;
-    let default_password = facts
-        .automated_login
-        .default_password
-        .as_deref()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing canonical automated-login default_password for '{}'",
-                ctx.id()
-            )
-        })?;
-    console.login("root", default_password, Duration::from_secs(15))?;
+    console.login("root", &default_password(ctx)?, LOGIN_TIMEOUT)?;
 
     let tools: Vec<&str> = facts
         .installed_tools
@@ -735,26 +676,21 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
     let mut missing = Vec::new();
     let mut found = Vec::new();
 
+    let mut broken = Vec::new();
     for tool in &tools {
-        let command = match *tool {
-            "sudo" | "doas" => get_tool_validation_command(tool),
-            _ => format!("command -v {} >/dev/null", tool),
-        };
-        let result = console.exec(&command, Duration::from_secs(5))?;
-        if result.success() {
-            found.push(*tool);
-        } else {
-            missing.push(*tool);
+        match check_tool(tool, |cmd| Ok(console.exec(cmd, COMMAND_TIMEOUT)?.exit_code))? {
+            ToolCheck::Works => found.push(*tool),
+            ToolCheck::Missing => missing.push(*tool),
+            ToolCheck::Broken(code) => broken.push(format!("{tool} (exit {code})")),
         }
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
 
-    if !missing.is_empty() {
+    if !missing.is_empty() || !broken.is_empty() {
         bail!(
-            "Missing daily driver tools: {}\nFound: {}",
+            "Missing daily driver tools: {}\nBroken: {}\nFound: {}",
             missing.join(", "),
+            broken.join(", "),
             found.join(", ")
         );
     }
@@ -840,33 +776,43 @@ pub fn resolve_iso_artifact_for_scenario(
     }))
 }
 
+/// What a cached pass depends on: the scenario's input (ISO or install run)
+/// and the harness binary, which links recqemu, recshuttle and recpart, so a
+/// change to the harness or those tools reruns the scenario.
 fn scenario_input_fingerprint(
     distro_id: &str,
     scenario: ScenarioId,
     iso_artifact: Option<&ScenarioIsoArtifact>,
 ) -> Result<String> {
-    if let Some(iso) = iso_artifact {
-        let mtime = std::fs::metadata(&iso.path)
-            .with_context(|| format!("reading metadata for '{}'", iso.path.display()))?
+    let mtime = |path: &Path| -> Result<u64> {
+        Ok(fs::metadata(path)
+            .with_context(|| format!("reading metadata for '{}'", path.display()))?
             .modified()
-            .with_context(|| format!("reading mtime for '{}'", iso.path.display()))?
+            .with_context(|| format!("reading mtime for '{}'", path.display()))?
             .duration_since(UNIX_EPOCH)
-            .with_context(|| format!("mtime before UNIX_EPOCH for '{}'", iso.path.display()))?
-            .as_secs();
-        return Ok(format!(
+            .with_context(|| format!("mtime before UNIX_EPOCH for '{}'", path.display()))?
+            .as_secs())
+    };
+    let harness_path = std::env::current_exe().context("locating the scenario harness binary")?;
+    let harness = format!(
+        "harness:{}:{}",
+        mtime(&harness_path)?,
+        fs::metadata(&harness_path)?.len()
+    );
+    let input = match iso_artifact {
+        Some(iso) => format!(
             "iso:{}:{}:{}",
             iso.product_name,
             iso.path.display(),
-            mtime
-        ));
-    }
-
-    let install_runtime = resolve_latest_install_runtime(distro_id)?;
-    Ok(format!(
-        "install-runtime:{}:{}",
-        scenario.key(),
-        install_runtime.run_id
-    ))
+            mtime(&iso.path)?
+        ),
+        None => format!(
+            "install-runtime:{}:{}",
+            scenario.key(),
+            resolve_latest_install_runtime(distro_id)?.run_id
+        ),
+    };
+    Ok(format!("{input};{harness}"))
 }
 
 fn load_release_run_manifest(run_dir: &Path) -> Result<Option<ReleaseRunManifest>> {
@@ -887,13 +833,6 @@ fn release_product_root_dir(distro_id: &str, product_name: &str) -> PathBuf {
         .join(distro_id)
         .join("releases")
         .join(product_name)
-}
-
-fn spawn_live_qemu_with_ssh(
-    ctx: &dyn DistroContext,
-    iso_path: &Path,
-) -> Result<(std::process::Child, Console, u16)> {
-    session::spawn_live_with_ssh(ctx, iso_path)
 }
 
 fn verify_live_boot_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
@@ -1300,20 +1239,47 @@ fn now_unix_nanos() -> Result<u128> {
 }
 
 fn verify_live_overlay_behavior(console: &mut Console) -> Result<String> {
-    let marker = console.exec("test -f /live-boot-marker", Duration::from_secs(5))?;
+    let marker = console.exec("test -f /live-boot-marker", COMMAND_TIMEOUT)?;
     if !marker.success() {
         bail!("Live overlay marker missing: /live-boot-marker");
     }
 
     let overlay_mount = console.exec(
         "mount | grep ' type overlay ' | grep 'lowerdir=/live-overlay:/rootfs'",
-        Duration::from_secs(5),
+        COMMAND_TIMEOUT,
     )?;
     if !overlay_mount.success() {
         bail!("Overlay root mount is missing required lowerdir=/live-overlay:/rootfs chain");
     }
 
     Ok("overlayfs lowerdir chain verified".to_string())
+}
+
+/// How long the installed system may stay silent while booting.
+const INSTALLED_BOOT_STALL: Duration = Duration::from_secs(90);
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The variant's default root password for automated logins.
+fn default_password(ctx: &dyn DistroContext) -> Result<String> {
+    load_installed_scenario_facts(ctx.id())?
+        .automated_login
+        .default_password
+        .with_context(|| {
+            format!(
+                "missing canonical automated-login default_password for '{}'",
+                ctx.id()
+            )
+        })
+}
+
+/// Boot the latest install run's disk.
+fn installed_vm(install_runtime: &InstallScenarioRuntime) -> Result<session::Vm> {
+    session::spawn(VmSpec {
+        disk: Some(&install_runtime.disk_path),
+        ovmf_vars: Some(&install_runtime.ovmf_vars_path),
+        ..Default::default()
+    })
 }
 
 fn install_mode_for_distro(distro_id: &str) -> Result<InstallMode> {
@@ -1326,75 +1292,53 @@ fn install_mode_for_distro(distro_id: &str) -> Result<InstallMode> {
     }
 }
 
-/// Get the validation command for a tool.
-///
-/// Returns a command that:
-/// 1. Actually executes the tool (not just checks if it exists)
-/// 2. Exits with code 0 on success
-/// 3. Exits with code 127 if tool not found
-/// 4. Exits with non-zero if tool is broken/misconfigured
-///
-/// Most tools support --version which is perfect for verification.
-fn get_tool_validation_command(tool: &str) -> String {
-    match tool {
-        // Installation tools - most support --help
-        "recstrap" | "recfstab" | "recchroot" => {
-            format!("{} --help >/dev/null 2>&1", tool)
-        }
+enum ToolCheck {
+    Works,
+    Missing,
+    Broken(i32),
+}
 
-        // Partitioning/filesystem tools
-        "sfdisk" => "sfdisk --version >/dev/null 2>&1".to_string(),
-        "mkfs.ext4" => "mkfs.ext4 -V 2>&1 | head -1 >/dev/null".to_string(),
-        "parted" => "parted --version >/dev/null 2>&1".to_string(),
-        "sgdisk" => "sgdisk --version >/dev/null 2>&1".to_string(),
-
-        // Mount is special - just verify it's callable
-        "mount" | "umount" => format!("{} --version >/dev/null 2>&1", tool),
-
-        // Network tools
-        "ip" => "ip link show >/dev/null 2>&1".to_string(),
-        "ping" => {
-            "ping -h >/dev/null 2>&1 || ping --help >/dev/null 2>&1 || ping -V >/dev/null 2>&1"
-                .to_string()
-        }
-        "curl" => "curl --version >/dev/null 2>&1".to_string(),
-
-        // Hardware diagnostics
-        "lspci" => "lspci --version >/dev/null 2>&1".to_string(),
-        "lsusb" => "lsusb --version >/dev/null 2>&1".to_string(),
-        "smartctl" => "smartctl --version >/dev/null 2>&1".to_string(),
-        "hdparm" => "hdparm -V >/dev/null 2>&1".to_string(),
-        "sg_inq" => "sg_inq --version >/dev/null 2>&1".to_string(),
-        "nvme" => "nvme version >/dev/null 2>&1".to_string(),
-        "dmidecode" => "dmidecode --version >/dev/null 2>&1".to_string(),
-        "ethtool" => "ethtool --version >/dev/null 2>&1".to_string(),
-
-        // Editors and pagers
-        "vim" => "vim --version >/dev/null 2>&1".to_string(),
-        "vi" => "vi -h 2>&1 | head -1 >/dev/null".to_string(),
-        "less" => "less --help >/dev/null 2>&1 || less -V >/dev/null 2>&1".to_string(),
-
-        // System utilities
-        "htop" => "htop --version >/dev/null 2>&1".to_string(),
-        "grep" => "echo x | grep x >/dev/null 2>&1".to_string(),
-        "find" => "find / -maxdepth 0 >/dev/null 2>&1".to_string(),
-        "sed" => "sed --version >/dev/null 2>&1".to_string(),
-        "awk" | "gawk" => "awk --version >/dev/null 2>&1".to_string(),
-
-        // SSH and privilege escalation. OpenDoas has no --version option.
-        "ssh" => "ssh -V 2>&1 >/dev/null".to_string(),
-        "sudo" => "sudo --version >/dev/null 2>&1".to_string(),
-        "doas" => "doas -C /etc/doas.conf >/dev/null 2>&1".to_string(),
-
-        // Shell and basic tools (busybox applets)
-        "ash" | "bash" | "sh" => format!("{} --version >/dev/null 2>&1", tool),
-        "cat" | "ls" | "ps" | "dmesg" => {
-            format!("{} --version >/dev/null 2>&1 || true", tool)
-        }
-
-        // Unknown tool - try generic --version
-        _ => format!("{} --version >/dev/null 2>&1", tool),
+/// Check that `tool` is on PATH (`command -v`) and runs: its known harmless
+/// invocation must exit 0. `exec` runs a command in the guest and returns
+/// its exit status.
+fn check_tool(tool: &str, mut exec: impl FnMut(&str) -> Result<i32>) -> Result<ToolCheck> {
+    if exec(&format!("command -v {tool} >/dev/null"))? != 0 {
+        return Ok(ToolCheck::Missing);
     }
+    let Some(run) = tool_run_command(tool) else {
+        return Ok(ToolCheck::Works);
+    };
+    Ok(match exec(&format!("{{ {run}; }} >/dev/null 2>&1"))? {
+        0 => ToolCheck::Works,
+        code => ToolCheck::Broken(code),
+    })
+}
+
+/// A harmless invocation of `tool` that exits 0 when it works (missing
+/// libraries, broken binaries fail), or `None` when the tool has no such
+/// invocation and presence on PATH is the check (busybox `vi`).
+fn tool_run_command(tool: &str) -> Option<String> {
+    Some(match tool {
+        "recpart" | "recstrap" | "recfstab" | "recchroot" => format!("{tool} --help"),
+        "mkfs.ext4" => "mkfs.ext4 -V".to_string(),
+        "nvme" => "nvme version".to_string(),
+        "hdparm" => "hdparm -V".to_string(),
+        "ip" => "ip link show".to_string(),
+        "ping" => "ping -V || ping -h || ping --help".to_string(),
+        "less" => "less --help || less -V".to_string(),
+        "grep" => "echo x | grep x".to_string(),
+        "find" => "find / -maxdepth 0".to_string(),
+        "ssh" => "ssh -V".to_string(),
+        // OpenDoas has no --version option.
+        "doas" => "doas -C /etc/doas.conf".to_string(),
+        "sh" | "ash" => format!("{tool} -c true"),
+        "cat" => "cat /dev/null".to_string(),
+        "ls" => "ls /".to_string(),
+        "ps" => "ps".to_string(),
+        "dmesg" => "dmesg".to_string(),
+        "vi" => return None,
+        _ => format!("{tool} --version"),
+    })
 }
 
 fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {

@@ -1,169 +1,129 @@
-//! Shared QEMU session helpers for spawning live and installed system VMs.
-//!
-//! Eliminates duplicated QEMU setup code across scenario runners and install-tests binaries.
+//! The QEMU VMs the scenarios boot: one spawn function, and a session that
+//! stops its VM when dropped (so no error path leaks QEMU).
 
 use crate::boot_injection::boot_injection_from_env;
-use crate::distro::DistroContext;
 use crate::qemu::Console;
-use recqemu::QemuBuilder;
 use anyhow::{Context, Result};
+use recqemu::QemuBuilder;
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::time::Duration;
-
-/// Set up OVMF firmware and writable vars copy at a caller-provided path.
-/// Returns (ovmf_code, ovmf_vars_copy).
-pub fn setup_ovmf_vars_at(ovmf_vars_path: &Path) -> Result<(PathBuf, PathBuf)> {
-    let ovmf = recqemu::find_ovmf()?;
-    let ovmf_vars_template = recqemu::find_ovmf_vars()?;
-    if let Some(parent) = ovmf_vars_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating scenario runtime dir '{}'", parent.display()))?;
-    }
-    if ovmf_vars_path.exists() {
-        std::fs::remove_file(ovmf_vars_path)?;
-    }
-    std::fs::copy(&ovmf_vars_template, ovmf_vars_path)?;
-    Ok((ovmf, ovmf_vars_path.to_path_buf()))
-}
-
-/// Spawn a QEMU VM booting from a live ISO (no disk attached).
-pub fn spawn_live(_ctx: &dyn DistroContext, iso_path: &Path) -> Result<(Child, Console)> {
-    let (child, console, _) = spawn_live_with_ssh(_ctx, iso_path)?;
-    Ok((child, console))
-}
-
-/// Spawn a live ISO VM with host-side SSH forwarding enabled.
-///
-/// Returns the forwarded host port mapped to guest tcp/22.
-pub fn spawn_live_with_ssh(
-    _ctx: &dyn DistroContext,
-    iso_path: &Path,
-) -> Result<(Child, Console, u16)> {
-    let ovmf = recqemu::find_ovmf()?;
-    let ssh_host_port = allocate_local_port()?;
-
-    let builder = QemuBuilder::new()
-        .nodefaults()
-        .cdrom(iso_path)
-        .cdrom_as_disk()
-        .uefi(ovmf)
-        .user_network_with_hostfwd(ssh_host_port, GUEST_SSH_PORT)
-        .nographic()
-        .serial_stdio()
-        .no_reboot();
-    let mut cmd = with_boot_injection(builder)?.build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
-    Ok((child, console, ssh_host_port))
-}
-
-/// Spawn a QEMU VM booting from a live ISO with a disk attached (for installation).
-pub fn spawn_live_with_disk(
-    iso_path: &Path,
-    disk_path: &Path,
-    ovmf: &Path,
-    ovmf_vars: &Path,
-) -> Result<(Child, Console)> {
-    let builder = QemuBuilder::new()
-        .nodefaults()
-        .cdrom(iso_path)
-        .cdrom_as_disk()
-        .disk(disk_path.to_path_buf())
-        .uefi(ovmf.to_path_buf())
-        .uefi_vars(ovmf_vars.to_path_buf())
-        .boot_order("dc")
-        .user_network()
-        .nographic()
-        .serial_stdio()
-        .no_reboot();
-    let mut cmd = with_boot_injection(builder)?.build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
-    Ok((child, console))
-}
-
-/// Spawn a QEMU VM booting from a live ISO with a disk attached and SSH forwarding.
-///
-/// Returns the forwarded host port mapped to guest tcp/22.
-pub fn spawn_live_with_disk_with_ssh(
-    iso_path: &Path,
-    disk_path: &Path,
-    ovmf: &Path,
-    ovmf_vars: &Path,
-) -> Result<(Child, Console, u16)> {
-    let ssh_host_port = allocate_local_port()?;
-
-    let builder = QemuBuilder::new()
-        .nodefaults()
-        .cdrom(iso_path)
-        .cdrom_as_disk()
-        .disk(disk_path.to_path_buf())
-        .uefi(ovmf.to_path_buf())
-        .uefi_vars(ovmf_vars.to_path_buf())
-        .boot_order("dc")
-        .user_network_with_hostfwd(ssh_host_port, GUEST_SSH_PORT)
-        .nographic()
-        .serial_stdio()
-        .no_reboot();
-    let mut cmd = with_boot_injection(builder)?.build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
-    Ok((child, console, ssh_host_port))
-}
-
-/// Spawn a QEMU VM booting from an installed disk (no ISO).
-pub fn spawn_installed(
-    disk_path: &Path,
-    ovmf: &Path,
-    ovmf_vars: &Path,
-) -> Result<(Child, Console)> {
-    let builder = QemuBuilder::new()
-        .nodefaults()
-        .disk(disk_path)
-        .uefi(ovmf.to_path_buf())
-        .uefi_vars(ovmf_vars.to_path_buf())
-        .boot_order("c")
-        .user_network()
-        .nographic()
-        .serial_stdio()
-        .no_reboot();
-    let mut cmd = with_boot_injection(builder)?.build_piped();
-
-    let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
-    let console = Console::new(&mut child)?;
-    std::thread::sleep(Duration::from_secs(2));
-    Ok((child, console))
-}
-
-fn with_boot_injection(builder: QemuBuilder) -> Result<QemuBuilder> {
-    let Some(injection) = boot_injection_from_env()? else {
-        return Ok(builder);
-    };
-    let mut configured = builder.fw_cfg_file(&injection.fw_cfg_name, injection.payload_file);
-    if let Some(media_iso_file) = injection.media_iso_file {
-        configured = configured.extra_cdrom(media_iso_file);
-    }
-    Ok(configured)
-}
 
 /// The guest's sshd port.
 const GUEST_SSH_PORT: u16 = 22;
 
+/// What to boot.
+#[derive(Default)]
+pub struct VmSpec<'a> {
+    /// Live ISO to boot from (first in the boot order).
+    pub iso: Option<&'a Path>,
+    /// Disk to install to or boot from.
+    pub disk: Option<&'a Path>,
+    /// Writable UEFI variable store (persists boot entries).
+    pub ovmf_vars: Option<&'a Path>,
+    /// Forward a host port to the guest's sshd.
+    pub ssh: bool,
+}
+
+/// A running VM; dropping it stops QEMU.
+pub struct Vm {
+    child: Child,
+    pub console: Console,
+    /// Host port forwarded to the guest's sshd, when requested.
+    pub ssh_port: Option<u16>,
+}
+
+impl Drop for Vm {
+    fn drop(&mut self) {
+        // The VM is being discarded; a kill/wait error leaves nothing to do.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Vm {
+    /// The forwarded SSH port; the spec must have asked for one.
+    pub fn ssh_port(&self) -> Result<u16> {
+        self.ssh_port.context("this VM was started without SSH forwarding")
+    }
+}
+
+/// Boot a VM with serial on piped stdio (UEFI, headless, no reboot), plus
+/// the boot injection from the environment, if any.
+pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
+    let mut builder = QemuBuilder::new()
+        .nodefaults()
+        .uefi(recqemu::find_ovmf()?)
+        .nographic()
+        .serial_stdio()
+        .no_reboot();
+    if let Some(iso) = spec.iso {
+        builder = builder.cdrom(iso).cdrom_as_disk();
+    }
+    if let Some(disk) = spec.disk {
+        builder = builder
+            .disk(disk)
+            .boot_order(if spec.iso.is_some() { "dc" } else { "c" });
+    }
+    if let Some(vars) = spec.ovmf_vars {
+        builder = builder.uefi_vars(vars);
+    }
+    let ssh_port = if spec.ssh {
+        let port = allocate_local_port()?;
+        builder = builder.user_network_with_hostfwd(port, GUEST_SSH_PORT);
+        Some(port)
+    } else {
+        builder = builder.user_network();
+        None
+    };
+    if let Some(injection) = boot_injection_from_env()? {
+        builder = builder.fw_cfg_file(&injection.fw_cfg_name, injection.payload_file);
+        if let Some(media_iso_file) = injection.media_iso_file {
+            builder = builder.extra_cdrom(media_iso_file);
+        }
+    }
+
+    let mut child = builder.build_piped().spawn().context("Failed to spawn QEMU")?;
+    let console = match Console::new(&mut child) {
+        Ok(console) => console,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+    };
+    Ok(Vm {
+        child,
+        console,
+        ssh_port,
+    })
+}
+
+/// Copy the OVMF variable-store template to `ovmf_vars_path` (replacing it).
+pub fn setup_ovmf_vars_at(ovmf_vars_path: &Path) -> Result<PathBuf> {
+    let template = recqemu::find_ovmf_vars()?;
+    if let Some(parent) = ovmf_vars_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating scenario runtime dir '{}'", parent.display()))?;
+    }
+    fs::copy(&template, ovmf_vars_path).with_context(|| {
+        format!(
+            "copying {} to {}",
+            template.display(),
+            ovmf_vars_path.display()
+        )
+    })?;
+    Ok(ovmf_vars_path.to_path_buf())
+}
+
+/// A free local port for the SSH forward. QEMU binds it right after, so
+/// another process could take it in between; QEMU then fails to start.
 fn allocate_local_port() -> Result<u16> {
-    let listener = TcpListener::bind((recqemu::HOSTFWD_ADDRESS, 0)).context("allocating local tcp port for SSH forward")?;
-    let port = listener
+    let listener = TcpListener::bind((recqemu::HOSTFWD_ADDRESS, 0))
+        .context("allocating local tcp port for SSH forward")?;
+    Ok(listener
         .local_addr()
         .context("reading allocated local tcp port")?
-        .port();
-    drop(listener);
-    Ok(port)
+        .port())
 }
