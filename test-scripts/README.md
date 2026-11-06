@@ -177,7 +177,7 @@ These scripts are automatically installed on every ISO during the build process:
 - **Source:** `testing/install-tests/test-scripts/`
 - **Destination (on ISO):** `/usr/local/bin/*.sh`
 - **Libraries:** `/usr/local/lib/scenario-tests/`
-- **Canonical installer:** `distro-builder/src/pipeline/scripts.rs`
+- **Canonical installer:** `distro/builder/src/pipeline/scripts.rs`
 
 ## CI/Automation
 
