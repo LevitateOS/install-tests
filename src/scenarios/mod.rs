@@ -16,13 +16,13 @@
 pub mod state;
 
 mod install;
-use crate::distro::{context_for_distro, load_installed_scenario_facts, DistroContext};
+use crate::distro::{context_for_distro, load_installed_scenario_facts, load_scenarios, DistroContext};
 use crate::preflight::require_preflight_with_iso_for_distro;
 use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use distro_contract::{load_variant_contract_for_distro_from, RootfsMutability};
+use distro_contract::RootfsMutability;
 use recpart::InstallMode;
 use recshuttle::Remote;
 use distro_builder::live_ux::{
@@ -136,12 +136,6 @@ struct ReleaseRunManifest {
     iso_path: Option<String>,
     target_kind: Option<String>,
     target_name: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct ScenarioEvidenceSpec {
-    script_path: String,
-    pass_marker: String,
 }
 
 #[derive(Debug, Clone)]
@@ -330,7 +324,7 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 
 /// Live Boot scenario — ISO boots in QEMU.
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let live_boot_evidence = load_live_boot_evidence_spec(ctx.id())?;
+    let live_boot_evidence = load_scenarios(ctx.id())?.live_boot.evidence;
     let mut vm = session::spawn(VmSpec {
         iso: Some(iso_path),
         ssh: true,
@@ -343,12 +337,11 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    run_scenario_script_over_ssh(
-        ssh_host_port,
-        &installed_script_path(&live_boot_evidence.script_path),
-        Some(&live_boot_evidence.pass_marker),
+    evidence_over_ssh(ssh_host_port, &live_boot_evidence)?;
+    Remote::new(ssh_host_port).run(
+        "live-boot SSH preflight",
+        &install::shell_quote(LIVE_BOOT_SSH_PREFLIGHT_SCRIPT),
     )?;
-    run_scenario_script_over_ssh(ssh_host_port, LIVE_BOOT_SSH_PREFLIGHT_SCRIPT, None)?;
 
     Ok(
         "Boot markers detected + SSH login probe passed + live-boot script checks passed"
@@ -372,7 +365,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     wait_for_live_tools_serial_readiness(console, ctx)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    let required_tools = crate::distro::load_scenarios(ctx.id())?.live_tools.required_tools;
+    let required_tools = load_scenarios(ctx.id())?.live_tools.required_tools;
     let tools: Vec<&str> = required_tools.iter().map(String::as_str).collect();
     let mut missing = Vec::new();
     let mut found = Vec::new();
@@ -411,7 +404,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         bail!("{}", error_msg.trim());
     }
 
-    let expected = crate::distro::load_scenarios(ctx.id())?.live_tools.install_experience;
+    let expected = load_scenarios(ctx.id())?.live_tools.install_experience;
     let remote = Remote::new(ssh_host_port);
     let marker = remote.run(
         "reading the install-experience marker",
@@ -437,6 +430,10 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         ux_split_evidence = Some(verify_install_ux_split_behavior(&remote)?);
     }
 
+    let script_evidence = evidence_over_ssh(
+        ssh_host_port,
+        &load_scenarios(ctx.id())?.live_tools.evidence,
+    )?;
     let install_profile_evidence = match ux_split_evidence {
         Some(evidence) => format!(
             "install profile '{}' verified; {}",
@@ -451,7 +448,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         found.join(", "),
         install_profile_evidence,
         overlay_evidence
-    ))
+    ) + &format!("; {script_evidence}"))
 }
 
 fn wait_for_live_tools_serial_readiness(
@@ -503,6 +500,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
             uses_initramfs: ctx.uses_initramfs(),
         };
         let (target, step_count) = install::install(&remote, ctx, &system)?;
+        evidence_over_ssh(ssh_host_port, &load_scenarios(ctx.id())?.install.evidence)?;
 
         let mut verify = vec![
             ("Root filesystem", format!("test -f {target}/etc/os-release")),
@@ -619,9 +617,13 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     console.login("root", &default_password(ctx)?, LOGIN_TIMEOUT)?;
 
     let result = console.exec("echo SCENARIO_LOGIN_OK", COMMAND_TIMEOUT)?;
+    let script_evidence = evidence_on_console(
+        console,
+        &load_scenarios(ctx.id())?.automated_login.evidence,
+    )?;
 
     if result.output.contains("SCENARIO_LOGIN_OK") {
-        Ok("Login succeeded, shell functional".to_string())
+        Ok(format!("Login succeeded, shell functional; {script_evidence}"))
     } else {
         bail!(
             "Login succeeded but shell not functional. Got: {}",
@@ -667,7 +669,11 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
         );
     }
 
-    Ok(format!("All {} daily driver tools present", found.len()))
+    let script_evidence = evidence_on_console(console, &facts.installed_tools.evidence)?;
+    Ok(format!(
+        "All {} daily driver tools present; {script_evidence}",
+        found.len()
+    ))
 }
 
 pub fn resolve_iso_artifact_for_scenario(
@@ -886,30 +892,44 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
     report
 }
 
-fn run_scenario_script_over_ssh(
-    ssh_host_port: u16,
-    script_path: &str,
-    pass_marker: Option<&str>,
-) -> Result<()> {
-    let remote_cmd = match pass_marker {
-        Some(pass_marker) => format!(
-            "SCENARIO_PASS_MARKER={} {}",
-            install::shell_quote(pass_marker),
-            install::shell_quote(script_path)
-        ),
-        None => install::shell_quote(script_path),
-    };
-    let result = Remote::new(ssh_host_port).exec(&remote_cmd)?;
-    if result.exit_code == 0 {
-        return Ok(());
+/// Run a scenario's evidence script (installed in the image) through `exec`,
+/// which runs a guest command and returns its exit status and output; the
+/// script must exit 0 and print its pass marker.
+fn run_evidence(
+    evidence: &distro_contract::ScriptEvidence,
+    mut exec: impl FnMut(&str) -> Result<(i32, String)>,
+) -> Result<String> {
+    let path = installed_script_path(&evidence.script_path);
+    let (code, output) = exec(&format!(
+        "SCENARIO_PASS_MARKER={} {}",
+        install::shell_quote(&evidence.pass_marker),
+        install::shell_quote(&path)
+    ))?;
+    if code != 0 || !output.contains(&evidence.pass_marker) {
+        bail!(
+            "evidence script {path} failed (exit {code}, pass marker {}):\n{}",
+            if output.contains(&evidence.pass_marker) { "printed" } else { "missing" },
+            output.trim()
+        );
     }
+    Ok(format!("{} passed", evidence.script_path))
+}
 
-    bail!(
-        "Scenario script '{}' failed over SSH (exit {}):\n{}",
-        script_path,
-        result.exit_code,
-        result.output.trim()
-    );
+/// `run_evidence` over SSH.
+fn evidence_over_ssh(ssh_host_port: u16, evidence: &distro_contract::ScriptEvidence) -> Result<String> {
+    let remote = Remote::new(ssh_host_port);
+    run_evidence(evidence, |cmd| {
+        let out = remote.exec(cmd)?;
+        Ok((out.exit_code, out.output))
+    })
+}
+
+/// `run_evidence` on the serial console.
+fn evidence_on_console(console: &mut Console, evidence: &distro_contract::ScriptEvidence) -> Result<String> {
+    run_evidence(evidence, |cmd| {
+        let out = console.exec(cmd, EVIDENCE_TIMEOUT)?;
+        Ok((out.exit_code, out.output))
+    })
 }
 
 fn verify_install_ux_split_behavior(remote: &Remote) -> Result<String> {
@@ -1136,15 +1156,6 @@ fn installed_script_path(script_filename: &str) -> String {
     format!("/usr/local/bin/{script_filename}")
 }
 
-fn load_live_boot_evidence_spec(distro_id: &str) -> Result<ScenarioEvidenceSpec> {
-    let contract = load_variant_contract_for_distro_from(&workspace_root(), distro_id)
-        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
-    Ok(ScenarioEvidenceSpec {
-        script_path: contract.scenarios.live_boot.evidence.script_path,
-        pass_marker: contract.scenarios.live_boot.evidence.pass_marker,
-    })
-}
-
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         anyhow::anyhow!(
@@ -1207,6 +1218,7 @@ fn verify_live_overlay_behavior(console: &mut Console) -> Result<String> {
 const INSTALLED_BOOT_STALL: Duration = Duration::from_secs(90);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The variant's default root password for automated logins.
 fn default_password(ctx: &dyn DistroContext) -> Result<String> {
