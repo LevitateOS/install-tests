@@ -27,10 +27,8 @@ use distro_contract::RootfsMutability;
 use recpart::InstallMode;
 use recshuttle::Remote;
 use distro_builder::live_ux::{
-    INSTALL_ENTRYPOINT, INSTALL_EXPERIENCE_MARKER, INSTALL_UX_PROFILE, PROBE_PREFIX, SMOKE_ENV,
-    SPLIT_HELPER, SPLIT_SMOKE_OK,
+    INSTALL_ENTRYPOINT, INSTALL_UX_PROFILE, PROBE_PREFIX, SMOKE_ENV, SPLIT_HELPER, SPLIT_SMOKE_OK,
 };
-use distro_contract::InstallExperience;
 use crate::qemu::session::VmSpec;
 use crate::repo_root;
 use distro_builder::run_history;
@@ -437,44 +435,23 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         bail!("{}", error_msg.trim());
     }
 
-    let expected = load_scenarios(ctx.id())?.live_tools.install_experience;
     let remote = Remote::new(ssh_host_port);
-    let marker = remote.run(
-        "reading the install-experience marker",
-        &format!("cat /{INSTALL_EXPERIENCE_MARKER}"),
-    )?;
-    let actual_install_experience = marker.lines().next().unwrap_or("").trim().to_string();
-    if actual_install_experience != expected.as_str() {
-        bail!(
-            "install-experience mismatch: expected '{}', found '{actual_install_experience}'",
-            expected.as_str()
-        );
-    }
     remote.run(
         "checking the install entrypoint",
         &format!("test -x /{INSTALL_ENTRYPOINT}"),
     )?;
-    let mut ux_split_evidence: Option<String> = None;
-    if expected == InstallExperience::Ux {
-        remote.run(
-            "checking the install UX profile hook",
-            &format!("test -r /{INSTALL_UX_PROFILE}"),
-        )?;
-        ux_split_evidence = Some(verify_install_ux_split_behavior(&remote)?);
-    }
+    remote.run(
+        "checking the install UX profile hook",
+        &format!("test -r /{INSTALL_UX_PROFILE}"),
+    )?;
+    let ux_split_evidence = verify_install_ux_split_behavior(&remote)?;
 
     let script_evidence = evidence_over_ssh(
         ssh_host_port,
         &load_scenarios(ctx.id())?.live_tools.evidence,
         &[],
     )?;
-    let install_profile_evidence = match ux_split_evidence {
-        Some(evidence) => format!(
-            "install profile '{}' verified; {}",
-            actual_install_experience, evidence
-        ),
-        None => format!("install profile '{}' verified", actual_install_experience),
-    };
+    let install_profile_evidence = format!("install UX verified; {ux_split_evidence}");
 
     Ok(format!(
         "All {} tools verified working (actually executed): {}; {}; {}",
