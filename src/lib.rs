@@ -2,7 +2,7 @@
 //!
 //! This library provides the shared infrastructure for installation testing:
 //! - QEMU backends (serial and QMP)
-//! - Test steps for each installation phase
+//! - Named install-test scenarios (`scenarios`)
 //! - Distro context for multi-distro support
 //! - Executor trait for abstracting I/O backends
 //!
@@ -20,7 +20,6 @@ pub mod executor;
 pub mod preflight;
 pub mod qemu;
 pub mod scenarios;
-pub mod steps;
 
 // Re-export commonly used items
 pub use boot_injection::{
@@ -36,10 +35,6 @@ pub use preflight::{
 pub use qemu::{
     acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, Console,
     QemuBuilder, SerialExecutorExt,
-};
-pub use steps::{
-    all_steps, all_steps_with_experimental, steps_for_phase, steps_for_phase_experimental,
-    CheckResult, CommandLog, Step, StepResult,
 };
 
 pub fn enforce_policy_guard(entrypoint: &str) -> Result<()> {

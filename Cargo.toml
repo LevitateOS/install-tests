@@ -11,10 +11,6 @@ default-run = "scenarios"
 path = "src/lib.rs"
 
 [[bin]]
-name = "install-tests"
-path = "src/bin/install-tests.rs"
-
-[[bin]]
 name = "qmp"
 path = "src/bin/qmp.rs"
 
@@ -34,6 +30,7 @@ distro-builder = { path = "../../distro-builder" }
 leviso-cheat-guard = { path = "../cheat-guard" }
 recqemu = { path = "../../tools/recqemu" }
 recshuttle = { path = "../../tools/recshuttle" }
+recpart = { path = "../../tools/recpart" }
 fsdbg = { path = "../fsdbg" }
 libc = "0.2"
 toml = "0.8"

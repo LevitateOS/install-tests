@@ -15,6 +15,7 @@
 
 pub mod state;
 
+mod install;
 use crate::distro::{context_for_distro, load_installed_scenario_facts, DistroContext};
 use crate::preflight::require_preflight_with_iso_for_distro;
 use crate::qemu::session;
@@ -22,7 +23,8 @@ use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use distro_contract::{load_variant_contract_for_distro_from, RootfsMutability};
-use recshuttle::{InstallLayout, InstallPlanSpec, RemoteInstallerService, SshExecOutput};
+use recpart::InstallMode;
+use recshuttle::Remote;
 use serde::{Deserialize, Serialize};
 use state::ScenarioState;
 use std::fs;
@@ -372,7 +374,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
             // Get the validation command for this tool
             let validation_cmd = get_tool_validation_command(tool);
 
-            let result = ssh_exec(ssh_host_port, &validation_cmd)?;
+            let result = Remote::new(ssh_host_port).exec(&validation_cmd)?;
             if result.exit_code == 0 {
                 // Tool executed successfully - it works!
                 found.push(*tool);
@@ -430,7 +432,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
                 )
             })?;
         let install_experience_marker =
-            ssh_exec(ssh_host_port, "cat /usr/lib/levitate/install-experience")
+            Remote::new(ssh_host_port).exec("cat /usr/lib/levitate/install-experience")
                 .with_context(|| "reading install-experience marker".to_string())?;
         if install_experience_marker.exit_code != 0 {
             bail!(
@@ -453,9 +455,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
             );
         }
 
-        let entrypoint_check = ssh_exec(
-            ssh_host_port,
-            "test -x /usr/local/bin/levitate-install-entrypoint",
+        let entrypoint_check = Remote::new(ssh_host_port).exec("test -x /usr/local/bin/levitate-install-entrypoint",
         )
         .with_context(|| "checking install entrypoint script presence".to_string())?;
         if entrypoint_check.exit_code != 0 {
@@ -465,7 +465,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
         }
         let mut ux_split_evidence: Option<String> = None;
         if expected_install_experience == "ux" {
-            let ux_hook_check = ssh_exec(ssh_host_port, "test -r /etc/profile.d/30-install-ux.sh")
+            let ux_hook_check = Remote::new(ssh_host_port).exec("test -r /etc/profile.d/30-install-ux.sh")
                 .with_context(|| "checking install UX profile hook presence".to_string())?;
             if ux_hook_check.exit_code != 0 {
                 bail!("missing install UX profile hook at /etc/profile.d/30-install-ux.sh");
@@ -531,103 +531,78 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     let (mut child, mut console, ssh_host_port) =
         session::spawn_live_with_disk_with_ssh(iso_path, &disk_path, &ovmf, &ovmf_vars)?;
 
-    // Install runs through the remote installer service channel (SSH),
-    // not through serial console command execution. We still wait for live boot
-    // markers to drain serial output and establish a deterministic ready boundary.
-    let installer = RemoteInstallerService::new(ssh_host_port);
+    // The installation runs over SSH; the serial console only marks the
+    // boot boundary.
+    let remote = Remote::new(ssh_host_port);
     let install_result = (|| -> Result<usize> {
         console.wait_for_live_boot_with_context(
             Duration::from_secs(ctx.live_boot_stall_timeout_secs()),
             ctx,
         )?;
-        installer.wait_ready(Duration::from_secs(ctx.live_boot_stall_timeout_secs()))?;
+        remote.wait_ready(Duration::from_secs(ctx.live_boot_stall_timeout_secs()))?;
 
-        let install_disk = installer.resolve_install_disk()?;
         let installed_facts = load_installed_scenario_facts(ctx.id())?;
-        let install_layout = install_layout_for_distro(ctx.id())?;
-        let install_spec = InstallPlanSpec {
-            distro_id: ctx.id().to_string(),
-            os_name: ctx.name().to_string(),
-            default_hostname: ctx.default_hostname().to_string(),
-            default_password: installed_facts
-                .automated_login
-                .default_password
-                .clone()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "missing canonical automated-login default_password for '{}'",
-                        ctx.id()
-                    )
-                })?,
-            install_bootloader_cmd: ctx.install_bootloader_cmd().to_string(),
-            enable_serial_getty_cmd: ctx.enable_serial_getty_cmd(),
-            include_initramfs: ctx.init_system_name() != "OpenRC",
+        let root_password = installed_facts
+            .automated_login
+            .default_password
+            .clone()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing canonical automated-login default_password for '{}'",
+                    ctx.id()
+                )
+            })?;
+        let system = install::TestSystem {
+            mode: install_mode_for_distro(ctx.id())?,
+            root_password: &root_password,
+            uses_initramfs: ctx.init_system_name() != "OpenRC",
         };
-        let install_cmds =
-            recshuttle::install_commands_for(&install_spec, &install_disk, install_layout);
-        let step_count = installer.run_install_plan(&install_cmds)?;
+        let (target, step_count) = install::install(&remote, ctx, &system)?;
 
         // Verify key artifacts exist
-        let include_initramfs = ctx.init_system_name() != "OpenRC";
-        let mut verify_cmds = vec![
-            ("Root filesystem", "ls /mnt/sysroot/bin/busybox".to_string()),
-            ("Boot partition", "ls /mnt/sysroot/boot/EFI".to_string()),
-            ("Kernel on ESP", "ls /mnt/sysroot/boot/vmlinuz".to_string()),
+        let mut verify = vec![
+            ("Root filesystem", format!("ls {target}/bin/busybox")),
+            ("Boot partition", format!("ls {target}/boot/EFI")),
+            ("Kernel on ESP", format!("ls {target}/boot/vmlinuz")),
+            ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
+            ("fstab root entry", format!("awk '$2==\"/\" {{ok=1}} END{{exit(ok?0:1)}}' {target}/etc/fstab")),
         ];
-        if include_initramfs {
-            verify_cmds.push((
-                "Initramfs on ESP",
-                "ls /mnt/sysroot/boot/initramfs.img".to_string(),
-            ));
+        if system.uses_initramfs {
+            verify.push(("Initramfs on ESP", format!("ls {target}/boot/initramfs.img")));
         }
-        verify_cmds.push((
-            "systemd-boot loader config",
-            "cat /mnt/sysroot/boot/loader/loader.conf".to_string(),
-        ));
-        match install_layout {
-            InstallLayout::MutableSingleRoot => {
-                verify_cmds.push((
-                    "systemd-boot entry",
-                    format!("cat /mnt/sysroot/boot/loader/entries/{}.conf", ctx.id()),
-                ));
-            }
-            InstallLayout::ImmutableAb => {
-                verify_cmds.push((
+        match system.mode {
+            InstallMode::Mutable => verify.push((
+                "systemd-boot entry",
+                format!("cat {target}/boot/loader/entries/{}.conf", ctx.id()),
+            )),
+            InstallMode::Ab => {
+                verify.push((
                     "systemd-boot entry slot A",
-                    format!("cat /mnt/sysroot/boot/loader/entries/{}-a.conf", ctx.id()),
+                    format!("cat {target}/boot/loader/entries/{}-a.conf", ctx.id()),
                 ));
-                verify_cmds.push((
+                verify.push((
                     "systemd-boot entry slot B",
-                    format!("cat /mnt/sysroot/boot/loader/entries/{}-b.conf", ctx.id()),
+                    format!("cat {target}/boot/loader/entries/{}-b.conf", ctx.id()),
                 ));
             }
         }
-        verify_cmds.push(("fstab", "cat /mnt/sysroot/etc/fstab".to_string()));
-        verify_cmds.extend(recshuttle::runtime_policy_checks_for_install(
-            ctx.id(),
-            install_layout,
-            &install_disk,
-        ));
-        installer.verify_checks(&verify_cmds)?;
-        installer.run_install_plan(&[
-            ("Sync filesystem", "sync".to_string()),
-            (
-                "Unmount install target",
-                "umount -R /mnt/sysroot".to_string(),
-            ),
-        ])?;
+        verify.push(("Sync filesystem", "sync".to_string()));
+        verify.push(("Unmount install target", format!("umount -R {target}")));
+        for (what, cmd) in &verify {
+            remote.run(what, cmd)?;
+        }
 
         Ok(step_count)
     })();
 
-    let _ = installer.shutdown();
+    remote.power_off();
     let _ = child.kill();
     let _ = child.wait();
 
     match install_result {
         Ok(step_count) => {
             let evidence = format!(
-                "{} install steps completed + verified via remote installer service",
+                "{} install steps completed + verified over SSH",
                 step_count
             );
             scenario_run.finish_success(
@@ -925,26 +900,12 @@ fn spawn_live_qemu_with_ssh(
 }
 
 fn verify_live_boot_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
-    let mut last_err = String::new();
-    for _ in 0..60 {
-        let out = ssh_exec(ssh_host_port, "echo __SSH_LOGIN_OK__");
-        match out {
-            Ok(result) if result.exit_code == 0 && result.output.contains("__SSH_LOGIN_OK__") => {
-                return Ok(());
-            }
-            Ok(result) => last_err = result.output,
-            Err(err) => last_err = format!("{err:#}"),
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    }
-
-    let diagnostics = collect_live_boot_ssh_diagnostics(console);
-    bail!(
-        "live-boot SSH login probe failed after shell-ready boundary (forwarded port {}). Last output:\n{}\n\n{}",
-        ssh_host_port,
-        last_err,
-        diagnostics
-    );
+    Remote::new(ssh_host_port)
+        .wait_ready(Duration::from_secs(60))
+        .map_err(|err| {
+            let diagnostics = collect_live_boot_ssh_diagnostics(console);
+            anyhow::anyhow!("live-boot SSH login probe failed after shell-ready boundary: {err:#}\n\n{diagnostics}")
+        })
 }
 
 fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
@@ -1017,15 +978,6 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
     report
 }
 
-fn ssh_exec(ssh_host_port: u16, remote_cmd: &str) -> Result<SshExecOutput> {
-    recshuttle::ssh_exec_default_key(ssh_host_port, remote_cmd).with_context(|| {
-        format!(
-            "running host SSH command against forwarded live SSH port {}",
-            ssh_host_port
-        )
-    })
-}
-
 fn run_scenario_script_over_ssh(
     ssh_host_port: u16,
     script_path: &str,
@@ -1034,12 +986,12 @@ fn run_scenario_script_over_ssh(
     let remote_cmd = match pass_marker {
         Some(pass_marker) => format!(
             "SCENARIO_PASS_MARKER={} {}",
-            shell_single_quote(pass_marker),
-            shell_single_quote(script_path)
+            install::shell_quote(pass_marker),
+            install::shell_quote(script_path)
         ),
-        None => shell_single_quote(script_path),
+        None => install::shell_quote(script_path),
     };
-    let result = ssh_exec(ssh_host_port, &remote_cmd)?;
+    let result = Remote::new(ssh_host_port).exec(&remote_cmd)?;
     if result.exit_code == 0 {
         return Ok(());
     }
@@ -1052,14 +1004,8 @@ fn run_scenario_script_over_ssh(
     );
 }
 
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 fn verify_install_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
-    let probe = ssh_exec(
-        ssh_host_port,
-        "/usr/local/bin/levitate-install-entrypoint --probe",
+    let probe = Remote::new(ssh_host_port).exec("/usr/local/bin/levitate-install-entrypoint --probe",
     )
     .with_context(|| "probing install UX helper selection".to_string())?;
     if probe.exit_code != 0 {
@@ -1090,9 +1036,7 @@ fn verify_install_ux_split_behavior(ssh_host_port: u16) -> Result<String> {
         );
     }
 
-    let smoke = ssh_exec(
-        ssh_host_port,
-        "LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint",
+    let smoke = Remote::new(ssh_host_port).exec("LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint",
     )
     .with_context(|| "running install UX split-pane smoke launch".to_string())?;
     if smoke.exit_code != 0 {
@@ -1375,13 +1319,13 @@ fn verify_live_overlay_behavior(console: &mut Console) -> Result<String> {
     Ok("overlayfs lowerdir chain verified".to_string())
 }
 
-fn install_layout_for_distro(distro_id: &str) -> Result<InstallLayout> {
+fn install_mode_for_distro(distro_id: &str) -> Result<InstallMode> {
     match load_installed_scenario_facts(distro_id)?
         .runtime_policy
         .rootfs_mutability
     {
-        RootfsMutability::Mutable => Ok(InstallLayout::MutableSingleRoot),
-        RootfsMutability::Immutable => Ok(InstallLayout::ImmutableAb),
+        RootfsMutability::Mutable => Ok(InstallMode::Mutable),
+        RootfsMutability::Immutable => Ok(InstallMode::Ab),
     }
 }
 

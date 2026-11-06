@@ -34,14 +34,12 @@ cargo run    # Run the test suite
 
 The test does what users do:
 1. Boot ISO in QEMU
-2. Partition disk (sfdisk)
-3. Format partitions (mkfs)
-4. Mount partitions
-5. Extract rootfs (recstrap)
-6. Generate fstab (recfstab)
-7. Install bootloader (bootctl in chroot)
-8. Reboot into installed system
-9. Verify system works
+2. Partition, format and mount the disk (recpart, over SSH)
+3. Extract rootfs (recstrap)
+4. Generate fstab (recfstab)
+5. Install bootloader (bootctl in chroot, via recchroot)
+6. Reboot into installed system
+7. Verify system works
 
 If this test passes, users CAN install. If it fails, fix the installation process.
 
