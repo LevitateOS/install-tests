@@ -26,9 +26,7 @@ use colored::Colorize;
 use distro_contract::RootfsMutability;
 use recpart::InstallMode;
 use recshuttle::Remote;
-use distro_builder::live_ux::{
-    INSTALL_ENTRYPOINT, INSTALL_UX_PROFILE, PROBE_PREFIX, SMOKE_ENV, SPLIT_HELPER, SPLIT_SMOKE_OK,
-};
+use distro_builder::install_ux::{LAUNCHER, PROBE_PREFIX, SMOKE_ENV, SPLIT, SPLIT_SMOKE_OK};
 use crate::qemu::session::VmSpec;
 use crate::repo_root;
 use distro_builder::run_history;
@@ -437,12 +435,8 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 
     let remote = Remote::new(ssh_host_port);
     remote.run(
-        "checking the install entrypoint",
-        &format!("test -x /{INSTALL_ENTRYPOINT}"),
-    )?;
-    remote.run(
-        "checking the install UX profile hook",
-        &format!("test -r /{INSTALL_UX_PROFILE}"),
+        "checking the install screen launcher",
+        &format!("test -x /{LAUNCHER}"),
     )?;
     let ux_split_evidence = verify_install_ux_split_behavior(&remote)?;
 
@@ -960,7 +954,7 @@ fn evidence_on_console(console: &mut Console, evidence: &distro_contract::Script
 fn verify_install_ux_split_behavior(remote: &Remote) -> Result<String> {
     let probe = remote.run(
         "probing the install helper",
-        &format!("/{INSTALL_ENTRYPOINT} --probe"),
+        &format!("/{LAUNCHER} --probe"),
     )?;
     let helper = probe
         .lines()
@@ -968,16 +962,16 @@ fn verify_install_ux_split_behavior(remote: &Remote) -> Result<String> {
         .find_map(|line| line.strip_prefix(PROBE_PREFIX))
         .unwrap_or("")
         .trim();
-    if helper != SPLIT_HELPER && !helper.ends_with(&format!("/{SPLIT_HELPER}")) {
+    if helper != format!("/{SPLIT}") {
         bail!(
-            "install UX helper mismatch: expected '{SPLIT_HELPER}', found '{}'.\nProbe output: {}",
+            "install UX helper mismatch: expected '/{SPLIT}', found '{}'.\nProbe output: {}",
             if helper.is_empty() { "<empty>" } else { helper },
             probe.trim()
         );
     }
     let smoke = remote.run(
         "running the split-pane smoke launch",
-        &format!("{SMOKE_ENV}=1 /{INSTALL_ENTRYPOINT}"),
+        &format!("{SMOKE_ENV}=1 /{LAUNCHER}"),
     )?;
     if !smoke.contains(SPLIT_SMOKE_OK) {
         bail!(
