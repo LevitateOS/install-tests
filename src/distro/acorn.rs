@@ -1,18 +1,8 @@
-//! AcornOS distro context.
-//!
-//! AcornOS uses:
-//! - OpenRC (init system)
-//! - systemd-boot (bootloader, same as LevitateOS)
-//! - musl + busybox
-//! - ash shell
+//! AcornOS: OpenRC, systemd-boot, musl and busybox.
 
-use super::openrc_base::OpenRcBase;
 use super::DistroContext;
 
-/// AcornOS context for OpenRC-based testing.
 pub struct AcornContext;
-
-static BASE: OpenRcBase = OpenRcBase;
 
 impl DistroContext for AcornContext {
     fn name(&self) -> &str {
@@ -23,84 +13,26 @@ impl DistroContext for AcornContext {
         "acorn"
     }
 
+    /// OpenRC's early boot can stay quiet for longer than systemd's.
     fn live_boot_stall_timeout_secs(&self) -> u64 {
-        BASE.live_boot_stall_timeout_secs()
-    }
-
-    fn enable_service_cmd(&self, service: &str, runlevel: &str) -> String {
-        BASE.enable_service_cmd(service, runlevel)
-    }
-
-    fn check_service_exists_cmd(&self, service: &str) -> String {
-        BASE.check_service_exists_cmd(service)
-    }
-
-    fn check_service_status_cmd(&self, service: &str) -> String {
-        BASE.check_service_status_cmd(service)
-    }
-
-    fn list_failed_services_cmd(&self) -> String {
-        BASE.list_failed_services_cmd()
-    }
-
-    fn enabled_services(&self) -> Vec<(&str, &str, bool)> {
-        vec![
-            ("networking", "boot", true),
-            ("chronyd", "default", true),
-            ("sshd", "default", false),
-        ]
+        180
     }
 
     fn enable_serial_getty_cmd(&self) -> String {
-        BASE.enable_serial_getty_cmd()
+        "grep -q 'ttyS0' /etc/inittab || echo 'ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100' >> /etc/inittab".to_string()
     }
 
-    fn expected_pid1_name(&self) -> &str {
-        BASE.expected_pid1_name()
-    }
-
-    fn check_target_reached_cmd(&self) -> &str {
-        BASE.check_target_reached_cmd()
-    }
-
-    fn target_reached_expected(&self) -> &str {
-        BASE.target_reached_expected()
-    }
-
-    fn count_failed_services_cmd(&self) -> &str {
-        BASE.count_failed_services_cmd()
-    }
-
-    fn check_network_service_cmd(&self) -> &str {
-        BASE.check_network_service_cmd()
-    }
-
+    /// No bootctl without systemd: copy systemd-boot into place.
     fn install_bootloader_cmd(&self) -> &str {
-        BASE.install_bootloader_cmd()
-    }
-
-    fn efi_entry_label(&self) -> &str {
-        "AcornOS"
-    }
-
-    fn chroot_shell(&self) -> &str {
-        BASE.chroot_shell()
+        "sh -c 'set -eu; mkdir -p /boot/EFI/BOOT /boot/EFI/systemd; cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI; cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi'"
     }
 
     fn default_hostname(&self) -> &str {
         "acornos"
     }
 
-    fn hostname_check_pattern(&self) -> &str {
-        "acorn"
+    /// AcornOS boots the installed kernel without an initramfs.
+    fn uses_initramfs(&self) -> bool {
+        false
     }
-
-    fn init_system_name(&self) -> &str {
-        BASE.init_system_name()
-    }
-
-    fn boot_target_name(&self) -> &str {
-        BASE.boot_target_name()
-    }
-
 }

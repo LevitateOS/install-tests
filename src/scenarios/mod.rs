@@ -518,7 +518,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         let system = install::TestSystem {
             mode: install_mode_for_distro(ctx.id())?,
             root_password: &root_password,
-            uses_initramfs: ctx.init_system_name() != "OpenRC",
+            uses_initramfs: ctx.uses_initramfs(),
         };
         let (target, step_count) = install::install(&remote, ctx, &system)?;
 

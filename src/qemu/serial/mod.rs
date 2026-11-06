@@ -1,7 +1,7 @@
 //! Serial console boot waits that take their patterns from the variant's
 //! scenario contract.
 
-pub use recqemu::serial::{CommandResult, Console};
+pub use recqemu::serial::Console;
 
 use crate::distro::{load_scenarios, DistroContext};
 use anyhow::Result;
