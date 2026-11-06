@@ -191,6 +191,7 @@ impl Machine<'_> {
     /// Boot without logging in, and wait for the guest to reboot by itself.
     fn run_unattended(&self, timeout: Duration) -> Result<()> {
         let mut vm = session::spawn(VmSpec {
+            name: &format!("{}-ab-update", self.ctx.id()),
             disk: Some(self.disk),
             ovmf_vars: Some(self.vars),
             ..Default::default()
@@ -200,6 +201,7 @@ impl Machine<'_> {
 
     fn boot(&self, with_media: bool) -> Result<Booted> {
         let mut vm = session::spawn(VmSpec {
+            name: &format!("{}-ab-update", self.ctx.id()),
             disk: Some(self.disk),
             ovmf_vars: Some(self.vars),
             media: with_media.then_some(self.iso),

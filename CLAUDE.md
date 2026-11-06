@@ -2,13 +2,13 @@
 
 ## What is install-tests?
 
-E2E test runner for LevitateOS installation. Boots ISO in QEMU, performs full installation, reboots into installed system, verifies success.
+E2E test runner for LevitateOS and AcornOS installation. Boots the ISO in a libvirt VM (visible in Cockpit), performs a full installation, reboots into the installed system, verifies success.
 
 **This is THE crate for installation tests.**
 
 ## What Belongs Here
 
-- QEMU-based installation tests
+- Installation tests in libvirt VMs (`recqemu::libvirt`)
 - Full installation flow verification
 - Boot → Install → Reboot → Verify tests
 
@@ -30,10 +30,10 @@ cargo run    # Run the test suite
 
 ## Test Philosophy
 
-**ONE test. ONE QEMU. ONE installation. ONE reboot. ONE verification.**
+**ONE test. ONE VM. ONE installation. ONE reboot. ONE verification.**
 
 The test does what users do:
-1. Boot ISO in QEMU
+1. Boot the ISO in a libvirt VM
 2. Partition, format and mount the disk (recpart, over SSH)
 3. Extract rootfs (recstrap)
 4. Generate fstab (recfstab)

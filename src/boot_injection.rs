@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use recinit::live::{
     BOOT_INJECTION_FILE, BOOT_INJECTION_FW_CFG, BOOT_INJECTION_ISO_LABEL,
 };
-use recqemu::QemuBuilder;
+use recqemu::libvirt::DomainSpec;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -36,10 +36,11 @@ impl Drop for BootInjection {
 
 impl BootInjection {
     /// Hand the payload to the guest on both channels the live init reads.
-    pub fn attach(&self, builder: QemuBuilder) -> QemuBuilder {
-        builder
-            .fw_cfg_file(BOOT_INJECTION_FW_CFG, &self.payload_file)
-            .extra_cdrom(&self.media_iso_file)
+    pub fn attach(&self, spec: &mut DomainSpec) {
+        let absolute = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        spec.fw_cfg
+            .push((BOOT_INJECTION_FW_CFG.to_string(), absolute(&self.payload_file)));
+        spec.extra_cdroms.push(absolute(&self.media_iso_file));
     }
 
     /// Inject an existing payload file (KEY=VALUE lines).

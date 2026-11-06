@@ -355,6 +355,7 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let live_boot_evidence = load_scenarios(ctx.id())?.live_boot.evidence;
     let mut vm = session::spawn(VmSpec {
+        name: &format!("{}-live-boot", ctx.id()),
         iso: Some(iso_path),
         ssh: true,
         ..Default::default()
@@ -385,6 +386,7 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 /// absence from PATH. The live overlay's behavior is checked too.
 fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let mut vm = session::spawn(VmSpec {
+        name: &format!("{}-live-tools", ctx.id()),
         iso: Some(iso_path),
         ssh: true,
         ..Default::default()
@@ -486,6 +488,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         &scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME),
     )?;
     let mut vm = session::spawn(VmSpec {
+        name: &format!("{}-install", ctx.id()),
         iso: Some(iso_path),
         disk: Some(&disk_path),
         ovmf_vars: Some(&ovmf_vars_path),
@@ -599,7 +602,7 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
         ScenarioId::InstalledBoot,
         Some(install_runtime.run_id.clone()),
     )?;
-    let mut vm = installed_vm(&install_runtime)?;
+    let mut vm = installed_vm(ctx, &install_runtime, ScenarioId::InstalledBoot)?;
     let console = &mut vm.console;
 
     let result = console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx);
@@ -636,7 +639,7 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
 
 fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let mut vm = installed_vm(&install_runtime)?;
+    let mut vm = installed_vm(ctx, &install_runtime, ScenarioId::AutomatedLogin)?;
     let console = &mut vm.console;
 
     console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx)?;
@@ -661,7 +664,7 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
 
 fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
     let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let mut vm = installed_vm(&install_runtime)?;
+    let mut vm = installed_vm(ctx, &install_runtime, ScenarioId::Runtime)?;
     let console = &mut vm.console;
 
     console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx)?;
@@ -1246,8 +1249,13 @@ fn default_password(ctx: &dyn DistroContext) -> Result<String> {
 }
 
 /// Boot the latest install run's disk.
-fn installed_vm(install_runtime: &InstallScenarioRuntime) -> Result<session::Vm> {
+fn installed_vm(
+    ctx: &dyn DistroContext,
+    install_runtime: &InstallScenarioRuntime,
+    scenario: ScenarioId,
+) -> Result<session::Vm> {
     session::spawn(VmSpec {
+        name: &format!("{}-{}", ctx.id(), scenario.key()),
         disk: Some(&install_runtime.disk_path),
         ovmf_vars: Some(&install_runtime.ovmf_vars_path),
         ..Default::default()
