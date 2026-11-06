@@ -18,11 +18,7 @@ pub mod scenarios;
 
 // Re-export commonly used items
 pub use distro::{context_for_distro, DistroContext, AVAILABLE_DISTROS};
-pub use preflight::{
-    require_preflight, require_preflight_for_distro, require_preflight_with_iso_for_distro,
-    run_preflight, run_preflight_for_distro, run_preflight_with_iso, run_preflight_with_iso_distro,
-    PreflightCheck, PreflightResult,
-};
+pub use preflight::{require_preflight, run_preflight, PreflightCheck, PreflightResult};
 pub use qemu::{Console, SerialExecutorExt};
 
 /// The LevitateOS checkout this crate sits in.

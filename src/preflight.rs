@@ -88,53 +88,7 @@ impl PreflightCheck {
     }
 }
 
-/// Run preflight verification on ISO artifacts.
-///
-/// This should be called BEFORE starting QEMU to catch issues early.
-///
-/// # Arguments
-/// * `iso_dir` - Directory containing ISO artifacts (e.g. `.artifacts/out/levitate/`)
-///
-/// # Returns
-/// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)
-/// * `Err` - Could not run verification (missing files, etc.)
-pub fn run_preflight(iso_dir: &Path) -> Result<PreflightResult> {
-    run_preflight_with_iso(iso_dir, None)
-}
-
-/// Run preflight verification for a specific distro.
-pub fn run_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<PreflightResult> {
-    run_preflight_with_iso_distro(iso_dir, None, distro_id)
-}
-
-/// Run preflight verification with a specific ISO filename.
-///
-/// # Arguments
-/// * `iso_dir` - Directory containing ISO artifacts
-/// * `iso_filename` - Optional specific ISO filename. If None, searches for any .iso file.
-///
-/// # Returns
-/// * `Ok(PreflightResult)` - Verification completed (check `overall_pass`)
-/// * `Err` - Could not run verification (missing files, etc.)
-pub fn run_preflight_with_iso(
-    iso_dir: &Path,
-    iso_filename: Option<&str>,
-) -> Result<PreflightResult> {
-    run_preflight_with_iso_distro(iso_dir, iso_filename, "levitate")
-}
-
-/// Run preflight verification with a specific ISO filename and distro context.
-pub fn run_preflight_with_iso_distro(
-    iso_dir: &Path,
-    iso_filename: Option<&str>,
-    distro_id: &str,
-) -> Result<PreflightResult> {
-    run_preflight_with_iso_distro_layout(iso_dir, iso_filename, distro_id)
-}
-
 fn verify_conformance_contract(
-    _iso_dir: &Path,
-    _iso_filename: Option<&str>,
     distro_id: &str,
     runtime_artifacts: &ResolvedRuntimeArtifacts,
     validate_live_boot: bool,
@@ -373,7 +327,9 @@ fn resolve_runtime_artifacts(
     })
 }
 
-fn run_preflight_with_iso_distro_layout(
+/// Verify the contract and the ISO artifacts in `iso_dir` (the given ISO
+/// file, else the first `.iso` found).
+pub fn run_preflight(
     iso_dir: &Path,
     iso_filename: Option<&str>,
     distro_id: &str,
@@ -402,8 +358,6 @@ fn run_preflight_with_iso_distro_layout(
     let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
 
     result.conformance = Some(verify_conformance_contract(
-        iso_dir,
-        iso_filename,
         distro_id,
         &runtime_artifacts,
         validate_live_boot,
@@ -771,25 +725,13 @@ fn print_summary(result: &PreflightResult) {
     }
 }
 
-/// Run preflight and fail if critical issues found.
-///
-/// This is a convenience function for tests that should abort on preflight failure.
-pub fn require_preflight(iso_dir: &Path) -> Result<()> {
-    require_preflight_for_distro(iso_dir, "levitate")
-}
-
-/// Run preflight for a distro and fail if critical issues found.
-pub fn require_preflight_for_distro(iso_dir: &Path, distro_id: &str) -> Result<()> {
-    require_preflight_with_iso_for_distro(iso_dir, None, distro_id)
-}
-
-/// Run preflight for a distro + explicit ISO filename and fail if critical issues found.
-pub fn require_preflight_with_iso_for_distro(
+/// Run preflight and fail if a check failed.
+pub fn require_preflight(
     iso_dir: &Path,
     iso_filename: Option<&str>,
     distro_id: &str,
 ) -> Result<()> {
-    let result = run_preflight_with_iso_distro(iso_dir, iso_filename, distro_id)?;
+    let result = run_preflight(iso_dir, iso_filename, distro_id)?;
 
     if !result.overall_pass {
         // Collect all failures for the error message

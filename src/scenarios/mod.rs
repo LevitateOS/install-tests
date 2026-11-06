@@ -17,7 +17,7 @@ pub mod state;
 
 mod install;
 use crate::distro::{context_for_distro, load_installed_scenario_facts, load_scenarios, DistroContext};
-use crate::preflight::require_preflight_with_iso_for_distro;
+use crate::preflight::require_preflight;
 use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
@@ -161,7 +161,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
                 iso.path.display()
             )
         })?;
-        require_preflight_with_iso_for_distro(iso_dir, Some(&iso.filename), canonical_distro_id)?;
+        require_preflight(iso_dir, Some(&iso.filename), canonical_distro_id)?;
     }
 
     let input_fingerprint =
