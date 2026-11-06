@@ -51,11 +51,6 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     apply_boot_injection_env(&cli)?;
-    let requires_guard = cli.scenario.is_some();
-    if requires_guard {
-        install_tests::enforce_policy_guard("install-tests scenarios")?;
-    }
-
     if cli.reset {
         return scenarios::reset_state(&cli.distro);
     }

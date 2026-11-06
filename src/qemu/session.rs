@@ -10,9 +10,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 
-/// The guest's sshd port.
-const GUEST_SSH_PORT: u16 = 22;
-
 /// What to boot.
 #[derive(Default)]
 pub struct VmSpec<'a> {
@@ -73,7 +70,7 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     }
     let ssh_port = if spec.ssh {
         let port = allocate_local_port()?;
-        builder = builder.user_network_with_hostfwd(port, GUEST_SSH_PORT);
+        builder = builder.user_network_with_hostfwd(port, recqemu::GUEST_SSH_PORT);
         Some(port)
     } else {
         builder = builder.user_network();
