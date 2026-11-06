@@ -39,25 +39,6 @@ info "This scenario verifies that all daily driver tools are present"
 info "and FUNCTIONAL (actually executes them, not just checks existence)"
 echo
 
-detect_expected_install_experience() {
-    if [ -r /etc/os-release ]; then
-        # shellcheck disable=SC1091
-        . /etc/os-release
-    else
-        ID=""
-    fi
-
-    case "${ID:-}" in
-        levitateos|acornos) printf '%s\n' "ux" ;;
-        *)
-            # Conservative fallback: default to headless automation profile.
-            printf '%s\n' "automated_ssh"
-            ;;
-    esac
-}
-
-EXPECTED_INSTALL_EXPERIENCE="$(detect_expected_install_experience)"
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Core Installation Tools
 # ═══════════════════════════════════════════════════════════════════════════
@@ -76,14 +57,6 @@ test_tool "wipefs" "wipefs --version"
 test_tool "mkfs.ext4" "mkfs.ext4 -V 2>&1 | head -1"
 test_tool "mount" "mount --version"
 test_command "block subsystem visible" "test -d /sys/class/block && ls /sys/class/block >/dev/null"
-test_file_exists "/usr/lib/levitate/install-experience" "install-experience marker exists"
-test_command "install-experience matches distro policy" "test \"\$(tr -d '\\n' < /usr/lib/levitate/install-experience)\" = \"$EXPECTED_INSTALL_EXPERIENCE\""
-test_command "install entrypoint script is executable" "test -x /usr/local/bin/levitate-install-entrypoint"
-if [ "$EXPECTED_INSTALL_EXPERIENCE" = "ux" ]; then
-    test_file_exists "/etc/profile.d/30-install-ux.sh" "install UX profile hook exists"
-    test_command "install helper probe selects split launcher" "/usr/local/bin/levitate-install-entrypoint --probe | sed -n 's/^install-entrypoint-helper=//p' | head -n1 | grep -E -q '(^|/)levitate-install-docs-split$'"
-    test_command "install split-pane smoke launch works" "LEVITATE_INSTALL_ENTRYPOINT_SMOKE=1 /usr/local/bin/levitate-install-entrypoint | grep -q 'split-smoke:ok'"
-fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Network & Connectivity

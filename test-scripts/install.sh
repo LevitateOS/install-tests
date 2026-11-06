@@ -22,13 +22,16 @@ scenario_header "Install Validation"
 info "This scenario verifies the installation completed successfully"
 echo
 
+# The harness passes the mounted install target recpart reported.
+TARGET="${SCENARIO_INSTALL_TARGET:?SCENARIO_INSTALL_TARGET is not set}"
+
 section_header "Installation Artifacts"
-test_file_exists "/mnt/sysroot/bin" "Root filesystem extracted"
-test_file_exists "/mnt/sysroot/boot/EFI" "EFI boot partition"
-test_file_exists "/mnt/sysroot/etc/fstab" "fstab generated"
+test_file_exists "$TARGET/bin" "Root filesystem extracted"
+test_file_exists "$TARGET/boot/EFI" "EFI boot partition"
+test_file_exists "$TARGET/etc/fstab" "fstab generated"
 
 section_header "Bootloader"
-test_command "Bootloader installed" "ls /mnt/sysroot/boot/EFI/BOOT/BOOTX64.EFI"
+test_command "Bootloader installed" "ls $TARGET/boot/EFI/BOOT/BOOTX64.EFI"
 
 report_results "Install"
 exit $?

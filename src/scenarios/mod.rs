@@ -331,7 +331,7 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    evidence_over_ssh(ssh_host_port, &live_boot_evidence)?;
+    evidence_over_ssh(ssh_host_port, &live_boot_evidence, &[])?;
     Remote::new(ssh_host_port).run(
         "live-boot SSH preflight",
         &install::shell_quote(LIVE_BOOT_SSH_PREFLIGHT_SCRIPT),
@@ -427,6 +427,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let script_evidence = evidence_over_ssh(
         ssh_host_port,
         &load_scenarios(ctx.id())?.live_tools.evidence,
+        &[],
     )?;
     let install_profile_evidence = match ux_split_evidence {
         Some(evidence) => format!(
@@ -494,7 +495,11 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
             uses_initramfs: ctx.uses_initramfs(),
         };
         let (target, step_count) = install::install(&remote, ctx, &system)?;
-        evidence_over_ssh(ssh_host_port, &load_scenarios(ctx.id())?.install.evidence)?;
+        evidence_over_ssh(
+            ssh_host_port,
+            &load_scenarios(ctx.id())?.install.evidence,
+            &[("SCENARIO_INSTALL_TARGET", target.as_str())],
+        )?;
 
         let mut verify = vec![
             ("Root filesystem", format!("test -f {target}/etc/os-release")),
@@ -871,14 +876,15 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
 /// script must exit 0 and print its pass marker.
 fn run_evidence(
     evidence: &distro_contract::ScriptEvidence,
+    env: &[(&str, &str)],
     mut exec: impl FnMut(&str) -> Result<(i32, String)>,
 ) -> Result<String> {
     let path = installed_script_path(&evidence.script_path);
-    let (code, output) = exec(&format!(
-        "SCENARIO_PASS_MARKER={} {}",
-        install::shell_quote(&evidence.pass_marker),
-        install::shell_quote(&path)
-    ))?;
+    let mut cmd = format!("SCENARIO_PASS_MARKER={}", install::shell_quote(&evidence.pass_marker));
+    for (key, value) in env {
+        cmd.push_str(&format!(" {key}={}", install::shell_quote(value)));
+    }
+    let (code, output) = exec(&format!("{cmd} {}", install::shell_quote(&path)))?;
     if code != 0 || !output.contains(&evidence.pass_marker) {
         bail!(
             "evidence script {path} failed (exit {code}, pass marker {}):\n{}",
@@ -890,9 +896,13 @@ fn run_evidence(
 }
 
 /// `run_evidence` over SSH.
-fn evidence_over_ssh(ssh_host_port: u16, evidence: &distro_contract::ScriptEvidence) -> Result<String> {
+fn evidence_over_ssh(
+    ssh_host_port: u16,
+    evidence: &distro_contract::ScriptEvidence,
+    env: &[(&str, &str)],
+) -> Result<String> {
     let remote = Remote::new(ssh_host_port);
-    run_evidence(evidence, |cmd| {
+    run_evidence(evidence, env, |cmd| {
         let out = remote.exec(cmd)?;
         Ok((out.exit_code, out.output))
     })
@@ -900,7 +910,7 @@ fn evidence_over_ssh(ssh_host_port: u16, evidence: &distro_contract::ScriptEvide
 
 /// `run_evidence` on the serial console.
 fn evidence_on_console(console: &mut Console, evidence: &distro_contract::ScriptEvidence) -> Result<String> {
-    run_evidence(evidence, |cmd| {
+    run_evidence(evidence, &[], |cmd| {
         let out = console.exec(cmd, EVIDENCE_TIMEOUT)?;
         Ok((out.exit_code, out.output))
     })
