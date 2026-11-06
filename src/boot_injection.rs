@@ -1,9 +1,9 @@
 //! Boot injection: KEY=VALUE settings handed to a live boot through the test
 //! channels the live init reads (a QEMU fw_cfg entry, else a small ISO; see
-//! `distro_spec::shared::live_boot`).
+//! `recinit::live`).
 
 use anyhow::{anyhow, bail, Context, Result};
-use distro_spec::shared::live_boot::{
+use recinit::live::{
     BOOT_INJECTION_FILE, BOOT_INJECTION_FW_CFG, BOOT_INJECTION_ISO_LABEL,
 };
 use recqemu::QemuBuilder;

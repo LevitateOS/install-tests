@@ -4,13 +4,17 @@
 //! entries, hostname, root password, serial getty).
 
 use anyhow::{Context, Result};
-use distro_spec::shared::live_boot::LIVE_MEDIA_DIR;
-use distro_spec::shared::{SERIAL_CONSOLE, VGA_CONSOLE};
+use recinit::live::LIVE_MEDIA_DIR;
 use recpart::types::{ApplyResult, DiskListResult, CONFIRM_TOKEN};
 use recpart::InstallMode;
 use recshuttle::Remote;
 
 use crate::distro::DistroContext;
+
+/// Kernel console arguments for the installed system: the screen and the
+/// serial port the tests read.
+const VGA_CONSOLE: &str = "console=tty0";
+const SERIAL_CONSOLE: &str = "console=ttyS0,115200n8";
 
 /// What the test system needs beyond the shipped tools.
 pub struct TestSystem<'a> {

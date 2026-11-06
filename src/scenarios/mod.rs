@@ -848,8 +848,8 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
             "Injected boot payload",
             &format!(
                 "ls -l {d} {d}/* 2>/dev/null || true; cat {d}/source {e} 2>/dev/null || true",
-                d = distro_spec::shared::live_boot::BOOT_INJECTION_DIR,
-                e = distro_spec::shared::live_boot::BOOT_INJECTION_ENV
+                d = recinit::live::BOOT_INJECTION_DIR,
+                e = recinit::live::BOOT_INJECTION_ENV
             ),
         ),
         (
@@ -1333,7 +1333,7 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
             eprintln!("    - PATH not set correctly");
             eprintln!();
             eprintln!("  Try:");
-            eprintln!("    - Check package list in distro-spec");
+            eprintln!("    - Check the live-tools product in distro/variants/<distro>/ring2/products.toml");
         }
         ScenarioId::Install => {
             eprintln!("  Common causes:");

@@ -6,7 +6,7 @@ pub use recqemu::serial::Console;
 use crate::distro::{load_scenarios, DistroContext};
 use anyhow::Result;
 use distro_contract::BootScenario;
-use distro_spec::shared::live_boot::ROOTFS_MISSING_MESSAGE;
+use recinit::live::ROOTFS_MISSING_MESSAGE;
 use recqemu::serial::BootPatterns;
 use std::time::Duration;
 
