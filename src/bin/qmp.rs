@@ -1,7 +1,7 @@
 //! E2E Installation Test Runner (QMP Backend) for LevitateOS and AcornOS.
 //!
 //! QMP is for visual-only testing: smoke tests and screenshots.
-//! For step-based verification, use `cargo run --bin install-tests`.
+//! For verified installs, use the scenarios (`cargo run --bin scenarios`).
 //!
 //! # Limitations
 //!
@@ -15,9 +15,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use install_tests::qemu::qmp::QmpClient;
-use install_tests::{
-    create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, QemuBuilder,
-};
+use recqemu::{create_disk, find_ovmf, find_ovmf_vars, QemuBuilder};
+use std::process::Stdio;
 
 #[derive(Parser)]
 #[command(name = "install-tests-qmp")]
@@ -59,24 +58,21 @@ fn smoke_test(iso_path: &Path, vnc_display: u16) -> Result<()> {
         bail!("ISO not found at {}", iso_path.display());
     }
 
-    kill_stale_qemu_processes();
-
-    let ovmf = find_ovmf().context("OVMF not found - UEFI boot required for installation tests")?;
-    let ovmf_vars_template =
-        find_ovmf_vars().context("OVMF_VARS not found - needed for EFI variable storage")?;
-    let ovmf_vars_path = std::env::temp_dir().join("leviso-qmp-smoke-vars.fd");
+    let ovmf = find_ovmf()?;
+    let ovmf_vars_template = find_ovmf_vars()?;
+    let ovmf_vars_path = std::env::temp_dir().join("install-tests-qmp-smoke-vars.fd");
     if ovmf_vars_path.exists() {
         std::fs::remove_file(&ovmf_vars_path)?;
     }
     std::fs::copy(&ovmf_vars_template, &ovmf_vars_path)?;
 
-    let disk_path = std::env::temp_dir().join("leviso-qmp-smoke.qcow2");
+    let disk_path = std::env::temp_dir().join("install-tests-qmp-smoke.qcow2");
     if disk_path.exists() {
         std::fs::remove_file(&disk_path)?;
     }
     create_disk(&disk_path, "10G")?;
 
-    let qmp_socket = std::env::temp_dir().join("leviso-qmp-smoke.sock");
+    let qmp_socket = std::env::temp_dir().join("install-tests-qmp-smoke.sock");
     if qmp_socket.exists() {
         std::fs::remove_file(&qmp_socket)?;
     }
@@ -88,7 +84,9 @@ fn smoke_test(iso_path: &Path, vnc_display: u16) -> Result<()> {
 
     println!("{}", "Starting QEMU with QMP...".cyan());
     let mut cmd = QemuBuilder::new()
-        .cdrom(iso_path.to_path_buf())
+        .nodefaults()
+        .cdrom(iso_path)
+        .cdrom_as_disk()
         .disk(disk_path.clone())
         .uefi(ovmf)
         .uefi_vars(ovmf_vars_path.clone())
@@ -96,7 +94,10 @@ fn smoke_test(iso_path: &Path, vnc_display: u16) -> Result<()> {
         .qmp_socket(qmp_socket.clone())
         .vnc_display(vnc_display)
         .no_reboot()
-        .build_qmp();
+        .build();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
 
     let mut child = cmd.spawn().context("Failed to spawn QEMU")?;
     println!("{}", "QEMU started!".green());

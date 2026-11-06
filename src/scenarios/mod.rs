@@ -631,7 +631,7 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
         ScenarioId::InstalledBoot,
         Some(install_runtime.run_id.clone()),
     )?;
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
+    let ovmf = recqemu::find_ovmf()?;
     let (mut child, mut console) = session::spawn_installed(
         &install_runtime.disk_path,
         &ovmf,
@@ -666,7 +666,7 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
 
 fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
+    let ovmf = recqemu::find_ovmf()?;
 
     let (mut child, mut console) = session::spawn_installed(
         &install_runtime.disk_path,
@@ -707,7 +707,7 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
 
 fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
     let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
+    let ovmf = recqemu::find_ovmf()?;
 
     let (mut child, mut console) = session::spawn_installed(
         &install_runtime.disk_path,

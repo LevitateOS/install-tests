@@ -32,10 +32,7 @@ pub use preflight::{
     run_preflight, run_preflight_for_distro, run_preflight_with_iso, run_preflight_with_iso_distro,
     PreflightCheck, PreflightResult,
 };
-pub use qemu::{
-    acquire_test_lock, create_disk, find_ovmf, find_ovmf_vars, kill_stale_qemu_processes, Console,
-    QemuBuilder, SerialExecutorExt,
-};
+pub use qemu::{Console, SerialExecutorExt};
 
 pub fn enforce_policy_guard(entrypoint: &str) -> Result<()> {
     let repo_root = locate_repo_root()?;

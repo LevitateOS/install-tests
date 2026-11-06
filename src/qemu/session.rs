@@ -4,7 +4,8 @@
 
 use crate::boot_injection::boot_injection_from_env;
 use crate::distro::DistroContext;
-use crate::qemu::{Console, QemuBuilder};
+use crate::qemu::Console;
+use recqemu::QemuBuilder;
 use anyhow::{Context, Result};
 use std::fs;
 use std::net::TcpListener;
@@ -15,8 +16,8 @@ use std::time::Duration;
 /// Set up OVMF firmware and writable vars copy at a caller-provided path.
 /// Returns (ovmf_code, ovmf_vars_copy).
 pub fn setup_ovmf_vars_at(ovmf_vars_path: &Path) -> Result<(PathBuf, PathBuf)> {
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
-    let ovmf_vars_template = recqemu::find_ovmf_vars().context("OVMF_VARS not found")?;
+    let ovmf = recqemu::find_ovmf()?;
+    let ovmf_vars_template = recqemu::find_ovmf_vars()?;
     if let Some(parent) = ovmf_vars_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating scenario runtime dir '{}'", parent.display()))?;
@@ -41,13 +42,15 @@ pub fn spawn_live_with_ssh(
     _ctx: &dyn DistroContext,
     iso_path: &Path,
 ) -> Result<(Child, Console, u16)> {
-    let ovmf = recqemu::find_ovmf().context("OVMF not found")?;
+    let ovmf = recqemu::find_ovmf()?;
     let ssh_host_port = allocate_local_port()?;
 
     let builder = QemuBuilder::new()
-        .cdrom(iso_path.to_path_buf())
+        .nodefaults()
+        .cdrom(iso_path)
+        .cdrom_as_disk()
         .uefi(ovmf)
-        .with_user_network_hostfwd(ssh_host_port, 22)
+        .user_network_with_hostfwd(ssh_host_port, GUEST_SSH_PORT)
         .nographic()
         .serial_stdio()
         .no_reboot();
@@ -67,12 +70,14 @@ pub fn spawn_live_with_disk(
     ovmf_vars: &Path,
 ) -> Result<(Child, Console)> {
     let builder = QemuBuilder::new()
-        .cdrom(iso_path.to_path_buf())
+        .nodefaults()
+        .cdrom(iso_path)
+        .cdrom_as_disk()
         .disk(disk_path.to_path_buf())
         .uefi(ovmf.to_path_buf())
         .uefi_vars(ovmf_vars.to_path_buf())
         .boot_order("dc")
-        .with_user_network()
+        .user_network()
         .nographic()
         .serial_stdio()
         .no_reboot();
@@ -96,12 +101,14 @@ pub fn spawn_live_with_disk_with_ssh(
     let ssh_host_port = allocate_local_port()?;
 
     let builder = QemuBuilder::new()
-        .cdrom(iso_path.to_path_buf())
+        .nodefaults()
+        .cdrom(iso_path)
+        .cdrom_as_disk()
         .disk(disk_path.to_path_buf())
         .uefi(ovmf.to_path_buf())
         .uefi_vars(ovmf_vars.to_path_buf())
         .boot_order("dc")
-        .with_user_network_hostfwd(ssh_host_port, 22)
+        .user_network_with_hostfwd(ssh_host_port, GUEST_SSH_PORT)
         .nographic()
         .serial_stdio()
         .no_reboot();
@@ -120,11 +127,12 @@ pub fn spawn_installed(
     ovmf_vars: &Path,
 ) -> Result<(Child, Console)> {
     let builder = QemuBuilder::new()
-        .disk(disk_path.to_path_buf())
+        .nodefaults()
+        .disk(disk_path)
         .uefi(ovmf.to_path_buf())
         .uefi_vars(ovmf_vars.to_path_buf())
         .boot_order("c")
-        .with_user_network()
+        .user_network()
         .nographic()
         .serial_stdio()
         .no_reboot();
@@ -147,9 +155,11 @@ fn with_boot_injection(builder: QemuBuilder) -> Result<QemuBuilder> {
     Ok(configured)
 }
 
+/// The guest's sshd port.
+const GUEST_SSH_PORT: u16 = 22;
+
 fn allocate_local_port() -> Result<u16> {
-    let listener =
-        TcpListener::bind("127.0.0.1:0").context("allocating local tcp port for SSH forward")?;
+    let listener = TcpListener::bind((recqemu::HOSTFWD_ADDRESS, 0)).context("allocating local tcp port for SSH forward")?;
     let port = listener
         .local_addr()
         .context("reading allocated local tcp port")?
