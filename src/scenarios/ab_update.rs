@@ -107,10 +107,13 @@ impl Machine<'_> {
         ensure!(st.next_boot == Some(Slot::A), "after install the next boot is {:?}, not A", st.next_boot);
         ensure!(sys.sh("findmnt -n -o SOURCE /var")?.contains("/dev/"), "/var is not its own partition");
         sys.sh(&format!("test -L /{}", self.ctx.init_system().trial_service_link()))?;
+        // Installed systems leave sshd off, so there are no host keys yet; make them, as
+        // starting sshd would, so the carry into slot B is tested.
+        sys.sh("ssh-keygen -A")?;
         let identity = sys.identity()?;
 
         // Stage the release into slot B.
-        sys.stage_from_media(self.ctx)?;
+        sys.stage_from_media(self.ctx, &contract.identity.iso_label)?;
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after stage")?;
         ensure!(!st.trial_pending, "stage alone must not schedule a boot");
@@ -153,8 +156,9 @@ impl Machine<'_> {
         steps.push("a degraded trial of slot B rebooted into slot A by itself and was recorded");
 
         // Repair B: the healthy trial commits itself.
+        // /run is empty again after the reboot.
         sys.sh(&format!(
-            "mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
+            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
             failing_service(self.ctx.init_system(), false)
         ))?;
         sys.sh("recab set-next B")?;
@@ -179,7 +183,7 @@ impl Machine<'_> {
         // A second generation: from the committed slot B, stage A again.
         let mut sys = self.boot(true)?;
         expect(&sys.status()?, Slot::B, true, "on the boot after the commit")?;
-        sys.stage_from_media(self.ctx)?;
+        sys.stage_from_media(self.ctx, &contract.identity.iso_label)?;
         sys.sh("recab set-next A")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
@@ -243,7 +247,8 @@ impl Booted {
     /// Wait for recab-trial.service to commit the running trial.
     fn wait_committed(&mut self) -> Result<()> {
         self.run(
-            "for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1",
+            // A subshell: `exit` in the console's own shell would log it out.
+            "(for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1)",
             COMMIT_WAIT,
         )
         .context("the healthy trial was not committed")?;
@@ -251,9 +256,14 @@ impl Booted {
     }
 
     /// Stage the inactive slot from the attached release ISO.
-    fn stage_from_media(&mut self, ctx: &dyn DistroContext) -> Result<()> {
-        let media = self.sh("blkid -t TYPE=iso9660 -o device | head -n1")?;
-        ensure!(!media.is_empty(), "the update medium is not attached");
+    /// `iso_label` picks the release ISO out of the attached discs (the boot-injection
+    /// disc is ISO 9660 too, and blkid lists the discs in no set order).
+    fn stage_from_media(&mut self, ctx: &dyn DistroContext, iso_label: &str) -> Result<()> {
+        let media = self.sh(&format!(
+            "blkid -t LABEL={} -o device | head -n1",
+            shell_quote(iso_label)
+        ))?;
+        ensure!(!media.is_empty(), "the update medium (ISO label {iso_label}) is not attached");
         self.sh(&format!("mkdir -p {MEDIA_MOUNT} && mount -o ro {} {MEDIA_MOUNT}", shell_quote(&media)))?;
         // The rootfs is a file in the ISO, or (the default layout) an
         // appended partition, which a CD drive does not expose: a read-only
