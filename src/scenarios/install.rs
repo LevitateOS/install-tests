@@ -83,10 +83,13 @@ pub fn install(
         shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/vmlinuz")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
+    // The installed system's initramfs, which the ISO carries beside its own live one
+    // (that one only finds the live medium); recsetup defaults to it, named here so the
+    // scenario fails loudly if the ISO lacks it.
     if system.uses_initramfs {
         setup.push_str(&format!(
             " --initrd {}",
-            shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/initramfs.img"))
+            shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/initramfs-installed.img"))
         ));
     }
     match system.mode {
