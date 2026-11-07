@@ -531,8 +531,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
             ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
             ("fstab root entry", format!("awk '$2==\"/\" {{ok=1}} END{{exit(ok?0:1)}}' {target}/etc/fstab")),
         ];
-        let os_id = distro_contract::load_variant_contract_for_distro_from(&repo_root(), ctx.id())?
-            .identity.os_id;
+        let os_id = distro_contract::load(&repo_root(), ctx.id())?.contract.identity.os_id;
         let kernel_dir = match system.mode {
             InstallMode::Mutable => format!("{target}/boot"),
             InstallMode::Ab => format!("{target}/boot/{}-a", os_id),
@@ -1414,7 +1413,7 @@ fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {
             eprintln!("    - PATH not set correctly");
             eprintln!();
             eprintln!("  Try:");
-            eprintln!("    - Check the live-tools product in distro/variants/<distro>/ring2/products.toml");
+            eprintln!("    - Check the live-tools product in distro/variants/<distro>/distro.toml (product_config.live_tools_actions)");
         }
         ScenarioId::Install => {
             eprintln!("  Common causes:");

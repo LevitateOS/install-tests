@@ -18,14 +18,12 @@
 use crate::repo_root;
 use anyhow::{Context, Result};
 use colored::Colorize;
-use distro_builder::build_host::{
-    check_kernel_preinstalled_via_recipe, run_build_host_evidence_script, BuildHostEvidenceSpec,
-    BuildHostKernelSpec,
+use distro_builder::kernel::{
+    check_kernel_installed, KERNEL_IMAGE_PATH, KERNEL_MODULES_DIR, KERNEL_RELEASE_PATH,
 };
 use distro_builder::run_history::{self, RunMetadata};
 use distro_contract::{
-    load_variant_contract_bundle_for_distro_from, require_valid_contract,
-    validate_build_runtime_with_artifacts, validate_live_boot_runtime, BuildRuntimeArtifacts,
+    validate_build_runtime, validate_live_boot_runtime, BuildRuntimeArtifacts,
     LiveBootRuntimeArtifacts,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
@@ -91,12 +89,11 @@ fn verify_conformance_contract(
     distro_id: &str,
     runtime_artifacts: &ResolvedRuntimeArtifacts,
     validate_live_boot: bool,
-    resolved_iso_path: Option<&Path>,
 ) -> Result<PreflightCheck> {
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
-    let bundle = match load_variant_contract_bundle_for_distro_from(&repo_root(), distro_id) {
+    let bundle = match distro_contract::load(&repo_root(), distro_id) {
         Ok(bundle) => bundle,
         Err(err) => {
             println!("{}", "FAIL".red().bold());
@@ -114,25 +111,22 @@ fn verify_conformance_contract(
     let mut details = Vec::new();
     let kernel_output_dir = run_history::kernel_output_dir(&repo_root(), distro_id);
 
-    if let Err(err) = require_valid_contract(&bundle.contract) {
-        details.extend(err.report.violations.into_iter().map(|v| v.to_string()));
-    }
-
-    let runtime_report = validate_build_runtime_with_artifacts(
-        &bundle.contract,
-        &bundle.variant_dir,
-        &kernel_output_dir,
+    let runtime_report = validate_build_runtime(
+        &bundle,
         &BuildRuntimeArtifacts {
             rootfs_image: runtime_artifacts.rootfs_image.clone(),
             initramfs_live: runtime_artifacts.initramfs_live.clone(),
             overlay_image: runtime_artifacts.overlay_image.clone(),
+            kernel_release: kernel_output_dir.join(KERNEL_RELEASE_PATH),
+            kernel_image: kernel_output_dir.join(KERNEL_IMAGE_PATH),
+            kernel_modules: kernel_output_dir.join(KERNEL_MODULES_DIR),
         },
     );
-    details.extend(runtime_report.violations.into_iter().map(|v| v.to_string()));
+    details.extend(runtime_report.into_iter().map(|v| v.to_string()));
 
     if validate_live_boot {
         let live_boot_report = validate_live_boot_runtime(
-            &bundle.contract,
+            &bundle.contract.scenarios.live_boot,
             &LiveBootRuntimeArtifacts {
                 rootfs_image: runtime_artifacts.rootfs_image.clone(),
                 initramfs_live: runtime_artifacts.initramfs_live.clone(),
@@ -141,21 +135,11 @@ fn verify_conformance_contract(
                 rootfs_source_pointer: runtime_artifacts.rootfs_source_pointer.clone(),
             },
         );
-        details.extend(
-            live_boot_report
-                .violations
-                .into_iter()
-                .map(|v| v.to_string()),
-        );
+        details.extend(live_boot_report.into_iter().map(|v| v.to_string()));
     }
 
-    if let Err(err) = verify_kernel_recipe_is_installed(&bundle, &kernel_output_dir, distro_id) {
-        details.push(err);
-    }
-    if let Err(err) =
-        verify_build_evidence_script(&bundle, &kernel_output_dir, distro_id, resolved_iso_path)
-    {
-        details.push(err);
+    if let Err(err) = check_kernel_installed(&bundle, &kernel_output_dir) {
+        details.push(format!("kernel: {err:#}"));
     }
 
     if details.is_empty() {
@@ -182,116 +166,6 @@ fn verify_conformance_contract(
             details,
         })
     }
-}
-
-fn verify_kernel_recipe_is_installed(
-    bundle: &distro_contract::LoadedVariantContract,
-    kernel_output_dir: &Path,
-    distro_id: &str,
-) -> Result<(), String> {
-    let build = &bundle.contract.build;
-    let spec = BuildHostKernelSpec {
-        recipe_kernel_script: build.kernel.recipe_script.clone(),
-        kernel_kconfig_path: build.kernel.kconfig_path.clone(),
-    };
-
-    check_kernel_preinstalled_via_recipe(
-        &bundle.repo_root,
-        &bundle.paths,
-        distro_id,
-        kernel_output_dir,
-        &spec,
-    )
-    .map_err(|e| {
-        format!(
-            "build.recipe_isinstalled [RecipeKernelOrchestrationRequired] {}",
-            e
-        )
-    })
-}
-
-fn verify_build_evidence_script(
-    bundle: &distro_contract::LoadedVariantContract,
-    kernel_output_dir: &Path,
-    distro_id: &str,
-    resolved_iso_path: Option<&Path>,
-) -> Result<(), String> {
-    let build = &bundle.contract.build;
-    let (run_output_dir, iso_filename) = if let Some(iso_path) = resolved_iso_path {
-        let parent = iso_path.parent().ok_or_else(|| {
-            format!(
-                "build.evidence [InvalidEvidenceDeclaration] ISO path has no parent directory: {}",
-                iso_path.display()
-            )
-        })?;
-        let filename = iso_path
-            .file_name()
-            .and_then(|part| part.to_str())
-            .ok_or_else(|| {
-                format!(
-                    "build.evidence [InvalidEvidenceDeclaration] ISO path has no valid filename: {}",
-                    iso_path.display()
-                )
-            })?
-            .to_string();
-        (parent.to_path_buf(), filename)
-    } else {
-        let iso_filename = required_transform_output_name(
-            &bundle.contract.transforms.iso.output_names,
-            "contract.transforms.iso.output_names",
-            distro_id,
-        )
-        .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))?;
-        let release_root = run_history::release_product_dir(&repo_root(), distro_id, "base-rootfs");
-        let run_output_dir = resolve_latest_successful_run_dir(&release_root, &iso_filename)
-            .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))?
-            .unwrap_or(release_root);
-        (run_output_dir, iso_filename)
-    };
-    let spec = BuildHostEvidenceSpec {
-        script_path: build.evidence.script_path.clone(),
-        pass_marker: build.evidence.pass_marker.clone(),
-        kernel_release_path: build.kernel.release_path.clone(),
-        kernel_image_path: build.kernel.image_path.clone(),
-        iso_filename,
-    };
-
-    run_build_host_evidence_script(
-        &bundle.repo_root,
-        &bundle.paths,
-        kernel_output_dir,
-        &run_output_dir,
-        &spec,
-    )
-    .map_err(|e| format!("build.evidence [InvalidEvidenceDeclaration] {}", e))
-}
-
-/// The newest successful run under `run_root` whose ISO is still on disk.
-fn resolve_latest_successful_run_dir(
-    run_root: &Path,
-    iso_filename: &str,
-) -> Result<Option<PathBuf>> {
-    let mut best: Option<(String, PathBuf)> = None;
-    for run in run_history::load_run_metadata(run_root)? {
-        if run.status != run_history::STATUS_SUCCESS {
-            continue;
-        }
-        let run_dir = run_root.join(&run.run_id);
-        let iso = run
-            .iso_path
-            .as_ref()
-            .map(PathBuf::from)
-            .filter(|p| p.is_file())
-            .unwrap_or_else(|| run_dir.join(iso_filename));
-        if !iso.is_file() {
-            continue;
-        }
-        let key = run.finished_at_utc.unwrap_or(run.created_at_utc);
-        if best.as_ref().is_none_or(|(k, _)| key > *k) {
-            best = Some((key, run_dir));
-        }
-    }
-    Ok(best.map(|(_, run_dir)| run_dir))
 }
 
 fn should_validate_live_boot_runtime(run_manifest: Option<&RunMetadata>) -> bool {
@@ -360,7 +234,6 @@ pub fn run_preflight(
         distro_id,
         &runtime_artifacts,
         validate_live_boot,
-        resolved_iso_path.as_deref(),
     )?);
     if !result.conformance.as_ref().unwrap().passed {
         result.overall_pass = false;
@@ -449,61 +322,16 @@ struct CanonicalRuntimeArtifactNames {
 fn canonical_runtime_artifact_names_for_distro(
     distro_id: &str,
 ) -> Result<CanonicalRuntimeArtifactNames> {
-    let bundle = load_variant_contract_bundle_for_distro_from(&repo_root(), distro_id)
-        .with_context(|| format!("loading variant contract for '{}'", distro_id))?;
+    let transforms = distro_contract::load(&repo_root(), distro_id)?.contract.transforms;
     Ok(CanonicalRuntimeArtifactNames {
-        rootfs_image: required_transform_output_name(
-            &bundle.contract.transforms.rootfs_image.output_names,
-            "contract.transforms.rootfs_image.output_names",
-            distro_id,
-        )?,
-        initramfs_live: required_transform_output_name(
-            &bundle.contract.transforms.initramfs_live.output_names,
-            "contract.transforms.initramfs_live.output_names",
-            distro_id,
-        )?,
-        initramfs_installed: optional_transform_output_name(
-            bundle
-                .contract
-                .transforms
-                .initramfs_installed
-                .as_ref()
-                .map(|transform| transform.output_names.as_slice()),
-            "contract.transforms.initramfs_installed.output_names",
-            distro_id,
-        )?,
-        overlay_image: required_transform_output_name(
-            &bundle.contract.transforms.overlay_image.output_names,
-            "contract.transforms.overlay_image.output_names",
-            distro_id,
-        )?,
+        rootfs_image: transforms.rootfs_image.output().to_string(),
+        initramfs_live: transforms.initramfs_live.output().to_string(),
+        initramfs_installed: transforms
+            .initramfs_installed
+            .as_ref()
+            .map(|transform| transform.output().to_string()),
+        overlay_image: transforms.overlay_image.output().to_string(),
     })
-}
-
-fn required_transform_output_name(
-    outputs: &[String],
-    field: &str,
-    distro_id: &str,
-) -> Result<String> {
-    outputs.first().cloned().with_context(|| {
-        format!(
-            "missing canonical Ring 1 output '{}' for '{}'",
-            field, distro_id
-        )
-    })
-}
-
-fn optional_transform_output_name(
-    outputs: Option<&[String]>,
-    field: &str,
-    distro_id: &str,
-) -> Result<Option<String>> {
-    let Some(outputs) = outputs else {
-        return Ok(None);
-    };
-    Ok(Some(required_transform_output_name(
-        outputs, field, distro_id,
-    )?))
 }
 
 fn resolve_required_file(artifact_dir: &Path, canonical: &str) -> Result<PathBuf> {

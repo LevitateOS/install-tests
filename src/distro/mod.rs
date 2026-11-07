@@ -1,10 +1,9 @@
 //! Per-distro facts for the install scenarios: the variant contracts hold
 //! everything else.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use distro_contract::{
-    load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario,
-    RuntimePolicyScenario, ScenarioContract, ToolsScenario,
+    AutomatedLoginScenario, BootScenario, RuntimePolicyScenario, ScenarioContract, ToolsScenario,
 };
 
 pub mod acorn;
@@ -56,16 +55,11 @@ pub struct InstalledScenarioFacts {
 
 /// The variant's whole scenario contract.
 pub fn load_scenarios(distro_id: &str) -> Result<ScenarioContract> {
-    Ok(
-        load_variant_contract_for_distro_from(&crate::repo_root(), distro_id)
-            .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?
-            .scenarios,
-    )
+    Ok(distro_contract::load(&crate::repo_root(), distro_id)?.contract.scenarios)
 }
 
 pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {
-    let contract = load_variant_contract_for_distro_from(&crate::repo_root(), distro_id)
-        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?;
+    let contract = distro_contract::load(&crate::repo_root(), distro_id)?.contract;
     Ok(InstalledScenarioFacts {
         installed_boot: contract.scenarios.installed_boot,
         automated_login: contract.scenarios.automated_login,

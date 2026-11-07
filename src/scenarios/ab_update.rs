@@ -40,7 +40,7 @@ const FAILING_SERVICE: &str = "ab-update-fail";
 pub(super) fn run(ctx: &dyn DistroContext, iso: &Path) -> Result<String> {
     if install_mode_for_distro(ctx.id())? != InstallMode::Ab {
         bail!(
-            "{} installs in mutable mode (rootfs_mutability in its scenarios.toml); ab-update needs an A/B install",
+            "{} installs in mutable mode (scenarios.runtime_policy.rootfs_mutability in its distro.toml); ab-update needs an A/B install",
             ctx.id()
         );
     }
@@ -89,10 +89,7 @@ struct Booted {
 impl Machine<'_> {
     fn exercise(&self) -> Result<String> {
         let mut steps = Vec::new();
-        let contract = distro_contract::load_variant_contract_for_distro_from(
-            &crate::repo_root(),
-            self.ctx.id(),
-        )?;
+        let contract = distro_contract::load(&crate::repo_root(), self.ctx.id())?.contract;
         let entry = |slot: &str| {
             format!(
                 "/boot/loader/entries/{}-{slot}.conf",
