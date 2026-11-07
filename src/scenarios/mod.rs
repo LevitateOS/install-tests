@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "/usr/local/bin/live-boot-ssh-preflight.sh";
+const LIVE_BOOT_SSH_PREFLIGHT_SCRIPT: &str = "live-boot-ssh-preflight.sh";
 const SCENARIO_RUNTIME_RETENTION_COUNT: usize = 5;
 pub(super) const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
 const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
@@ -368,9 +368,13 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
     evidence_over_ssh(ssh_host_port, &live_boot_evidence, &[])?;
-    Remote::new(ssh_host_port).run(
-        "live-boot SSH preflight",
-        &install::shell_quote(LIVE_BOOT_SSH_PREFLIGHT_SCRIPT),
+    evidence_over_ssh(
+        ssh_host_port,
+        &distro_contract::ScriptEvidence {
+            script_path: LIVE_BOOT_SSH_PREFLIGHT_SCRIPT.to_string(),
+            pass_marker: "OPENSSH PREFLIGHT PASSED".to_string(),
+        },
+        &[],
     )?;
 
     Ok(
