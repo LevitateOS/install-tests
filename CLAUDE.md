@@ -17,8 +17,6 @@ E2E test runner for LevitateOS and AcornOS installation. Boots the ISO in a libv
 | Don't put here | Put it in |
 |----------------|-----------|
 | Built-artifact validation | `testing/fsdbg/` |
-| Rootfs/UX tests | `testing/rootfs-tests/` |
-| Hardware compatibility | `testing/hardware-compat/` |
 
 ## Commands
 
