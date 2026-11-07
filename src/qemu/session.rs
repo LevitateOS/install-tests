@@ -66,7 +66,10 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     let dir = runtime_dir();
     let socket = dir.join(format!("{}.serial", spec.name));
     let serial_log = dir.join(format!("{}.serial.log", spec.name));
-    let _ = fs::remove_file(&serial_log);
+    // Keep the previous boot's transcript (a scenario boots one VM name many times).
+    if serial_log.exists() {
+        let _ = fs::rename(&serial_log, serial_log.with_extension("log.prev"));
+    }
     let uefi_vars = match spec.ovmf_vars {
         Some(vars) => UefiVars::Existing(fs::canonicalize(vars)?),
         None => UefiVars::Fresh {

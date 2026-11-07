@@ -74,8 +74,10 @@ test_command "network interfaces discoverable" "ip -brief link >/dev/null"
 section_header "Hardware Diagnostics"
 test_tool "lspci" "lspci --version"
 test_tool "lsusb" "lsusb --version"
-test_tool "smartctl" "smartctl --version"
-test_tool "hdparm" "hdparm -V"
+# Disk health tools ship on some variants only; the variant's contract (required_tools)
+# makes them mandatory where they belong.
+if command -v smartctl >/dev/null 2>&1; then test_tool "smartctl" "smartctl --version"; fi
+if command -v hdparm >/dev/null 2>&1; then test_tool "hdparm" "hdparm -V"; fi
 test_command "PCI inventory probe" "lspci -mm >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -83,7 +85,8 @@ test_command "PCI inventory probe" "lspci -mm >/dev/null"
 # ═══════════════════════════════════════════════════════════════════════════
 
 section_header "Editors & Viewers"
-test_tool "vim" "vim --version"
+# vim on AcornOS, vim-minimal's vi on LevitateOS.
+if command -v vim >/dev/null 2>&1; then test_tool "vim" "vim --version"; else test_tool "vi" "vi --version"; fi
 test_tool "less" "less --version"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -91,7 +94,7 @@ test_tool "less" "less --version"
 # ═══════════════════════════════════════════════════════════════════════════
 
 section_header "System Utilities"
-test_tool "htop" "htop --version"
+if command -v htop >/dev/null 2>&1; then test_tool "htop" "htop --version"; fi
 test_tool "grep" "grep --version"
 test_tool "find" "find --version"
 test_tool "awk" "echo ok | awk '{ print \$1 }'"

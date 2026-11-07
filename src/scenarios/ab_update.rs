@@ -7,7 +7,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use recab::{Slot, Status};
 use recinit::live::{
-    INITRAMFS_LIVE_ISO_PATH, KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
+    KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
 };
 use recpart::InstallMode;
 use std::fs;
@@ -277,7 +277,9 @@ impl Booted {
             shell_quote(&rootfs)
         );
         if ctx.uses_initramfs() {
-            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/{INITRAMFS_LIVE_ISO_PATH}"));
+            // The installed system's initramfs, which the ISO carries beside its live one
+            // (that one only looks for the live medium), as the install uses.
+            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/boot/initramfs-installed.img"));
         }
         self.run(&stage, STAGE_TIMEOUT)?;
         self.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
