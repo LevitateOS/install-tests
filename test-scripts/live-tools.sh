@@ -56,6 +56,8 @@ test_tool "wipefs" "wipefs --version"
 test_tool "mkfs.ext4" "mkfs.ext4 -V 2>&1 | head -1"
 test_tool "mount" "mount --version"
 test_command "block subsystem visible" "test -d /sys/class/block && ls /sys/class/block >/dev/null"
+test_command "kernel modules installed for the running kernel" "test -f /lib/modules/\$(uname -r)/modules.dep"
+test_command "a modular driver loads (iwlwifi, with cfg80211)" "modprobe iwlwifi && grep -q '^iwlwifi ' /proc/modules"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Network & Connectivity
