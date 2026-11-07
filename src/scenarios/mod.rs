@@ -450,12 +450,13 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     let install_profile_evidence = format!("install UX verified; {ux_split_evidence}");
 
     Ok(format!(
-        "All {} tools verified working (actually executed): {}; {}; {}",
+        "All {} tools verified working (actually executed): {}; {}; {}; {}",
         found.len(),
         found.join(", "),
         install_profile_evidence,
-        overlay_evidence
-    ) + &format!("; {script_evidence}"))
+        overlay_evidence,
+        script_evidence
+    ))
 }
 
 fn wait_for_live_tools_serial_readiness(
