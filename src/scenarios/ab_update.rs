@@ -89,7 +89,16 @@ struct Booted {
 impl Machine<'_> {
     fn exercise(&self) -> Result<String> {
         let mut steps = Vec::new();
-        let entry = |slot: &str| format!("/boot/loader/entries/{}-{slot}.conf", self.ctx.id());
+        let contract = distro_contract::load_variant_contract_for_distro_from(
+            &crate::repo_root(),
+            self.ctx.id(),
+        )?;
+        let entry = |slot: &str| {
+            format!(
+                "/boot/loader/entries/{}-{slot}.conf",
+                contract.identity.os_id
+            )
+        };
 
         // Installed: slot A runs, is the known-good default, and supervises trials.
         let mut sys = self.boot(true)?;
@@ -107,9 +116,15 @@ impl Machine<'_> {
         ensure!(!st.trial_pending, "stage alone must not schedule a boot");
         let staged = sys.sh(&format!("cat {}", entry("b")))?;
         ensure!(
-            staged.contains("panic=") && staged.contains("rd.emergency=reboot"),
-            "slot B's staged entry lacks panic= or the trial options:\n{staged}"
+            staged.contains("panic="),
+            "slot B's staged entry lacks panic=:\n{staged}"
         );
+        if self.ctx.uses_initramfs() {
+            ensure!(
+                staged.contains("rd.emergency=reboot"),
+                "slot B's staged entry lacks the initramfs trial options:\n{staged}"
+            );
+        }
         steps.push("staged slot B from the release image");
 
         // A trial that comes up degraded reboots back to A by itself.

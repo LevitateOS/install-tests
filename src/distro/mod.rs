@@ -3,9 +3,8 @@
 
 use anyhow::{Context, Result};
 use distro_contract::{
-    ScenarioContract,
     load_variant_contract_for_distro_from, AutomatedLoginScenario, BootScenario,
-    RuntimePolicyScenario, ToolsScenario,
+    RuntimePolicyScenario, ScenarioContract, ToolsScenario,
 };
 
 pub mod acorn;
@@ -24,12 +23,6 @@ pub trait DistroContext: Send + Sync {
     fn live_boot_stall_timeout_secs(&self) -> u64 {
         60
     }
-
-    /// Shell command, run in the installed system, that enables a getty on ttyS0.
-    fn enable_serial_getty_cmd(&self) -> String;
-
-    /// Command, run in the installed system, that installs systemd-boot to `/boot`.
-    fn install_bootloader_cmd(&self) -> &str;
 
     fn default_hostname(&self) -> &str;
 
@@ -63,9 +56,11 @@ pub struct InstalledScenarioFacts {
 
 /// The variant's whole scenario contract.
 pub fn load_scenarios(distro_id: &str) -> Result<ScenarioContract> {
-    Ok(load_variant_contract_for_distro_from(&crate::repo_root(), distro_id)
-        .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?
-        .scenarios)
+    Ok(
+        load_variant_contract_for_distro_from(&crate::repo_root(), distro_id)
+            .with_context(|| format!("loading canonical variant contract for '{}'", distro_id))?
+            .scenarios,
+    )
 }
 
 pub fn load_installed_scenario_facts(distro_id: &str) -> Result<InstalledScenarioFacts> {

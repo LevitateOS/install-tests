@@ -1,7 +1,6 @@
 //! The install scenario's installation: the shipped tools, run over SSH in
 //! the live system in the order the live install docs give them (recpart,
-//! recstrap, recfstab, recchroot), then the test system's own setup (boot
-//! entries, hostname, root password, serial getty).
+//! recstrap, recfstab, recsetup), with test-specific choices supplied as inputs.
 
 use anyhow::{Context, Result};
 use recinit::live::LIVE_MEDIA_DIR;
@@ -43,11 +42,9 @@ pub fn install(
         remote.run(what, &cmd)
     };
 
-    let disks: DiskListResult = serde_json::from_str(&run(
-        "List disks",
-        "recpart list-disks --json".to_string(),
-    )?)
-    .context("parsing recpart list-disks JSON")?;
+    let disks: DiskListResult =
+        serde_json::from_str(&run("List disks", "recpart list-disks --json".to_string())?)
+            .context("parsing recpart list-disks JSON")?;
     let disk = disks
         .disks
         .iter()
@@ -70,119 +67,62 @@ pub fn install(
     let target = applied.handoff.install_target.clone();
     let t = shell_quote(&target);
 
-    run(
-        "Extract rootfs (recstrap)",
-        format!("recstrap --force {t}"),
-    )?;
+    run("Extract rootfs (recstrap)", format!("recstrap --force {t}"))?;
     run(
         "Generate fstab (recfstab)",
-        format!("recfstab {t} >> {}", shell_quote(&format!("{target}/etc/fstab"))),
+        format!(
+            "recfstab {t} >> {}",
+            shell_quote(&format!("{target}/etc/fstab"))
+        ),
     )?;
-    run(
-        "Install bootloader (recchroot)",
-        format!("recchroot {t} -- {}", ctx.install_bootloader_cmd()),
-    )?;
-    let live_boot = |file: &str| shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/{file}"));
+    // Exercise the shipped setup frontend. It delegates filesystem policy to
+    // the setup program installed by the system recipe and boot state to recab.
+    let mut setup = format!(
+        "recsetup apply --root {t} --hostname {} --root-password --passwords-stdin --machine-id --boot {} --kernel {} --options {}",
+        shell_quote(ctx.default_hostname()), system.mode,
+        shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/vmlinuz")),
+        shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
+    );
+    if system.uses_initramfs {
+        setup.push_str(&format!(
+            " --initrd {}",
+            shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/initramfs.img"))
+        ));
+    }
     match system.mode {
         InstallMode::Ab => {
-            // recab owns the A/B boot layout: both slot entries, slot A's
-            // kernel, loader.conf, its state, the trial service, and the
-            // firmware's default. It runs here, outside the chroot, where the
-            // firmware variables are reachable.
             let slots = &applied.handoff.mode_context;
-            let device = |slot: &Option<String>, name: &str| {
-                slot.clone().with_context(|| format!("recpart reported no slot {name} device"))
-            };
-            let mut init = format!(
-                "recab init --root {t} --slot-a {} --slot-b {} --kernel {}",
-                shell_quote(&device(&slots.slot_a_device, "A")?),
-                shell_quote(&device(&slots.slot_b_device, "B")?),
-                live_boot("vmlinuz"),
-            );
-            if system.uses_initramfs {
-                init.push_str(&format!(" --initrd {}", live_boot("initramfs.img")));
-            }
-            init.push_str(&format!(" --options {}", shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}"))));
-            run("Set up the A/B boot layout (recab init)", init)?;
+            let a = slots
+                .slot_a_device
+                .as_ref()
+                .context("recpart reported no slot A device")?;
+            let b = slots
+                .slot_b_device
+                .as_ref()
+                .context("recpart reported no slot B device")?;
+            setup.push_str(&format!(
+                " --slot-a {} --slot-b {}",
+                shell_quote(a),
+                shell_quote(b)
+            ));
         }
         InstallMode::Mutable => {
-            let mut boot_files = vec!["vmlinuz"];
-            if system.uses_initramfs {
-                boot_files.push("initramfs.img");
-            }
-            for file in &boot_files {
-                run(
-                    &format!("Copy {file} to the ESP"),
-                    format!("cp {} {}", live_boot(file), shell_quote(&format!("{target}/boot/{file}"))),
-                )?;
-            }
-            let device = applied
+            let device = &applied
                 .handoff
                 .mount_map
                 .iter()
                 .find(|m| m.path == target)
-                .map(|m| m.device.clone())
-                .context("recpart mounted nothing at the install target")?;
-            // The root is named by PARTUUID, which the kernel resolves with
-            // or without an initramfs.
-            let partuuid = run(
-                &format!("Read PARTUUID of {device}"),
-                format!("blkid -s PARTUUID -o value {}", shell_quote(&device)),
-            )?
-            .trim()
-            .to_string();
-            let mut entry = format!("title {}\nlinux /vmlinuz\n", ctx.name());
-            if system.uses_initramfs {
-                entry.push_str("initrd /initramfs.img\n");
-            }
-            entry.push_str(&format!(
-                "options root=PARTUUID={partuuid} rw rootwait {VGA_CONSOLE} {SERIAL_CONSOLE}\n"
-            ));
-            write_file(&mut run, &format!("{target}/boot/loader/entries/{}.conf", ctx.id()), &entry)?;
-            write_file(
-                &mut run,
-                &format!("{target}/boot/loader/loader.conf"),
-                &format!("default {}.conf\ntimeout 5\neditor 0\nconsole-mode max\n", ctx.id()),
-            )?;
+                .context("recpart mounted no root filesystem")?
+                .device;
+            setup.push_str(&format!(" --root-device {}", shell_quote(device)));
         }
     }
-
-    write_file(
-        &mut run,
-        &format!("{target}/etc/hostname"),
-        &format!("{}\n", ctx.default_hostname()),
-    )?;
     run(
-        "Set root password",
+        "Configure and boot the installed system (recsetup)",
         format!(
-            "printf '%s\\n' {} | recchroot {t} -- chpasswd",
-            shell_quote(&format!("root:{}", system.root_password))
-        ),
-    )?;
-    run(
-        "Enable serial getty",
-        format!(
-            "recchroot {t} -- sh -c {}",
-            shell_quote(&ctx.enable_serial_getty_cmd())
+            "printf '%s\\n' {} | {setup}",
+            shell_quote(&format!("root:{}", system.root_password)),
         ),
     )?;
     Ok((target, steps))
-}
-
-fn write_file(
-    run: &mut impl FnMut(&str, String) -> Result<String>,
-    path: &str,
-    content: &str,
-) -> Result<()> {
-    let dir = path.rsplit_once('/').map_or(".", |(dir, _)| dir);
-    run(
-        &format!("Write {path}"),
-        format!(
-            "mkdir -p {} && printf '%s' {} > {}",
-            shell_quote(dir),
-            shell_quote(content),
-            shell_quote(path)
-        ),
-    )?;
-    Ok(())
 }

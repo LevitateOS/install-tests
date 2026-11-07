@@ -526,9 +526,11 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
             ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
             ("fstab root entry", format!("awk '$2==\"/\" {{ok=1}} END{{exit(ok?0:1)}}' {target}/etc/fstab")),
         ];
+        let os_id = distro_contract::load_variant_contract_for_distro_from(&repo_root(), ctx.id())?
+            .identity.os_id;
         let kernel_dir = match system.mode {
             InstallMode::Mutable => format!("{target}/boot"),
-            InstallMode::Ab => format!("{target}/boot/{}-a", ctx.id()),
+            InstallMode::Ab => format!("{target}/boot/{}-a", os_id),
         };
         verify.push(("Kernel on ESP", format!("ls {kernel_dir}/vmlinuz")));
         if system.uses_initramfs {
@@ -537,16 +539,16 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         match system.mode {
             InstallMode::Mutable => verify.push((
                 "systemd-boot entry",
-                format!("cat {target}/boot/loader/entries/{}.conf", ctx.id()),
+                format!("cat {target}/boot/loader/entries/{}.conf", os_id),
             )),
             InstallMode::Ab => {
                 verify.push((
                     "systemd-boot entry slot A",
-                    format!("cat {target}/boot/loader/entries/{}-a.conf", ctx.id()),
+                    format!("cat {target}/boot/loader/entries/{}-a.conf", os_id),
                 ));
                 verify.push((
                     "systemd-boot entry slot B",
-                    format!("cat {target}/boot/loader/entries/{}-b.conf", ctx.id()),
+                    format!("cat {target}/boot/loader/entries/{}-b.conf", os_id),
                 ));
                 verify.push((
                     "recab state names slot A known-good",
@@ -909,7 +911,8 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
     report
 }
 
-/// Run a scenario's evidence script (installed in the image) through `exec`,
+/// Transfer the scenario evidence into /run, then execute it. Test scripts
+/// are harness inputs, never a dependency of an installed release. Runs through `exec`,
 /// which runs a guest command and returns its exit status and output; the
 /// script must exit 0 and print its pass marker.
 fn run_evidence(
@@ -917,16 +920,58 @@ fn run_evidence(
     env: &[(&str, &str)],
     mut exec: impl FnMut(&str) -> Result<(i32, String)>,
 ) -> Result<String> {
-    let path = installed_script_path(&evidence.script_path);
-    let mut cmd = format!("SCENARIO_PASS_MARKER={}", install::shell_quote(&evidence.pass_marker));
+    let name = Path::new(&evidence.script_path);
+    if name.components().count() != 1 || !evidence.script_path.ends_with(".sh") {
+        bail!("invalid evidence script name: {}", evidence.script_path);
+    }
+    let scripts = repo_root().join("testing/install-tests/test-scripts");
+    let path = format!("/run/scenario-tests/{}", evidence.script_path);
+    let (code, output) = exec("mkdir -p /run/scenario-tests/lib")?;
+    if code != 0 {
+        bail!("creating guest evidence directory failed: {output}");
+    }
+    for (source, dest) in [
+        (
+            scripts.join("lib/common.sh"),
+            "/run/scenario-tests/lib/common.sh".to_string(),
+        ),
+        (scripts.join(name), path.clone()),
+    ] {
+        let content = fs::read_to_string(&source)
+            .with_context(|| format!("reading evidence {}", source.display()))?;
+        let (code, output) = exec(&format!("true > {}", install::shell_quote(&dest)))?;
+        if code != 0 {
+            bail!("preparing evidence {dest} failed: {output}");
+        }
+        // Keep each serial input line below the terminal's canonical line bound.
+        let mut chunk = String::new();
+        for c in content.chars() {
+            chunk.push(c);
+            if chunk.len() >= 200 {
+                transfer_evidence_chunk(&mut exec, &dest, &chunk)?;
+                chunk.clear();
+            }
+        }
+        if !chunk.is_empty() {
+            transfer_evidence_chunk(&mut exec, &dest, &chunk)?;
+        }
+    }
+    let mut cmd = format!(
+        "SCENARIO_PASS_MARKER={}",
+        install::shell_quote(&evidence.pass_marker)
+    );
     for (key, value) in env {
         cmd.push_str(&format!(" {key}={}", install::shell_quote(value)));
     }
-    let (code, output) = exec(&format!("{cmd} {}", install::shell_quote(&path)))?;
+    let (code, output) = exec(&format!("{cmd} sh {}", install::shell_quote(&path)))?;
     if code != 0 || !output.contains(&evidence.pass_marker) {
         bail!(
             "evidence script {path} failed (exit {code}, pass marker {}):\n{}",
-            if output.contains(&evidence.pass_marker) { "printed" } else { "missing" },
+            if output.contains(&evidence.pass_marker) {
+                "printed"
+            } else {
+                "missing"
+            },
             output.trim()
         );
     }
@@ -1167,8 +1212,20 @@ fn scenario_runtime_root_dir(distro_id: &str, scenario: ScenarioId) -> PathBuf {
         .join(scenario.scenario_output_dirname())
 }
 
-fn installed_script_path(script_filename: &str) -> String {
-    format!("/usr/local/bin/{script_filename}")
+fn transfer_evidence_chunk(
+    exec: &mut impl FnMut(&str) -> Result<(i32, String)>,
+    dest: &str,
+    content: &str,
+) -> Result<()> {
+    let (code, output) = exec(&format!(
+        "printf '%s' {} >> {}",
+        install::shell_quote(content),
+        install::shell_quote(dest)
+    ))?;
+    if code != 0 {
+        bail!("transferring evidence {dest} failed: {output}");
+    }
+    Ok(())
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
