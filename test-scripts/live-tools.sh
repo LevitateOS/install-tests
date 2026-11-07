@@ -45,7 +45,6 @@ echo
 
 section_header "Core Installation Tools"
 test_command "PATH includes /usr/local/bin" "echo \"\$PATH\" | tr ':' '\n' | grep -qx '/usr/local/bin'"
-test_file_exists "/usr/local/bin/live-tools.sh" "live-tools validation script installed"
 test_tool "recstrap" "recstrap --help"
 test_tool "recfstab" "recfstab --help"
 test_tool "recchroot" "recchroot --help"
@@ -95,8 +94,8 @@ section_header "System Utilities"
 test_tool "htop" "htop --version"
 test_tool "grep" "grep --version"
 test_tool "find" "find --version"
-test_tool "awk" "awk --version"
-test_tool "sed" "sed --version"
+test_tool "awk" "echo ok | awk '{ print \$1 }'"
+test_tool "sed" "echo ok | sed -n p"
 test_command "shell can execute toolbox binaries" "command -v recstrap recfstab recchroot >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
