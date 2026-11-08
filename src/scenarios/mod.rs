@@ -281,6 +281,7 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
             ScenarioId::AbUpdate => {
                 ab_update::run(h, inputs.install(scenario)?, inputs.iso(scenario)?, &run.dir)
             }
+            ScenarioId::DesktopBoot => run_desktop_boot(h, inputs.iso(scenario)?),
         }
     })();
 
@@ -463,6 +464,27 @@ fn run_live_tools(h: &Harness, iso: &Path) -> Result<String> {
     let ux = verify_install_ux_split_behavior(remote)?;
     let evidence = guest::run_evidence(remote, variant, &scenario_evidence(ScenarioId::LiveTools)?, &[])?;
     Ok(format!("{tools}; {ux}; {evidence}"))
+}
+
+/// Desktop boot: the live-desktop ISO boots into the desktop. Its display
+/// manager runs and has logged the live user into a graphical session, no
+/// service failed, and the image says it is the desktop system
+/// (`desktop-boot.sh`, over SSH).
+fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
+    let variant = &h.variant;
+    let mut live = boot_live(h, ScenarioId::DesktopBoot, iso, None)?;
+    let evidence = guest::run_evidence(
+        &mut live.remote,
+        variant,
+        &scenario_evidence(ScenarioId::DesktopBoot)?,
+        &[
+            ("SCENARIO_DISPLAY_MANAGER", variant.contract.desktop.display_manager.as_str()),
+            ("SCENARIO_LIVE_USER", distro_contract::install_ux::LIVE_DESKTOP_USER),
+            ("SCENARIO_FLAVOUR_FIELD", distro_contract::profile::REC_FLAVOUR),
+            ("SCENARIO_FLAVOUR", ProductId::LiveDesktop.flavour().as_str()),
+        ],
+    )?;
+    Ok(format!("desktop session up; {evidence}"))
 }
 
 /// Install: the live-tools ISO installs to a disk in `h.install_mode` with
@@ -745,6 +767,11 @@ fn failure_hints(scenario: ScenarioId) -> &'static [&'static str] {
             "recab or recstrap is missing from the installed rootfs",
             "recab stage did not write slot B's entry or kernel",
             "one-shot boot variables were not kept in the UEFI variable store",
+        ],
+        ScenarioId::DesktopBoot => &[
+            "the desktop system lacks a package its session needs (the desktop lock)",
+            "the display manager did not start, or its autologin found no session",
+            "a desktop package's setup (accounts, caches, services) did not run in the rootfs recipe",
         ],
     }
 }

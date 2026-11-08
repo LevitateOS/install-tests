@@ -18,7 +18,8 @@ test-scripts/
 ├── install.sh             # what "the install passed" means, on the mounted target
 ├── installed-boot.sh      # installed system healthy (no failed service), not live
 ├── automated-login.sh     # a root login runs commands
-└── runtime.sh             # the privilege tool's policy
+├── runtime.sh             # the privilege tool's policy
+└── desktop-boot.sh        # live desktop up: display manager, graphical session, no failed service
 ```
 
 ## Rules

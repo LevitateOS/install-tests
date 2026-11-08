@@ -113,7 +113,8 @@ impl Evidence {
             | ScenarioId::Install
             | ScenarioId::InstalledBoot
             | ScenarioId::AutomatedLogin
-            | ScenarioId::Runtime => Some(Self::named(scenario.key())),
+            | ScenarioId::Runtime
+            | ScenarioId::DesktopBoot => Some(Self::named(scenario.key())),
         }
     }
 }

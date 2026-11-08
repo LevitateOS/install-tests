@@ -9,6 +9,7 @@
 use crate::boot_injection::BootInjection;
 use crate::qemu::Console;
 use anyhow::{Context, Result};
+use distro_contract::profile::Flavour;
 use distro_contract::{ScenarioId, Variant};
 use recqemu::libvirt::{runtime_dir, Domain, DomainSpec, SerialTarget, UefiVars};
 use std::fs;
@@ -133,6 +134,15 @@ impl Vm {
     }
 }
 
+/// The guest memory for `scenario`'s VM: recqemu's desktop size when it
+/// boots a desktop system's ISO, the default otherwise.
+fn memory_mib(scenario: ScenarioId) -> u32 {
+    match scenario.input().iso.map(|product| product.flavour()) {
+        Some(Flavour::Desktop) => DomainSpec::DESKTOP_MEMORY_MIB,
+        _ => DomainSpec::DEFAULT_MEMORY_MIB,
+    }
+}
+
 /// Boot a VM: UEFI on the host's OVMF, the serial port as the spec says, a
 /// VNC screen for Cockpit, and the injection medium when one is given.
 pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
@@ -177,7 +187,7 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     let domain_spec = DomainSpec {
         name: name.clone(),
         title: format!("Scenario VM {name}"),
-        memory_mib: DomainSpec::DEFAULT_MEMORY_MIB,
+        memory_mib: memory_mib(spec.scenario),
         vcpus: DomainSpec::DEFAULT_VCPUS,
         uefi_code: recqemu::find_ovmf()?,
         uefi_vars,
