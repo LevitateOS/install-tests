@@ -1,42 +1,22 @@
 # CLAUDE.md - install-tests
 
-## What is install-tests?
+The scenario harness for both distros; `README.md` says where each part lives.
 
-E2E test runner for LevitateOS and AcornOS installation. Boots the ISO in a libvirt VM (visible in Cockpit), performs a full installation, reboots into the installed system, verifies success.
+## What belongs here
 
-**This is THE crate for installation tests.**
+- Scenarios that boot a built ISO in a libvirt domain and check the live or
+  installed system, on LevitateOS and AcornOS alike.
+- The install scenario installs the way a user does, with the tools the ISO
+  ships. If it passes, users can install; if it fails, fix the install, not the
+  scenario.
 
-## What Belongs Here
-
-- Installation tests in libvirt VMs (`recqemu::libvirt`)
-- Full installation flow verification
-- Boot → Install → Reboot → Verify tests
-
-## What Does NOT Belong Here
+## What does not
 
 | Don't put here | Put it in |
 |----------------|-----------|
 | Built-artifact validation | `testing/fsdbg/` |
+| Per-distro facts (identity, services, tools) | the variant contract, `distro/variants/<id>/distro.toml` |
+| Domain definition and sizing | `tools/recqemu` |
 
-## Commands
-
-```bash
-cargo build
-cargo check # Unit tests are prohibited; use focused integration/runtime checks.
-cargo run    # Run the test suite
-```
-
-## Test Philosophy
-
-**ONE test. ONE VM. ONE installation. ONE reboot. ONE verification.**
-
-The test does what users do:
-1. Boot the ISO in a libvirt VM
-2. Partition, format and mount the disk (recpart, over SSH)
-3. Extract rootfs (recstrap)
-4. Generate fstab (recfstab)
-5. Install bootloader (bootctl in chroot, via recchroot)
-6. Reboot into installed system
-7. Verify system works
-
-If this test passes, users CAN install. If it fails, fix the installation process.
+Run it through `cargo xtask` (`cargo xtask --help`); `cargo check -p install-tests`
+compiles it.

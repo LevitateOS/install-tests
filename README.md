@@ -1,34 +1,30 @@
 # install-tests
 
-Scenario and installation verification harness for distro variants.
+The scenario harness for LevitateOS and AcornOS. It boots a variant's built ISO
+in a libvirt domain (through `recqemu`), drives the live and installed systems
+over the serial console and SSH, and records each scenario's result. It is a
+library: `cargo xtask test`, `status`, `reset` and `run` call it, and
+`cargo xtask --help` is the command reference.
 
-## Running
+## Where things live
 
-This crate is a library; run it through the workspace front door:
+- The scenarios, their order and what each one's input is:
+  `distro_contract::registry`. What a variant adds to them is its
+  `distro/variants/<id>/distro.toml`.
+- Running a scenario, its status and reset: `src/scenarios/`. Saved results and
+  their location: `src/scenarios/state.rs`.
+- Checks of the ISO before a VM starts: `src/preflight.rs`.
+- Settings handed to a live boot: `src/boot_injection.rs` (with the guest side in
+  `recinit::live`).
+- The serial console: `src/qemu/serial/`.
+- The scripts a scenario runs in the guest: `test-scripts/`.
 
-- `cargo xtask test <scenario|all> <distro>`: run scenarios (cached per input; `--force` reruns)
-- `cargo xtask status <distro>`: which scenarios pass, fail or are stale (`--json` for tools)
-- `cargo xtask reset <distro>`: forget saved results
-- `cargo xtask run <scenario> <distro>`: boot a scenario interactively
+Scenarios consume existing artifacts; products are built explicitly with
+`cargo xtask build`.
 
-## Distros
+## Failing fast
 
-Supported ids: `levitate`, `acorn`.
-
-## Boot injection
-
-The scenario runner accepts boot injection through environment variables:
-
-- `LEVITATE_BOOT_INJECTION_FILE=/abs/path/payload.env`
-- `LEVITATE_BOOT_INJECTION_KV='KEY=VALUE,FOO=BAR'`
-
-`cargo xtask test` and `cargo xtask run` set these from `--inject`, `--inject-file` and the SSH key.
-
-## Notes
-
-- Scenario preflight enforces contract + artifact checks before QEMU starts.
-- `live-boot` includes SSH readiness/login verification after shell-ready.
-
-Scenarios run independently and consume existing artifacts. Build products explicitly with `cargo xtask build <product> <distro>`. See the workspace `architecture.md` for ownership and output locations.
-
-Scenario results are cached per input fingerprint. Use `cargo xtask test --force` to rerun one scenario, `cargo xtask status` to inspect current/stale results, and `cargo xtask reset` to remove saved state. `LEVITATE_SCENARIO_STATE_DIR` overrides the default workspace `.scenarios` directory. Corrupt state is reported with a reset command.
+A scenario stops at the first fatal console line or failed step and tears its
+domain down. Timeouts are upper bounds for a step that is still making
+progress: when a step times out, find out what is slow or broken instead of
+raising the timeout.
