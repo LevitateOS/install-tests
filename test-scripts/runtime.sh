@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installed Tools Validation
+# Runtime Validation (the runtime scenario)
 #
 # Verifies that daily-driver tools are present and functional on the installed
 # system, not the live ISO.
@@ -17,7 +17,7 @@ else
     exit 1
 fi
 
-scenario_header "Installed Tools Validation"
+scenario_header "Runtime Validation"
 
 info "Testing daily driver tools on installed system"
 echo
@@ -49,5 +49,5 @@ case "$ID" in
     acornos) test_tool "ash" "ash -c 'echo test'" ;;
 esac
 
-report_results "Installed Tools"
+report_results "Runtime"
 exit $?

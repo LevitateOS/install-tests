@@ -24,7 +24,7 @@ use distro_builder::kernel::{
 use distro_builder::run_history::{self, RunMetadata};
 use distro_contract::{
     validate_build_runtime, validate_live_boot_runtime, BuildRuntimeArtifacts,
-    LiveBootRuntimeArtifacts, Variant,
+    LiveBootRuntimeArtifacts, ProductId, Variant,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
@@ -112,8 +112,7 @@ fn verify_conformance_contract(
 
     if validate_live_boot {
         let live_boot_report = validate_live_boot_runtime(
-            &bundle.contract.profile,
-            &bundle.contract.scenarios.live_boot,
+            &bundle.contract,
             &LiveBootRuntimeArtifacts {
                 rootfs_image: runtime_artifacts.rootfs_image.clone(),
                 initramfs_live: runtime_artifacts.initramfs_live.clone(),
@@ -155,40 +154,41 @@ fn verify_conformance_contract(
     }
 }
 
-fn should_validate_live_boot_runtime(run_manifest: Option<&RunMetadata>) -> bool {
-    if let Some(manifest) = run_manifest {
-        return manifest.target_kind.as_deref() == Some(run_history::TARGET_KIND_RELEASE_PRODUCT)
-            && matches!(
-                manifest.target_name.as_deref(),
-                Some("live-boot") | Some("live-tools")
-            );
+/// The release product the run in `iso_dir` built, by its run manifest.
+fn built_product(run_manifest: Option<&RunMetadata>) -> Option<ProductId> {
+    let manifest = run_manifest?;
+    if manifest.target_kind.as_deref() != Some(run_history::TARGET_KIND_RELEASE_PRODUCT) {
+        return None;
     }
-    false
+    ProductId::from_name(manifest.target_name.as_deref()?)
 }
 
 fn resolve_runtime_artifacts(
     artifact_dir: &Path,
     variant: &Variant,
+    product: ProductId,
 ) -> Result<ResolvedRuntimeArtifacts> {
-    let transforms = &variant.contract.transforms;
+    let artifacts = &variant.contract.artifacts;
+    let build = distro_builder::product::build(product);
     Ok(ResolvedRuntimeArtifacts {
-        rootfs_image: resolve_required_file(artifact_dir, transforms.rootfs_image.output())?,
-        initramfs_live: resolve_required_file(artifact_dir, transforms.initramfs_live.output())?,
-        initramfs_installed: match &variant.contract.artifacts.initramfs_installed_output {
+        rootfs_image: resolve_required_file(artifact_dir, &artifacts.rootfs)?,
+        initramfs_live: resolve_required_file(artifact_dir, &artifacts.initramfs_live)?,
+        initramfs_installed: match &artifacts.initramfs_installed {
             Some(name) => resolve_optional_file(artifact_dir, name)?,
             None => None,
         },
-        overlay_image: resolve_required_file(artifact_dir, transforms.overlay_image.output())?,
-        live_overlay_dir: resolve_required_dir(artifact_dir, "live-overlay")?,
-        rootfs_source_pointer: resolve_required_file(artifact_dir, ".live-rootfs-source.path")?,
+        overlay_image: resolve_required_file(artifact_dir, &artifacts.overlay)?,
+        live_overlay_dir: resolve_required_dir(artifact_dir, build.overlay_dir)?,
+        rootfs_source_pointer: resolve_required_file(artifact_dir, build.rootfs_source_pointer)?,
     })
 }
 
 /// Verify the contract and the ISO artifacts in `iso_dir` (the given ISO
-/// file, else the first `.iso` found).
+/// file, else the first `.iso` found), built as `product`.
 pub fn run_preflight(
     iso_dir: &Path,
     iso_filename: Option<&str>,
+    product: ProductId,
     variant: &Variant,
 ) -> Result<PreflightResult> {
     println!();
@@ -211,8 +211,10 @@ pub fn run_preflight(
         .filter(|path| path.is_file())
         .or_else(|| find_iso_file(iso_dir));
     let run_manifest = run_history::read_run_manifest(iso_dir)?;
-    let runtime_artifacts = resolve_runtime_artifacts(iso_dir, variant)?;
-    let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
+    let runtime_artifacts = resolve_runtime_artifacts(iso_dir, variant, product)?;
+    // A product whose overlay sets up the live session is checked for it.
+    let validate_live_boot = built_product(run_manifest.as_ref())
+        .is_some_and(|built| distro_builder::product::build(built).live_session);
 
     result.conformance = Some(verify_conformance_contract(
         variant,
@@ -238,7 +240,7 @@ pub fn run_preflight(
     }
 
     // The installed system's initramfs, when the variant declares one.
-    if let Some(declared) = &variant.contract.artifacts.initramfs_installed_output {
+    if let Some(declared) = &variant.contract.artifacts.initramfs_installed {
         if let Some(install_path) = runtime_artifacts.initramfs_installed.as_ref() {
             if install_path.exists() {
                 result.install_initramfs = Some(verify_artifact(
@@ -490,13 +492,13 @@ fn print_summary(result: &PreflightResult) {
     }
 }
 
-/// Run preflight and fail if a check failed.
-pub fn require_preflight(
-    iso_dir: &Path,
-    iso_filename: Option<&str>,
-    variant: &Variant,
-) -> Result<()> {
-    let result = run_preflight(iso_dir, iso_filename, variant)?;
+/// Run preflight on `product`'s ISO at `iso` and fail if a check failed.
+pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> Result<()> {
+    let iso_dir = iso
+        .parent()
+        .with_context(|| format!("'{}' has no parent directory", iso.display()))?;
+    let iso_filename = iso.file_name().and_then(|name| name.to_str());
+    let result = run_preflight(iso_dir, iso_filename, product, variant)?;
 
     if !result.overall_pass {
         // Collect all failures for the error message
@@ -524,9 +526,10 @@ pub fn require_preflight(
 
         anyhow::bail!("Preflight verification failed. Cannot run installation tests with broken artifacts.\n\n\
              Failures:\n{}\n\n\
-             Rebuild the ISO: cargo xtask build base-rootfs {}\n\
+             Rebuild the ISO: cargo xtask build {} {}\n\
              ALL verification checks must pass before running tests.",
             all_failures.join("\n"),
+            product,
             variant.id);
     }
 

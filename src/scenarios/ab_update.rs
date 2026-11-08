@@ -11,7 +11,6 @@ use recab::{InitSystemExt, Slot, Status};
 use recinit::live::{
     KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
 };
-use recpart::InstallMode;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -19,7 +18,7 @@ use std::time::Duration;
 
 use super::install::shell_quote;
 use super::{
-    default_password, install_mode, resolve_latest_install_runtime, ScenarioId,
+    InstallScenarioRuntime, ScenarioId,
     ScenarioRun, INSTALLED_BOOT_STALL, INSTALL_DISK_FILENAME, INSTALL_OVMF_VARS_FILENAME,
     LOGIN_TIMEOUT,
 };
@@ -38,14 +37,8 @@ const SLOT_MOUNT: &str = "/run/ab-update-slot";
 /// A service that always fails, so slot B's trial comes up degraded.
 const FAILING_SERVICE: &str = "ab-update-fail";
 
-pub(super) fn run(variant: &Variant, iso: &Path) -> Result<String> {
-    if install_mode(variant) != InstallMode::Ab {
-        bail!(
-            "{} installs in mutable mode (scenarios.runtime_policy.rootfs_mutability in its distro.toml); ab-update needs an A/B install",
-            variant.id
-        );
-    }
-    let install = resolve_latest_install_runtime(&variant.id)?;
+/// `install` is the latest install run, whose disk is A/B (`INSTALL_MODE`).
+pub(super) fn run(variant: &Variant, install: &InstallScenarioRuntime, iso: &Path) -> Result<String> {
     let scenario_run = ScenarioRun::start(&variant.id, ScenarioId::AbUpdate, Some(install.run_id.clone()))?;
 
     // A copy-on-write layer over the install disk, so the install result
@@ -92,7 +85,7 @@ impl Machine<'_> {
         let mut steps = Vec::new();
         let contract = &self.variant.contract;
         let init = contract.profile.init;
-        let initramfs = contract.artifacts.initramfs_installed_output.as_deref();
+        let initramfs = contract.artifacts.initramfs_installed.as_deref();
         let entry = |slot: &str| {
             format!(
                 "/boot/loader/entries/{}-{slot}.conf",
@@ -227,9 +220,9 @@ impl Machine<'_> {
             ..Default::default()
         })?;
         vm.console
-            .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, &self.variant.contract.scenarios)?;
+            .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, self.variant)?;
         vm.console
-            .login("root", &default_password(self.variant)?, LOGIN_TIMEOUT)?;
+            .login("root", crate::expect::root_password(self.variant), LOGIN_TIMEOUT)?;
         Ok(Booted { vm })
     }
 }

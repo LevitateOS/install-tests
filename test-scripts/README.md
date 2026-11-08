@@ -23,7 +23,7 @@ test-scripts/
 ├── install.sh                     # Verify installation completed
 ├── installed-boot.sh              # Verify boots from disk
 ├── automated-login.sh             # Verify login works
-├── installed-tools.sh             # Verify installed-system tools
+├── runtime.sh                     # Verify installed-system tools (runtime)
 └── README.md                          # This file
 ```
 
@@ -85,7 +85,7 @@ cargo xtask test live-tools acorn
 **Tests:** Can login as root, run commands
 **Environment:** Installed system
 
-### Installed Tools
+### Runtime
 **Purpose:** Verify all tools work on installed system
 **Tests:** sudo on Levitate, doas on Acorn, SSH, networking, shell, etc.
 **Environment:** Installed system
