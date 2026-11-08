@@ -13,16 +13,16 @@ use crate::expect::{self, Evidence};
 use crate::preflight::require_preflight;
 use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
+use crate::boot_injection::{BootInjection, SSH_AUTHORIZED_KEY};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use distro_contract::profile::{InitSystem, PrivilegeTool};
 use distro_contract::runs::{self, Run, RunManifest, RunRef, RunStatus};
-use distro_contract::{ProductId, Variant};
-use recab::InitSystemExt;
+use distro_contract::{Missing, ProductId, Variant};
 use recpart::InstallMode;
-use recshuttle::Remote;
+use recshuttle::{Login, Remote};
 use distro_builder::install_ux::{LAUNCHER, PROBE_PREFIX, SMOKE_ENV, SPLIT, SPLIT_SMOKE_OK};
-use crate::qemu::session::VmSpec;
+use crate::qemu::session::{Ssh, Vars, VmSpec};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -56,9 +56,9 @@ pub struct InstallRun {
 }
 
 /// A release ISO and the run that built it.
-struct ReleaseIso {
+pub(crate) struct ReleaseIso {
     product: ProductId,
-    iso: PathBuf,
+    pub(crate) iso: PathBuf,
     run: RunRef,
 }
 
@@ -119,33 +119,148 @@ fn latest_result(variant: &Variant, scenario: ScenarioId) -> Result<Option<Resul
     }))
 }
 
-/// Run one scenario for a distro of the checkout at `repo`; `force` reruns
-/// it even when a passing run for the same inputs exists. A failure is the
-/// error, with its cause.
-pub fn run_scenario(repo: &Path, distro_id: &str, scenario: ScenarioId, force: bool) -> Result<()> {
-    let variant = load_variant(repo, distro_id)?;
+/// How `run` runs the scenarios.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    /// Rerun scenarios that already passed for the same inputs.
+    pub force: bool,
+    /// Extra `KEY=VALUE` lines for every live boot's injection.
+    pub injection: Vec<String>,
+    /// The private key the guests trust (its `.pub` is injected); default:
+    /// the checkout's guest key, created on first use.
+    pub login_key: Option<PathBuf>,
+}
+
+/// What became of one scenario.
+#[derive(Debug)]
+pub enum Outcome {
+    /// It ran and passed: what it proved.
+    Passed(String),
+    /// A passing run for the same inputs exists.
+    Cached,
+    /// It ran and failed, or could not start.
+    Failed(anyhow::Error),
+    /// An input it needs does not exist.
+    Missing(Missing),
+    /// It did not run because a scenario it consumes failed in this run.
+    NotRun(String),
+}
+
+/// What every scenario of one run shares: the variant, loaded once, the
+/// guest login and the extra injection.
+pub(crate) struct Harness {
+    pub variant: Variant,
+    pub login: Option<Login>,
+    pub injection: Vec<String>,
+}
+
+impl Harness {
+    pub(crate) fn new(repo: &Path, distro_id: &str, options: &RunOptions, boots: bool) -> Result<Self> {
+        let variant = load_variant(repo, distro_id)?;
+        let login = if boots {
+            let key = match &options.login_key {
+                Some(key) => key.clone(),
+                None => ensure_login_key(repo)?,
+            };
+            Some(Login { key, user: "root".to_string() })
+        } else {
+            None
+        };
+        Ok(Self {
+            variant,
+            login,
+            injection: options.injection.clone(),
+        })
+    }
+
+    fn login(&self) -> Result<&Login> {
+        self.login.as_ref().context("this run boots no VM, so it resolved no login key")
+    }
+
+    /// The guest behind a forwarded SSH port.
+    pub(crate) fn remote(&self, port: u16) -> Result<Remote> {
+        Ok(Remote::new(port, self.login()?.clone()))
+    }
+
+    /// The injection a live boot gets: the login key, `extra`, then the run's own lines.
+    pub(crate) fn live_injection(&self, extra: &[String]) -> Result<BootInjection> {
+        let mut lines = vec![format!("{SSH_AUTHORIZED_KEY}={}", recshuttle::public_key(&self.login()?.key)?)];
+        lines.extend(extra.iter().cloned());
+        lines.extend(self.injection.iter().cloned());
+        BootInjection::new(&lines)
+    }
+}
+
+/// The checkout's guest login key (`runs::ssh_key`), created on first use.
+pub fn ensure_login_key(repo: &Path) -> Result<PathBuf> {
+    let key = runs::ssh_key(repo);
+    recshuttle::ensure_key(&key)?;
+    Ok(key)
+}
+
+/// Run `scenarios` for a distro of the checkout at `repo`, every one of
+/// them, each on its own against the artifacts that exist; a failure does
+/// not stop the rest, but a scenario that consumes the install run is not
+/// run after the install scenario failed in the same call. Progress goes to
+/// stderr.
+pub fn run(
+    repo: &Path,
+    distro_id: &str,
+    scenarios: &[ScenarioId],
+    options: &RunOptions,
+) -> Result<Vec<(ScenarioId, Outcome)>> {
+    let boots = scenarios.iter().any(|s| *s != ScenarioId::BuildPreflight);
+    let harness = Harness::new(repo, distro_id, options, boots)?;
+    let mut outcomes = Vec::new();
+    let mut install_failed = false;
+    for &scenario in scenarios {
+        let outcome = if install_failed && scenario.input().install_run {
+            Outcome::NotRun(format!("needs a passing install, and install failed in this run"))
+        } else {
+            match run_one(&harness, scenario, options.force) {
+                Ok(Some(evidence)) => Outcome::Passed(evidence),
+                Ok(None) => Outcome::Cached,
+                Err(err) => match err.downcast_ref::<Missing>() {
+                    Some(missing) => Outcome::Missing(missing.clone()),
+                    None => Outcome::Failed(err),
+                },
+            }
+        };
+        if scenario == ScenarioId::Install && !matches!(outcome, Outcome::Passed(_) | Outcome::Cached) {
+            install_failed = true;
+        }
+        outcomes.push((scenario, outcome));
+    }
+    Ok(outcomes)
+}
+
+/// Run one scenario; `None` when a passing run for the same inputs exists
+/// and `force` is not set. A failure is the error, with its cause.
+fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<String>> {
+    let variant = &h.variant;
+    let repo = variant.repo_root.as_path();
     let distro_id = variant.id.as_str();
     let inputs = Inputs::resolve(repo, distro_id, scenario)?;
-    let fingerprint = scenario_input_fingerprint(&variant, &inputs)?;
+    let fingerprint = scenario_input_fingerprint(variant, &inputs)?;
 
     if force {
-        println!("Forcing {} rerun.", scenario.title());
-    } else if let Some(Ok(last)) = latest_result(&variant, scenario)? {
+        eprintln!("Forcing {} rerun.", scenario.title());
+    } else if let Some(Ok(last)) = latest_result(variant, scenario)? {
         if last.status == RunStatus::Success && last.fingerprint.as_deref() == Some(fingerprint.as_str()) {
-            println!(
+            eprintln!(
                 "{} {} already passed (rerun with --force).",
                 "[SKIP]".green(),
                 scenario.title()
             );
-            return Ok(());
+            return Ok(None);
         }
     }
 
     if let Some(release) = &inputs.iso {
-        require_preflight(&release.iso, release.product, &variant)?;
+        require_preflight(&release.iso, release.product, variant)?;
     }
 
-    println!("{} {}", ">>".cyan(), scenario.title());
+    eprintln!("{} {}", ">>".cyan(), scenario.title());
     let mut run = Run::start_scenario(repo, distro_id, scenario)?;
     run.manifest.inputs = inputs.refs();
     run.manifest.fingerprint = Some(fingerprint);
@@ -158,21 +273,21 @@ pub fn run_scenario(repo: &Path, distro_id: &str, scenario: ScenarioId, force: b
                 iso.display()
             )
         }),
-        ScenarioId::LiveBoot => inputs.iso(scenario).and_then(|iso| run_live_boot(&variant, iso)),
-        ScenarioId::LiveTools => inputs.iso(scenario).and_then(|iso| run_live_tools(&variant, iso)),
-        ScenarioId::Install => inputs.iso(scenario).and_then(|iso| run_installation(&variant, iso, &mut run)),
+        ScenarioId::LiveBoot => inputs.iso(scenario).and_then(|iso| run_live_boot(h, iso)),
+        ScenarioId::LiveTools => inputs.iso(scenario).and_then(|iso| run_live_tools(h, iso)),
+        ScenarioId::Install => inputs.iso(scenario).and_then(|iso| run_installation(h, iso, &mut run)),
         ScenarioId::InstalledBoot => inputs
             .install(scenario)
-            .and_then(|install| run_installed_boot(&variant, install, &run.dir)),
+            .and_then(|install| run_installed_boot(h, install, &run.dir)),
         ScenarioId::AutomatedLogin => inputs
             .install(scenario)
-            .and_then(|install| run_automated_login(&variant, install, &run.dir)),
+            .and_then(|install| run_automated_login(h, install, &run.dir)),
         ScenarioId::Runtime => inputs
             .install(scenario)
-            .and_then(|install| run_runtime(&variant, install, &run.dir)),
+            .and_then(|install| run_runtime(h, install, &run.dir)),
         ScenarioId::AbUpdate => inputs
             .iso(scenario)
-            .and_then(|iso| ab_update::run(&variant, inputs.install(scenario)?, iso, &run.dir)),
+            .and_then(|iso| ab_update::run(h, inputs.install(scenario)?, iso, &run.dir)),
     };
 
     run.manifest.evidence = Some(match &result {
@@ -189,13 +304,13 @@ pub fn run_scenario(repo: &Path, distro_id: &str, scenario: ScenarioId, force: b
     match result {
         Ok(evidence) => {
             recorded?;
-            println!(
+            eprintln!(
                 "{} {} passed: {}",
                 "[PASS]".green().bold(),
                 scenario.title(),
                 evidence
             );
-            Ok(())
+            Ok(Some(evidence))
         }
         Err(e) => {
             print_failure(scenario, &e);
@@ -271,30 +386,8 @@ fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
         .collect()
 }
 
-/// Print scenario status for a distro.
-pub fn print_status(repo: &Path, distro_id: &str) -> Result<()> {
-    let variant = load_variant(repo, distro_id)?;
-    println!("{} Scenario Status", variant.contract.identity.os_name.bold());
-    println!();
-    for (scenario, status) in statuses(&variant)? {
-        let label = match &status {
-            ScenarioStatus::Stale => "[STALE]".yellow(),
-            ScenarioStatus::Error(_) => "[ERROR]".red(),
-            ScenarioStatus::Pass => "[PASS]".green(),
-            ScenarioStatus::Fail => "[FAIL]".red(),
-            ScenarioStatus::NotRun => "[    ]".dimmed(),
-        };
-        println!("  {} {:<15} {}", label, scenario.key(), scenario.title());
-        if let ScenarioStatus::Error(why) = &status {
-            println!("          {}", why.lines().next().unwrap_or_default().dimmed());
-        }
-    }
-    println!();
-    Ok(())
-}
-
 /// Remove every scenario run of a distro (their records and disks).
-pub fn reset_state(repo: &Path, distro_id: &str) -> Result<()> {
+pub fn reset(repo: &Path, distro_id: &str) -> Result<()> {
     let variant = load_variant(repo, distro_id)?;
     for scenario in ScenarioId::ALL {
         let dir = runs::scenario_dir(repo, &variant.id, scenario);
@@ -302,26 +395,27 @@ pub fn reset_state(repo: &Path, distro_id: &str) -> Result<()> {
             fs::remove_dir_all(&dir).with_context(|| format!("removing '{}'", dir.display()))?;
         }
     }
-    println!("Scenario runs removed for {}.", variant.id);
     Ok(())
 }
 
 /// Live Boot scenario — ISO boots in QEMU.
-fn run_live_boot(variant: &Variant, iso_path: &Path) -> Result<String> {
+fn run_live_boot(h: &Harness, iso_path: &Path) -> Result<String> {
+    let variant = &h.variant;
+    let injection = h.live_injection(&[])?;
     let mut vm = session::spawn(VmSpec {
-        name: &format!("{}-live-boot", variant.id),
         iso: Some(iso_path),
-        ssh: true,
-        ..Default::default()
+        ssh: Ssh::Free,
+        injection: Some(&injection),
+        ..VmSpec::new(variant, ScenarioId::LiveBoot)
     })?;
     let ssh_host_port = vm.ssh_port()?;
-    let console = &mut vm.console;
+    let console = vm.console()?;
     console.wait_for_live_boot_with_context(live_boot_stall(variant), variant)?;
-    verify_live_boot_ssh_login(console, ssh_host_port)?;
+    verify_live_boot_ssh_login(h, console, ssh_host_port)?;
 
-    evidence_over_ssh(&variant.repo_root, ssh_host_port, &scenario_evidence(ScenarioId::LiveBoot)?, &[])?;
+    evidence_over_ssh(h, ssh_host_port, &scenario_evidence(ScenarioId::LiveBoot)?, &[])?;
     evidence_over_ssh(
-        &variant.repo_root,
+        h,
         ssh_host_port,
         &Evidence {
             script: "live-boot-ssh-preflight.sh".to_string(),
@@ -341,17 +435,19 @@ fn run_live_boot(variant: &Variant, iso_path: &Path) -> Result<String> {
 /// Each tool is run with a harmless invocation where it has one (see
 /// [`check_tool`]), so missing libraries or a broken binary fail, not just
 /// absence from PATH. The live overlay's behavior is checked too.
-fn run_live_tools(variant: &Variant, iso_path: &Path) -> Result<String> {
+fn run_live_tools(h: &Harness, iso_path: &Path) -> Result<String> {
+    let variant = &h.variant;
+    let injection = h.live_injection(&[])?;
     let mut vm = session::spawn(VmSpec {
-        name: &format!("{}-live-tools", variant.id),
         iso: Some(iso_path),
-        ssh: true,
-        ..Default::default()
+        ssh: Ssh::Free,
+        injection: Some(&injection),
+        ..VmSpec::new(variant, ScenarioId::LiveTools)
     })?;
     let ssh_host_port = vm.ssh_port()?;
-    let console = &mut vm.console;
+    let console = vm.console()?;
     wait_for_live_tools_serial_readiness(console, variant)?;
-    verify_live_boot_ssh_login(console, ssh_host_port)?;
+    verify_live_boot_ssh_login(h, console, ssh_host_port)?;
 
     let required = variant.contract.live_tools();
     let tools: Vec<&str> = required.iter().map(String::as_str).collect();
@@ -359,7 +455,7 @@ fn run_live_tools(variant: &Variant, iso_path: &Path) -> Result<String> {
     let mut found = Vec::new();
     let mut broken = Vec::new();
 
-    let remote = Remote::new(ssh_host_port);
+    let remote = h.remote(ssh_host_port)?;
     for tool in &tools {
         match check_tool(variant, tool, |cmd| Ok(remote.exec(cmd)?.exit_code))? {
             ToolCheck::Works => found.push(*tool),
@@ -392,7 +488,6 @@ fn run_live_tools(variant: &Variant, iso_path: &Path) -> Result<String> {
         bail!("{}", error_msg.trim());
     }
 
-    let remote = Remote::new(ssh_host_port);
     remote.run(
         "checking the install screen launcher",
         &format!("test -x /{LAUNCHER}"),
@@ -400,7 +495,7 @@ fn run_live_tools(variant: &Variant, iso_path: &Path) -> Result<String> {
     let ux_split_evidence = verify_install_ux_split_behavior(&remote)?;
 
     let script_evidence = evidence_over_ssh(
-        &variant.repo_root,
+        h,
         ssh_host_port,
         &scenario_evidence(ScenarioId::LiveTools)?,
         &[],
@@ -425,7 +520,9 @@ fn wait_for_live_tools_serial_readiness(console: &mut Console, variant: &Variant
         .context("waiting for live-tools serial readiness")
 }
 
-fn run_installation(variant: &Variant, iso_path: &Path, run: &mut Run) -> Result<String> {
+fn run_installation(h: &Harness, iso_path: &Path, run: &mut Run) -> Result<String> {
+    let variant = &h.variant;
+    let injection = h.live_injection(&[])?;
     let mode = INSTALL_MODE;
     run.manifest.install_mode = Some(mode.to_string());
     run.save()?;
@@ -438,23 +535,22 @@ fn run_installation(variant: &Variant, iso_path: &Path, run: &mut Run) -> Result
     };
     recqemu::create_disk(&disk_path, disk_size)?;
 
-    let ovmf_vars_path = session::setup_ovmf_vars_at(&run.dir.join(INSTALL_OVMF_VARS_FILENAME))?;
+    let ovmf_vars_path = run.dir.join(INSTALL_OVMF_VARS_FILENAME);
     let mut vm = session::spawn(VmSpec {
-        name: &format!("{}-install", variant.id),
         iso: Some(iso_path),
         disk: Some(&disk_path),
-        ovmf_vars: Some(&ovmf_vars_path),
-        ssh: true,
-        ..Default::default()
+        vars: Vars::FreshAt(&ovmf_vars_path),
+        ssh: Ssh::Free,
+        injection: Some(&injection),
+        ..VmSpec::new(variant, ScenarioId::Install)
     })?;
     let ssh_host_port = vm.ssh_port()?;
-    let console = &mut vm.console;
 
     // The installation runs over SSH; the serial console only marks the
     // boot boundary.
-    let remote = Remote::new(ssh_host_port);
+    let remote = h.remote(ssh_host_port)?;
     let install_result = (|| -> Result<usize> {
-        console.wait_for_live_boot_with_context(live_boot_stall(variant), variant)?;
+        vm.console()?.wait_for_live_boot_with_context(live_boot_stall(variant), variant)?;
         remote.wait_ready(live_boot_stall(variant))?;
 
         let system = install::TestSystem {
@@ -463,7 +559,7 @@ fn run_installation(variant: &Variant, iso_path: &Path, run: &mut Run) -> Result
         };
         let (target, step_count) = install::install(&remote, variant, &system)?;
         evidence_over_ssh(
-            &variant.repo_root,
+            h,
             ssh_host_port,
             &scenario_evidence(ScenarioId::Install)?,
             &[("SCENARIO_INSTALL_TARGET", target.as_str())],
@@ -503,7 +599,7 @@ fn run_installation(variant: &Variant, iso_path: &Path, run: &mut Run) -> Result
                 ));
                 verify.push((
                     "recab's trial service enabled",
-                    format!("test -L {target}/{}", variant.contract.profile.init.trial_service_link()),
+                    format!("test -L {target}/{}", recab::trial_service_link(variant.contract.profile.init)),
                 ));
             }
         }
@@ -516,16 +612,21 @@ fn run_installation(variant: &Variant, iso_path: &Path, run: &mut Run) -> Result
         Ok(step_count)
     })();
 
-    remote.power_off();
+    // A clean power-off, so the install disk is left as a shut-down system.
+    let install_result = install_result.and_then(|steps| {
+        vm.shutdown_from_guest("poweroff", SHUTDOWN_TIMEOUT)?;
+        Ok(steps)
+    });
     drop(vm);
 
     install_result.map(|step_count| format!("{step_count} install steps completed + verified over SSH"))
 }
 
-fn run_installed_boot(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Result<String> {
+fn run_installed_boot(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let variant = &h.variant;
     let mut vm = installed_vm(variant, install, ScenarioId::InstalledBoot, run_dir)?;
     let failed_services = vm
-        .console
+        .console()?
         .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant)?;
     Ok(if failed_services.is_empty() {
         "Installed system boot markers detected".to_string()
@@ -537,9 +638,10 @@ fn run_installed_boot(variant: &Variant, install: &InstallRun, run_dir: &Path) -
     })
 }
 
-fn run_automated_login(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Result<String> {
+fn run_automated_login(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let variant = &h.variant;
     let mut vm = installed_vm(variant, install, ScenarioId::AutomatedLogin, run_dir)?;
-    let console = &mut vm.console;
+    let console = vm.console()?;
 
     console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant)?;
 
@@ -563,9 +665,10 @@ fn run_automated_login(variant: &Variant, install: &InstallRun, run_dir: &Path) 
 }
 
 /// The runtime scenario: the installed system's tools.
-fn run_runtime(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Result<String> {
+fn run_runtime(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let variant = &h.variant;
     let mut vm = installed_vm(variant, install, ScenarioId::Runtime, run_dir)?;
-    let console = &mut vm.console;
+    let console = vm.console()?;
 
     console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant)?;
     console.login("root", expect::root_password(variant), LOGIN_TIMEOUT)?;
@@ -602,17 +705,14 @@ fn run_runtime(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Resul
 }
 
 /// The ISO of the latest successful release build of `product`, and its run.
-fn resolve_release(repo: &Path, distro_id: &str, product: ProductId) -> Result<ReleaseIso> {
+pub(crate) fn resolve_release(repo: &Path, distro_id: &str, product: ProductId) -> Result<ReleaseIso> {
     let release_dir = runs::release_dir(repo, distro_id, product);
-    let (_, manifest) = runs::latest_success(&release_dir)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "no successful {product} release for '{distro_id}' under '{}'.\n\
-             Build it first: cargo xtask build {product} {distro_id}",
-            release_dir.display(),
-        )
-    })?;
-    let iso = runs::latest_release_iso(repo, distro_id, product)?
-        .context("the latest successful release lost its ISO")?;
+    let missing = || Missing::ReleaseIso {
+        distro: distro_id.to_string(),
+        product,
+    };
+    let (_, manifest) = runs::latest_success(&release_dir)?.ok_or_else(missing)?;
+    let iso = runs::latest_release_iso(repo, distro_id, product)?.ok_or_else(missing)?;
     Ok(ReleaseIso {
         product,
         iso,
@@ -661,8 +761,8 @@ fn content_hash(paths: &[PathBuf]) -> Result<u64> {
     Ok(hasher.finish())
 }
 
-fn verify_live_boot_ssh_login(console: &mut Console, ssh_host_port: u16) -> Result<()> {
-    Remote::new(ssh_host_port)
+pub(crate) fn verify_live_boot_ssh_login(h: &Harness, console: &mut Console, ssh_host_port: u16) -> Result<()> {
+    h.remote(ssh_host_port)?
         .wait_ready(Duration::from_secs(60))
         .map_err(|err| {
             let diagnostics = collect_live_boot_ssh_diagnostics(console);
@@ -814,13 +914,13 @@ fn run_evidence(
 
 /// `run_evidence` over SSH.
 fn evidence_over_ssh(
-    repo: &Path,
+    h: &Harness,
     ssh_host_port: u16,
     evidence: &Evidence,
     env: &[(&str, &str)],
 ) -> Result<String> {
-    let remote = Remote::new(ssh_host_port);
-    run_evidence(repo, evidence, env, |cmd| {
+    let remote = h.remote(ssh_host_port)?;
+    run_evidence(&h.variant.repo_root, evidence, env, |cmd| {
         let out = remote.exec(cmd)?;
         Ok((out.exit_code, out.output))
     })
@@ -868,24 +968,17 @@ fn verify_install_ux_split_behavior(remote: &Remote) -> Result<String> {
 /// The latest successful install run of `distro_id`.
 pub fn resolve_latest_install_run(repo: &Path, distro_id: &str) -> Result<InstallRun> {
     let install_dir = runs::scenario_dir(repo, distro_id, ScenarioId::Install);
-    let (run_dir, manifest) = runs::latest_success(&install_dir)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "no successful install run for '{distro_id}' under '{}'.\n\
-             Run: cargo xtask test install {distro_id}",
-            install_dir.display(),
-        )
-    })?;
+    let missing = || Missing::InstallRun {
+        distro: distro_id.to_string(),
+    };
+    let (run_dir, manifest) = runs::latest_success(&install_dir)?.ok_or_else(missing)?;
     let disk_path = run_dir.join(INSTALL_DISK_FILENAME);
     let ovmf_vars_path = run_dir.join(INSTALL_OVMF_VARS_FILENAME);
-    for (what, path) in [("disk image", &disk_path), ("UEFI variables", &ovmf_vars_path)] {
-        if !path.is_file() {
-            bail!(
-                "the install run '{}' of '{distro_id}' has no {what} '{}'.\n\
-                 Re-run install: cargo xtask test install {distro_id} --force",
-                manifest.run_id,
-                path.display(),
-            );
-        }
+    if !disk_path.is_file() || !ovmf_vars_path.is_file() {
+        return Err(anyhow::Error::new(missing()).context(format!(
+            "the install run '{}' has lost its disk or UEFI variables",
+            manifest.run_id
+        )));
     }
     Ok(InstallRun {
         run: manifest.reference(),
@@ -932,10 +1025,12 @@ const INSTALLED_BOOT_STALL: Duration = Duration::from_secs(90);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a guest may take to power off or reboot.
+pub(super) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Longest silence tolerated during live boot before it counts as a stall:
 /// OpenRC's early boot can stay quiet for longer than systemd's.
-fn live_boot_stall(variant: &Variant) -> Duration {
+pub(crate) fn live_boot_stall(variant: &Variant) -> Duration {
     Duration::from_secs(match variant.contract.profile.init {
         InitSystem::Systemd => 60,
         InitSystem::Openrc => 180,
@@ -957,16 +1052,15 @@ fn installed_vm(
 ) -> Result<session::Vm> {
     let (disk, vars) = overlay_install(install, run_dir)?;
     session::spawn(VmSpec {
-        name: &format!("{}-{}", variant.id, scenario.key()),
         disk: Some(&disk),
-        ovmf_vars: Some(&vars),
-        ..Default::default()
+        vars: Vars::Existing(&vars),
+        ..VmSpec::new(variant, scenario)
     })
 }
 
 /// A copy-on-write disk over the install run's disk and a copy of its UEFI
 /// variables, in `run_dir`.
-pub(super) fn overlay_install(install: &InstallRun, run_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+pub(crate) fn overlay_install(install: &InstallRun, run_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     let disk = run_dir.join(INSTALL_DISK_FILENAME);
     let vars = run_dir.join(INSTALL_OVMF_VARS_FILENAME);
     recqemu::create_overlay(&install.disk_path, &disk)?;

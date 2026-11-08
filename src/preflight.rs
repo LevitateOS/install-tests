@@ -91,7 +91,7 @@ fn verify_conformance_contract(
     validate_live_boot: bool,
 ) -> Result<PreflightCheck> {
     let name = "Contract conformance";
-    print!("  Checking {}... ", name);
+    eprint!("  Checking {}... ", name);
 
     let mut details = Vec::new();
     let kernel_output_dir = runs::kernel_dir(&bundle.repo_root, &bundle.id);
@@ -128,7 +128,7 @@ fn verify_conformance_contract(
     }
 
     if details.is_empty() {
-        println!("{} (declaration + runtime)", "PASS".green());
+        eprintln!("{} (declaration + runtime)", "PASS".green());
         Ok(PreflightCheck {
             name: name.to_string(),
             passed: true,
@@ -138,9 +138,9 @@ fn verify_conformance_contract(
             details: Vec::new(),
         })
     } else {
-        println!("{} ({} violations)", "FAIL".red().bold(), details.len());
+        eprintln!("{} ({} violations)", "FAIL".red().bold(), details.len());
         for detail in &details {
-            println!("    {}", detail.red());
+            eprintln!("    {}", detail.red());
         }
         Ok(PreflightCheck {
             name: name.to_string(),
@@ -186,13 +186,13 @@ pub fn run_preflight(
     product: ProductId,
     variant: &Variant,
 ) -> Result<PreflightResult> {
-    println!();
-    println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
-    println!(
+    eprintln!();
+    eprintln!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
+    eprintln!(
         "Verifying contract + ISO artifacts for {} before starting QEMU...",
         variant.id
     );
-    println!();
+    eprintln!();
 
     let mut result = PreflightResult {
         conformance: None,
@@ -227,7 +227,7 @@ pub fn run_preflight(
             result.overall_pass = false;
         }
     } else {
-        println!(
+        eprintln!(
             "  {} Live initramfs not found at {}",
             "SKIP".yellow(),
             live_path.display()
@@ -246,14 +246,14 @@ pub fn run_preflight(
                     result.overall_pass = false;
                 }
             } else {
-                println!(
+                eprintln!(
                     "  {} Install initramfs not found at {}",
                     "SKIP".yellow(),
                     install_path.display()
                 );
             }
         } else {
-            println!(
+            eprintln!(
                 "  {} Install initramfs not found at {}",
                 "SKIP".yellow(),
                 iso_dir.join(declared).display()
@@ -264,13 +264,13 @@ pub fn run_preflight(
     let iso_path = if let Some(path) = resolved_iso_path {
         path
     } else {
-        println!(
+        eprintln!(
             "  {} No .iso file found in {}",
             "✗".red(),
             iso_dir.display()
         );
         result.overall_pass = false;
-        println!();
+        eprintln!();
         print_summary(&result);
         return Ok(result);
     };
@@ -281,11 +281,11 @@ pub fn run_preflight(
             result.overall_pass = false;
         }
     } else {
-        println!("  {} ISO not found at {}", "✗".red(), iso_path.display());
+        eprintln!("  {} ISO not found at {}", "✗".red(), iso_path.display());
         result.overall_pass = false;
     }
 
-    println!();
+    eprintln!();
     print_summary(&result);
     Ok(result)
 }
@@ -317,13 +317,13 @@ fn resolve_required_dir(artifact_dir: &Path, canonical: &str) -> Result<PathBuf>
 /// Verify an ISO against the ISO checklist.
 fn verify_iso_distro(path: &Path) -> Result<PreflightCheck> {
     let name = "Live ISO";
-    print!("  Checking {}... ", name);
+    eprint!("  Checking {}... ", name);
 
     let reader = match IsoReader::open(path) {
         Ok(r) => r,
         Err(e) => {
-            println!("{}", "FAIL".red().bold());
-            println!("    Failed to read ISO: {}", e);
+            eprintln!("{}", "FAIL".red().bold());
+            eprintln!("    Failed to read ISO: {}", e);
             return Ok(PreflightCheck {
                 name: name.to_string(),
                 passed: false,
@@ -342,7 +342,7 @@ fn verify_iso_distro(path: &Path) -> Result<PreflightCheck> {
     if check.passed {
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let size_mb = size / (1024 * 1024);
-        println!(
+        eprintln!(
             "{} ({}/{} checks, {} MB)",
             "PASS".green(),
             check.passed_checks,
@@ -350,7 +350,7 @@ fn verify_iso_distro(path: &Path) -> Result<PreflightCheck> {
             size_mb
         );
     } else {
-        println!(
+        eprintln!(
             "{} ({}/{} checks, {} failed)",
             "FAIL".red().bold(),
             check.passed_checks,
@@ -358,7 +358,7 @@ fn verify_iso_distro(path: &Path) -> Result<PreflightCheck> {
             check.failures
         );
         for detail in &check.details {
-            println!("    {}", detail.red());
+            eprintln!("    {}", detail.red());
         }
     }
 
@@ -389,7 +389,7 @@ fn find_iso_file(dir: &Path) -> Option<std::path::PathBuf> {
 /// Handles CPIO (initramfs) and ISO formats based on the checklist type.
 fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<PreflightCheck> {
     let name = checklist_type.name();
-    print!("  Checking {}... ", name);
+    eprint!("  Checking {}... ", name);
 
     let report = match checklist_type {
         ChecklistType::InstallInitramfs => {
@@ -406,8 +406,8 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
             let reader = match IsoReader::open(path) {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("{}", "FAIL".red().bold());
-                    println!("    Failed to read ISO: {}", e);
+                    eprintln!("{}", "FAIL".red().bold());
+                    eprintln!("    Failed to read ISO: {}", e);
                     return Ok(PreflightCheck {
                         name: name.to_string(),
                         passed: false,
@@ -430,7 +430,7 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
             // Also show size for ISO
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             let size_mb = size / (1024 * 1024);
-            println!(
+            eprintln!(
                 "{} ({}/{} checks, {} MB)",
                 "PASS".green(),
                 check.passed_checks,
@@ -438,7 +438,7 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
                 size_mb
             );
         } else {
-            println!(
+            eprintln!(
                 "{} ({}/{} checks)",
                 "PASS".green(),
                 check.passed_checks,
@@ -446,7 +446,7 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
             );
         }
     } else {
-        println!(
+        eprintln!(
             "{} ({}/{} checks, {} failed)",
             "FAIL".red().bold(),
             check.passed_checks,
@@ -455,7 +455,7 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
         );
         // Show failures
         for detail in &check.details {
-            println!("    {}", detail.red());
+            eprintln!("    {}", detail.red());
         }
     }
 
@@ -464,7 +464,7 @@ fn verify_artifact(path: &Path, checklist_type: ChecklistType) -> Result<Preflig
 
 /// Print the overall summary.
 fn print_summary(result: &PreflightResult) {
-    println!("{}", "--- Preflight Summary ---".bold());
+    eprintln!("{}", "--- Preflight Summary ---".bold());
 
     let status = if result.overall_pass {
         "PASS".green().bold()
@@ -472,15 +472,15 @@ fn print_summary(result: &PreflightResult) {
         "FAIL".red().bold()
     };
 
-    println!("Overall: {}", status);
+    eprintln!("Overall: {}", status);
 
     if !result.overall_pass {
-        println!();
-        println!(
+        eprintln!();
+        eprintln!(
             "{}",
             "Preflight verification failed. Fix the issues above before running tests.".red()
         );
-        println!(
+        eprintln!(
             "{}",
             "The ISO artifacts are broken and will not work correctly.".red()
         );

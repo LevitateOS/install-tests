@@ -35,7 +35,7 @@ pub fn install(
 ) -> Result<(String, usize)> {
     let mut steps = 0usize;
     let mut run = |what: &str, cmd: String| -> Result<String> {
-        println!("    -> {what}");
+        eprintln!("    -> {what}");
         steps += 1;
         remote.run(what, &cmd)
     };

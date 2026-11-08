@@ -7,7 +7,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use distro_contract::profile::InitSystem;
 use distro_contract::Variant;
-use recab::{InitSystemExt, Slot, Status};
+use recab::{Slot, Status};
 use recinit::live::{
     KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
 };
@@ -15,13 +15,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::install::shell_quote;
-use super::{InstallRun, INSTALLED_BOOT_STALL, LOGIN_TIMEOUT};
-use crate::qemu::session::{self, VmSpec};
+use super::{Harness, InstallRun, ScenarioId, INSTALLED_BOOT_STALL, LOGIN_TIMEOUT, SHUTDOWN_TIMEOUT};
+use crate::qemu::session::{self, Vars, VmSpec};
 use crate::qemu::{Console, SerialExecutorExt};
 
 const MEDIA_MOUNT: &str = "/run/ab-update-media";
 const STAGE_TIMEOUT: Duration = Duration::from_secs(900);
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
 /// A degraded trial: boot, startup, recab's decision, and the reboot.
 const TRIAL_REBOOT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -33,9 +32,9 @@ const FAILING_SERVICE: &str = "ab-update-fail";
 
 /// `install` is the latest install run, whose disk is A/B (`INSTALL_MODE`);
 /// the scenario boots an overlay of it in `run_dir`.
-pub(super) fn run(variant: &Variant, install: &InstallRun, iso: &Path, run_dir: &Path) -> Result<String> {
+pub(super) fn run(h: &Harness, install: &InstallRun, iso: &Path, run_dir: &Path) -> Result<String> {
     let (disk, vars) = super::overlay_install(install, run_dir)?;
-    Machine { variant, disk: &disk, vars: &vars, iso }.exercise()
+    Machine { variant: &h.variant, disk: &disk, vars: &vars, iso }.exercise()
 }
 
 struct Machine<'a> {
@@ -69,7 +68,7 @@ impl Machine<'_> {
         expect(&st, Slot::A, true, "after install")?;
         ensure!(st.next_boot == Some(Slot::A), "after install the next boot is {:?}, not A", st.next_boot);
         ensure!(sys.sh("findmnt -n -o SOURCE /var")?.contains("/dev/"), "/var is not its own partition");
-        sys.sh(&format!("test -L /{}", init.trial_service_link()))?;
+        sys.sh(&format!("test -L /{}", recab::trial_service_link(init)))?;
         // Installed systems leave sshd off, so there are no host keys yet; make them, as
         // starting sshd would, so the carry into slot B is tested.
         sys.sh("ssh-keygen -A")?;
@@ -173,33 +172,31 @@ impl Machine<'_> {
     /// Boot without logging in, and wait for the guest to reboot by itself.
     fn run_unattended(&self, timeout: Duration) -> Result<()> {
         let mut vm = session::spawn(VmSpec {
-            name: &format!("{}-ab-update", self.variant.id),
             disk: Some(self.disk),
-            ovmf_vars: Some(self.vars),
-            ..Default::default()
+            vars: Vars::Existing(self.vars),
+            ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
         })?;
         vm.wait_for_exit(timeout)
     }
 
     fn boot(&self, with_media: bool) -> Result<Booted> {
         let mut vm = session::spawn(VmSpec {
-            name: &format!("{}-ab-update", self.variant.id),
             disk: Some(self.disk),
-            ovmf_vars: Some(self.vars),
+            vars: Vars::Existing(self.vars),
             media: with_media.then_some(self.iso),
-            ..Default::default()
+            ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
         })?;
-        vm.console
+        vm.console()?
             .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, self.variant)?;
-        vm.console
+        vm.console()?
             .login("root", crate::expect::root_password(self.variant), LOGIN_TIMEOUT)?;
         Ok(Booted { vm })
     }
 }
 
 impl Booted {
-    fn console(&mut self) -> &mut Console {
-        &mut self.vm.console
+    fn console(&mut self) -> Result<&mut Console> {
+        self.vm.console()
     }
 
     /// The machine-id and SSH host key fingerprints, which `stage` carries.
@@ -250,7 +247,7 @@ impl Booted {
     }
 
     fn run(&mut self, command: &str, timeout: Duration) -> Result<String> {
-        let result = self.console().exec(command, timeout)?;
+        let result = self.console()?.exec(command, timeout)?;
         if !result.completed {
             bail!("'{command}' did not finish within {}s:\n{}", timeout.as_secs(), result.output);
         }
@@ -273,16 +270,14 @@ impl Booted {
         serde_json::from_str(json).with_context(|| format!("parsing recab status:\n{out}"))
     }
 
-    /// Reboot; the VM runs with -no-reboot, so QEMU exits and the next
-    /// `boot` starts it again with the same disk and UEFI variables.
+    /// Reboot; a guest reboot ends the domain, and the next `boot` starts
+    /// it again with the same disk and UEFI variables.
     fn reboot(mut self) -> Result<()> {
-        let _ = self.console().exec("reboot", Duration::from_secs(2));
-        self.vm.wait_for_exit(SHUTDOWN_TIMEOUT)
+        self.vm.shutdown_from_guest("reboot", SHUTDOWN_TIMEOUT)
     }
 
     fn poweroff(mut self) -> Result<()> {
-        let _ = self.console().exec("poweroff", Duration::from_secs(2));
-        self.vm.wait_for_exit(SHUTDOWN_TIMEOUT)
+        self.vm.shutdown_from_guest("poweroff", SHUTDOWN_TIMEOUT)
     }
 }
 

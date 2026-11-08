@@ -8,6 +8,7 @@
 
 pub mod boot_injection;
 pub mod expect;
+pub mod interactive;
 pub mod preflight;
 pub mod qemu;
 pub mod scenarios;
