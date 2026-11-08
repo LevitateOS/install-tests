@@ -15,13 +15,12 @@
 //!
 //! If preflight fails, we know the ISO is broken WITHOUT waiting for QEMU.
 
-use crate::repo_root;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use distro_builder::kernel::{
     check_kernel_installed, KERNEL_IMAGE_PATH, KERNEL_MODULES_DIR, KERNEL_RELEASE_PATH,
 };
-use distro_builder::run_history::{self, RunMetadata};
+use distro_contract::runs::{self, RunManifest};
 use distro_contract::{
     validate_build_runtime, validate_live_boot_runtime, BuildRuntimeArtifacts,
     LiveBootRuntimeArtifacts, ProductId, Variant,
@@ -95,7 +94,7 @@ fn verify_conformance_contract(
     print!("  Checking {}... ", name);
 
     let mut details = Vec::new();
-    let kernel_output_dir = run_history::kernel_output_dir(&repo_root(), &bundle.id);
+    let kernel_output_dir = runs::kernel_dir(&bundle.repo_root, &bundle.id);
 
     let runtime_report = validate_build_runtime(
         &bundle,
@@ -155,12 +154,8 @@ fn verify_conformance_contract(
 }
 
 /// The release product the run in `iso_dir` built, by its run manifest.
-fn built_product(run_manifest: Option<&RunMetadata>) -> Option<ProductId> {
-    let manifest = run_manifest?;
-    if manifest.target_kind.as_deref() != Some(run_history::TARGET_KIND_RELEASE_PRODUCT) {
-        return None;
-    }
-    ProductId::from_name(manifest.target_name.as_deref()?)
+fn built_product(run_manifest: Option<&RunManifest>) -> Option<ProductId> {
+    run_manifest?.product()
 }
 
 fn resolve_runtime_artifacts(
@@ -210,7 +205,7 @@ pub fn run_preflight(
         .map(|filename| iso_dir.join(filename))
         .filter(|path| path.is_file())
         .or_else(|| find_iso_file(iso_dir));
-    let run_manifest = run_history::read_run_manifest(iso_dir)?;
+    let run_manifest = runs::read(iso_dir).ok();
     let runtime_artifacts = resolve_runtime_artifacts(iso_dir, variant, product)?;
     // A product whose overlay sets up the live session is checked for it.
     let validate_live_boot = built_product(run_manifest.as_ref())

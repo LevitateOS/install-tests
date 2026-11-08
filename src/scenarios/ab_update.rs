@@ -11,17 +11,11 @@ use recab::{InitSystemExt, Slot, Status};
 use recinit::live::{
     KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
 };
-use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use super::install::shell_quote;
-use super::{
-    InstallScenarioRuntime, ScenarioId,
-    ScenarioRun, INSTALLED_BOOT_STALL, INSTALL_DISK_FILENAME, INSTALL_OVMF_VARS_FILENAME,
-    LOGIN_TIMEOUT,
-};
+use super::{InstallRun, INSTALLED_BOOT_STALL, LOGIN_TIMEOUT};
 use crate::qemu::session::{self, VmSpec};
 use crate::qemu::{Console, SerialExecutorExt};
 
@@ -37,35 +31,11 @@ const SLOT_MOUNT: &str = "/run/ab-update-slot";
 /// A service that always fails, so slot B's trial comes up degraded.
 const FAILING_SERVICE: &str = "ab-update-fail";
 
-/// `install` is the latest install run, whose disk is A/B (`INSTALL_MODE`).
-pub(super) fn run(variant: &Variant, install: &InstallScenarioRuntime, iso: &Path) -> Result<String> {
-    let scenario_run = ScenarioRun::start(&variant.id, ScenarioId::AbUpdate, Some(install.run_id.clone()))?;
-
-    // A copy-on-write layer over the install disk, so the install result
-    // stays as the install scenario left it.
-    let disk = scenario_run.output_dir.join(INSTALL_DISK_FILENAME);
-    let vars = scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME);
-    let base = fs::canonicalize(&install.disk_path)?;
-    let status = Command::new("qemu-img")
-        .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
-        .arg(&base)
-        .arg(&disk)
-        .status()
-        .context("running qemu-img")?;
-    ensure!(status.success(), "qemu-img could not create an overlay of '{}'", base.display());
-    fs::copy(&install.ovmf_vars_path, &vars).context("copying the install's UEFI variables")?;
-
-    let result = Machine { variant, disk: &disk, vars: &vars, iso }.exercise();
-    match result {
-        Ok(evidence) => {
-            scenario_run.finish_success(&evidence, Some(&disk), Some(&vars))?;
-            Ok(evidence)
-        }
-        Err(err) => {
-            let _ = scenario_run.finish_failed(&format!("FAIL: {err:#}"), Some(&disk), Some(&vars));
-            Err(err)
-        }
-    }
+/// `install` is the latest install run, whose disk is A/B (`INSTALL_MODE`);
+/// the scenario boots an overlay of it in `run_dir`.
+pub(super) fn run(variant: &Variant, install: &InstallRun, iso: &Path, run_dir: &Path) -> Result<String> {
+    let (disk, vars) = super::overlay_install(install, run_dir)?;
+    Machine { variant, disk: &disk, vars: &vars, iso }.exercise()
 }
 
 struct Machine<'a> {

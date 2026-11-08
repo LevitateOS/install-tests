@@ -3,9 +3,9 @@
 //! Independent named scenarios give focused feedback during development.
 //! Each scenario consumes existing artifacts and validates one behavior. The
 //! scenarios, their inputs and their order are `distro_contract::ScenarioId`;
-//! what each expects of a variant is `crate::expect`.
-
-pub mod state;
+//! what each expects of a variant is `crate::expect`. Every run leaves a
+//! `distro_contract::runs` record in its own run directory; the newest
+//! finished record of a scenario is its status.
 
 mod ab_update;
 mod install;
@@ -16,58 +16,69 @@ use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use distro_contract::profile::{InitSystem, PrivilegeTool};
+use distro_contract::runs::{self, Run, RunManifest, RunRef, RunStatus};
 use distro_contract::{ProductId, Variant};
 use recab::InitSystemExt;
 use recpart::InstallMode;
 use recshuttle::Remote;
 use distro_builder::install_ux::{LAUNCHER, PROBE_PREFIX, SMOKE_ENV, SPLIT, SPLIT_SMOKE_OK};
 use crate::qemu::session::VmSpec;
-use crate::repo_root;
-use distro_builder::run_history;
-use serde::Serialize;
-use state::ScenarioState;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use distro_contract::ScenarioId;
 
-const SCENARIO_RUNTIME_RETENTION_COUNT: usize = 5;
+/// The install run's disk and UEFI variable store, in its run directory.
 pub(super) const INSTALL_DISK_FILENAME: &str = "disk.qcow2";
-const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
-const SCENARIO_ROOT_DIRNAME: &str = "scenarios";
+pub(super) const INSTALL_OVMF_VARS_FILENAME: &str = "ovmf-vars.fd";
 /// Where the scenarios' guest-side scripts live.
 const TEST_SCRIPTS_DIR: &str = "testing/install-tests/test-scripts";
+/// The harness's own sources: a change to any of them reruns cached results.
+const HARNESS_SOURCES: &[&str] = &[
+    "testing/install-tests/src",
+    TEST_SCRIPTS_DIR,
+    "tools/recqemu/src",
+    "tools/recshuttle/src",
+];
 
 /// How the install scenario installs, and so what the installed-system
 /// scenarios boot: the A/B layout that recab updates.
 pub(super) const INSTALL_MODE: InstallMode = InstallMode::Ab;
 
+/// The latest successful install run: its disk and UEFI variables, which the
+/// installed-system scenarios boot through overlays and never change.
 #[derive(Debug, Clone)]
-pub struct InstallScenarioRuntime {
-    pub run_id: String,
+pub struct InstallRun {
+    pub run: RunRef,
     pub disk_path: PathBuf,
     pub ovmf_vars_path: PathBuf,
 }
 
+/// A release ISO and the run that built it.
+struct ReleaseIso {
+    product: ProductId,
+    iso: PathBuf,
+    run: RunRef,
+}
+
 /// A scenario's inputs (`ScenarioId::input`), resolved to what exists on disk.
 struct Inputs {
-    iso: Option<(ProductId, PathBuf)>,
-    install: Option<InstallScenarioRuntime>,
+    iso: Option<ReleaseIso>,
+    install: Option<InstallRun>,
 }
 
 impl Inputs {
-    fn resolve(distro_id: &str, scenario: ScenarioId) -> Result<Self> {
+    fn resolve(repo: &Path, distro_id: &str, scenario: ScenarioId) -> Result<Self> {
         let input = scenario.input();
         Ok(Self {
             iso: input
                 .iso
-                .map(|product| resolve_release_iso(distro_id, product).map(|iso| (product, iso)))
+                .map(|product| resolve_release(repo, distro_id, product))
                 .transpose()?,
             install: input
                 .install_run
-                .then(|| resolve_latest_install_runtime(distro_id))
+                .then(|| resolve_latest_install_run(repo, distro_id))
                 .transpose()?,
         })
     }
@@ -75,64 +86,70 @@ impl Inputs {
     fn iso(&self, scenario: ScenarioId) -> Result<&Path> {
         self.iso
             .as_ref()
-            .map(|(_, iso)| iso.as_path())
+            .map(|release| release.iso.as_path())
             .with_context(|| format!("the registry gives {scenario} no ISO input"))
     }
 
-    fn install(&self, scenario: ScenarioId) -> Result<&InstallScenarioRuntime> {
+    fn install(&self, scenario: ScenarioId) -> Result<&InstallRun> {
         self.install
             .as_ref()
             .with_context(|| format!("the registry gives {scenario} no install-run input"))
     }
+
+    /// The runs these inputs come from, for the run record.
+    fn refs(&self) -> Vec<RunRef> {
+        self.iso
+            .iter()
+            .map(|release| release.run.clone())
+            .chain(self.install.iter().map(|install| install.run.clone()))
+            .collect()
+    }
 }
 
-/// The variant `distro_id`, loaded once for the whole run.
-fn load_variant(distro_id: &str) -> Result<Variant> {
-    Ok(distro_contract::load(&repo_root(), distro_id)?)
+/// The variant `distro_id` of the checkout at `repo`, loaded once for the run.
+fn load_variant(repo: &Path, distro_id: &str) -> Result<Variant> {
+    Ok(distro_contract::load(repo, distro_id)?)
 }
 
-/// Run one scenario for a distro; `force` reruns it even when a cached pass
-/// for the same inputs exists. A failure is the error, with its cause.
-pub fn run_scenario(distro_id: &str, scenario: ScenarioId, force: bool) -> Result<()> {
-    let variant = load_variant(distro_id)?;
+/// The newest finished run of `scenario`: its record, or why it cannot be read.
+fn latest_result(variant: &Variant, scenario: ScenarioId) -> Result<Option<Result<RunManifest, String>>> {
+    let dir = runs::scenario_dir(&variant.repo_root, &variant.id, scenario);
+    Ok(runs::list(&dir)?.into_iter().map(|run| run.manifest).find(|manifest| {
+        !matches!(manifest, Ok(m) if m.status == RunStatus::Building)
+    }))
+}
+
+/// Run one scenario for a distro of the checkout at `repo`; `force` reruns
+/// it even when a passing run for the same inputs exists. A failure is the
+/// error, with its cause.
+pub fn run_scenario(repo: &Path, distro_id: &str, scenario: ScenarioId, force: bool) -> Result<()> {
+    let variant = load_variant(repo, distro_id)?;
     let distro_id = variant.id.as_str();
-    let inputs = Inputs::resolve(distro_id, scenario)?;
-    if let Some((product, iso)) = &inputs.iso {
-        require_preflight(iso, *product, &variant)?;
-    }
-
-    let input_fingerprint = scenario_input_fingerprint(&variant, &inputs)?;
-
-    let mut state = ScenarioState::load(distro_id)?;
-    if !state.is_valid_for_scenario_input(scenario, &input_fingerprint) {
-        println!(
-            "{}",
-            format!(
-                "Scenario input changed for {} — resetting its cached result.",
-                scenario.title()
-            )
-            .yellow()
-        );
-        state.reset_for_scenario_input(scenario, &input_fingerprint);
-        state.save(distro_id)?;
-    }
+    let inputs = Inputs::resolve(repo, distro_id, scenario)?;
+    let fingerprint = scenario_input_fingerprint(&variant, &inputs)?;
 
     if force {
-        state.results.remove(scenario.key());
-        state.save(distro_id)?;
         println!("Forcing {} rerun.", scenario.title());
+    } else if let Some(Ok(last)) = latest_result(&variant, scenario)? {
+        if last.status == RunStatus::Success && last.fingerprint.as_deref() == Some(fingerprint.as_str()) {
+            println!(
+                "{} {} already passed (rerun with --force).",
+                "[SKIP]".green(),
+                scenario.title()
+            );
+            return Ok(());
+        }
     }
 
-    if state.has_passed(scenario) {
-        println!(
-            "{} {} already passed (rerun with --force).",
-            "[SKIP]".green(),
-            scenario.title()
-        );
-        return Ok(());
+    if let Some(release) = &inputs.iso {
+        require_preflight(&release.iso, release.product, &variant)?;
     }
 
     println!("{} {}", ">>".cyan(), scenario.title());
+    let mut run = Run::start_scenario(repo, distro_id, scenario)?;
+    run.manifest.inputs = inputs.refs();
+    run.manifest.fingerprint = Some(fingerprint);
+    run.save()?;
 
     let result = match scenario {
         ScenarioId::BuildPreflight => inputs.iso(scenario).map(|iso| {
@@ -143,23 +160,35 @@ pub fn run_scenario(distro_id: &str, scenario: ScenarioId, force: bool) -> Resul
         }),
         ScenarioId::LiveBoot => inputs.iso(scenario).and_then(|iso| run_live_boot(&variant, iso)),
         ScenarioId::LiveTools => inputs.iso(scenario).and_then(|iso| run_live_tools(&variant, iso)),
-        ScenarioId::Install => inputs.iso(scenario).and_then(|iso| run_installation(&variant, iso)),
-        ScenarioId::InstalledBoot => {
-            inputs.install(scenario).and_then(|install| run_installed_boot(&variant, install))
-        }
-        ScenarioId::AutomatedLogin => {
-            inputs.install(scenario).and_then(|install| run_automated_login(&variant, install))
-        }
-        ScenarioId::Runtime => inputs.install(scenario).and_then(|install| run_runtime(&variant, install)),
-        ScenarioId::AbUpdate => inputs.iso(scenario).and_then(|iso| {
-            ab_update::run(&variant, inputs.install(scenario)?, iso)
-        }),
+        ScenarioId::Install => inputs.iso(scenario).and_then(|iso| run_installation(&variant, iso, &mut run)),
+        ScenarioId::InstalledBoot => inputs
+            .install(scenario)
+            .and_then(|install| run_installed_boot(&variant, install, &run.dir)),
+        ScenarioId::AutomatedLogin => inputs
+            .install(scenario)
+            .and_then(|install| run_automated_login(&variant, install, &run.dir)),
+        ScenarioId::Runtime => inputs
+            .install(scenario)
+            .and_then(|install| run_runtime(&variant, install, &run.dir)),
+        ScenarioId::AbUpdate => inputs
+            .iso(scenario)
+            .and_then(|iso| ab_update::run(&variant, inputs.install(scenario)?, iso, &run.dir)),
     };
 
+    run.manifest.evidence = Some(match &result {
+        Ok(evidence) => evidence.clone(),
+        Err(err) => format!("FAIL: {err:#}"),
+    });
+    let recorded = run
+        .finish(result.is_ok())
+        .with_context(|| format!("recording the {scenario} run for {distro_id}"))
+        .and_then(|_| {
+            let dir = runs::scenario_dir(repo, distro_id, scenario);
+            Ok(runs::prune(repo, distro_id, &dir, runs::SCENARIO_RETENTION)?)
+        });
     match result {
         Ok(evidence) => {
-            state.record(scenario, true, &evidence);
-            state.save(distro_id)?;
+            recorded?;
             println!(
                 "{} {} passed: {}",
                 "[PASS]".green().bold(),
@@ -169,10 +198,12 @@ pub fn run_scenario(distro_id: &str, scenario: ScenarioId, force: bool) -> Resul
             Ok(())
         }
         Err(e) => {
-            state.record(scenario, false, &format!("{:#}", e));
-            state.save(distro_id)?;
             print_failure(scenario, &e);
-            Err(e.context(format!("scenario {scenario} failed for {distro_id}")))
+            let e = e.context(format!("scenario {scenario} failed for {distro_id}"));
+            Err(match recorded {
+                Ok(()) => e,
+                Err(record) => e.context(format!("and its run record failed: {record:#}")),
+            })
         }
     }
 }
@@ -185,8 +216,8 @@ pub enum ScenarioStatus {
     Fail,
     /// Has a result, but its inputs changed since.
     Stale,
-    /// Has a result, but its inputs cannot be resolved now (an ISO or the
-    /// install run is missing or unreadable): why.
+    /// Its latest record cannot be read, or its inputs cannot be resolved
+    /// now (an ISO or the install run is missing or unreadable): why.
     Error(String),
 }
 
@@ -211,37 +242,38 @@ impl ScenarioStatus {
     }
 }
 
-/// Each scenario's status for a distro, in run order.
-pub fn scenario_statuses(distro_id: &str) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
-    statuses(&load_variant(distro_id)?)
+/// Each scenario's status for a distro, in run order, from its run records.
+pub fn scenario_statuses(repo: &Path, distro_id: &str) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
+    statuses(&load_variant(repo, distro_id)?)
 }
 
 fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
-    let state = ScenarioState::load(&variant.id)?;
-    Ok(ScenarioId::ALL
+    ScenarioId::ALL
         .into_iter()
         .map(|scenario| {
-            if !state.has_result(scenario) {
-                return (scenario, ScenarioStatus::NotRun);
-            }
-            let fingerprint = Inputs::resolve(&variant.id, scenario)
+            let last = match latest_result(variant, scenario)? {
+                None => return Ok((scenario, ScenarioStatus::NotRun)),
+                Some(Err(why)) => return Ok((scenario, ScenarioStatus::Error(why))),
+                Some(Ok(last)) => last,
+            };
+            let fingerprint = Inputs::resolve(&variant.repo_root, &variant.id, scenario)
                 .and_then(|inputs| scenario_input_fingerprint(variant, &inputs));
             let status = match fingerprint {
                 Err(err) => ScenarioStatus::Error(format!("{err:#}")),
-                Ok(fingerprint) if !state.is_valid_for_scenario_input(scenario, &fingerprint) => {
+                Ok(fingerprint) if last.fingerprint.as_deref() != Some(fingerprint.as_str()) => {
                     ScenarioStatus::Stale
                 }
-                Ok(_) if state.has_passed(scenario) => ScenarioStatus::Pass,
+                Ok(_) if last.status == RunStatus::Success => ScenarioStatus::Pass,
                 Ok(_) => ScenarioStatus::Fail,
             };
-            (scenario, status)
+            Ok((scenario, status))
         })
-        .collect())
+        .collect()
 }
 
 /// Print scenario status for a distro.
-pub fn print_status(distro_id: &str) -> Result<()> {
-    let variant = load_variant(distro_id)?;
+pub fn print_status(repo: &Path, distro_id: &str) -> Result<()> {
+    let variant = load_variant(repo, distro_id)?;
     println!("{} Scenario Status", variant.contract.identity.os_name.bold());
     println!();
     for (scenario, status) in statuses(&variant)? {
@@ -261,14 +293,16 @@ pub fn print_status(distro_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reset all scenario state for a distro.
-pub fn reset_state(distro_id: &str) -> Result<()> {
-    let canonical_distro_id = load_variant(distro_id)?.id;
-    let path = state::state_path(&canonical_distro_id);
-    if path.exists() {
-        std::fs::remove_file(&path)?;
+/// Remove every scenario run of a distro (their records and disks).
+pub fn reset_state(repo: &Path, distro_id: &str) -> Result<()> {
+    let variant = load_variant(repo, distro_id)?;
+    for scenario in ScenarioId::ALL {
+        let dir = runs::scenario_dir(repo, &variant.id, scenario);
+        if dir.exists() {
+            fs::remove_dir_all(&dir).with_context(|| format!("removing '{}'", dir.display()))?;
+        }
     }
-    println!("Scenario state reset for {}.", canonical_distro_id);
+    println!("Scenario runs removed for {}.", variant.id);
     Ok(())
 }
 
@@ -285,8 +319,9 @@ fn run_live_boot(variant: &Variant, iso_path: &Path) -> Result<String> {
     console.wait_for_live_boot_with_context(live_boot_stall(variant), variant)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    evidence_over_ssh(ssh_host_port, &scenario_evidence(ScenarioId::LiveBoot)?, &[])?;
+    evidence_over_ssh(&variant.repo_root, ssh_host_port, &scenario_evidence(ScenarioId::LiveBoot)?, &[])?;
     evidence_over_ssh(
+        &variant.repo_root,
         ssh_host_port,
         &Evidence {
             script: "live-boot-ssh-preflight.sh".to_string(),
@@ -365,6 +400,7 @@ fn run_live_tools(variant: &Variant, iso_path: &Path) -> Result<String> {
     let ux_split_evidence = verify_install_ux_split_behavior(&remote)?;
 
     let script_evidence = evidence_over_ssh(
+        &variant.repo_root,
         ssh_host_port,
         &scenario_evidence(ScenarioId::LiveTools)?,
         &[],
@@ -389,13 +425,11 @@ fn wait_for_live_tools_serial_readiness(console: &mut Console, variant: &Variant
         .context("waiting for live-tools serial readiness")
 }
 
-fn run_installation(variant: &Variant, iso_path: &Path) -> Result<String> {
+fn run_installation(variant: &Variant, iso_path: &Path, run: &mut Run) -> Result<String> {
     let mode = INSTALL_MODE;
-    let scenario_run = ScenarioRun::start(&variant.id, ScenarioId::Install, None)?;
-    let disk_path = scenario_run.output_dir.join(INSTALL_DISK_FILENAME);
-    if disk_path.exists() {
-        std::fs::remove_file(&disk_path)?;
-    }
+    run.manifest.install_mode = Some(mode.to_string());
+    run.save()?;
+    let disk_path = run.dir.join(INSTALL_DISK_FILENAME);
     // An A/B layout holds two 20 GiB root slots and at least 4 GiB of state
     // (recpart's defaults); the image is sparse either way.
     let disk_size = match mode {
@@ -404,9 +438,7 @@ fn run_installation(variant: &Variant, iso_path: &Path) -> Result<String> {
     };
     recqemu::create_disk(&disk_path, disk_size)?;
 
-    let ovmf_vars_path = session::setup_ovmf_vars_at(
-        &scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME),
-    )?;
+    let ovmf_vars_path = session::setup_ovmf_vars_at(&run.dir.join(INSTALL_OVMF_VARS_FILENAME))?;
     let mut vm = session::spawn(VmSpec {
         name: &format!("{}-install", variant.id),
         iso: Some(iso_path),
@@ -431,6 +463,7 @@ fn run_installation(variant: &Variant, iso_path: &Path) -> Result<String> {
         };
         let (target, step_count) = install::install(&remote, variant, &system)?;
         evidence_over_ssh(
+            &variant.repo_root,
             ssh_host_port,
             &scenario_evidence(ScenarioId::Install)?,
             &[("SCENARIO_INSTALL_TARGET", target.as_str())],
@@ -486,74 +519,26 @@ fn run_installation(variant: &Variant, iso_path: &Path) -> Result<String> {
     remote.power_off();
     drop(vm);
 
-    match install_result {
-        Ok(step_count) => {
-            let evidence = format!(
-                "{} install steps completed + verified over SSH",
-                step_count
-            );
-            scenario_run.finish_success(
-                &evidence,
-                Some(disk_path.as_path()),
-                Some(ovmf_vars_path.as_path()),
-            )?;
-            Ok(evidence)
-        }
-        Err(err) => {
-            let failure = format!("FAIL: {:#}", err);
-            let _ = scenario_run.finish_failed(
-                &failure,
-                Some(disk_path.as_path()),
-                Some(ovmf_vars_path.as_path()),
-            );
-            Err(err)
-        }
-    }
+    install_result.map(|step_count| format!("{step_count} install steps completed + verified over SSH"))
 }
 
-fn run_installed_boot(variant: &Variant, install_runtime: &InstallScenarioRuntime) -> Result<String> {
-    let scenario_run = ScenarioRun::start(
-        &variant.id,
-        ScenarioId::InstalledBoot,
-        Some(install_runtime.run_id.clone()),
-    )?;
-    let mut vm = installed_vm(variant, install_runtime, ScenarioId::InstalledBoot)?;
-    let console = &mut vm.console;
-
-    let result = console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant);
-    drop(vm);
-
-    match result {
-        Ok(failed_services) => {
-            let evidence = if failed_services.is_empty() {
-                "Installed system boot markers detected".to_string()
-            } else {
-                format!(
-                    "Installed system boot markers detected; failed services seen: {}",
-                    failed_services.join(" | ")
-                )
-            };
-            scenario_run.finish_success(
-                &evidence,
-                Some(install_runtime.disk_path.as_path()),
-                Some(install_runtime.ovmf_vars_path.as_path()),
-            )?;
-            Ok(evidence)
-        }
-        Err(e) => {
-            let failure = format!("FAIL: {:#}", e);
-            let _ = scenario_run.finish_failed(
-                &failure,
-                Some(install_runtime.disk_path.as_path()),
-                Some(install_runtime.ovmf_vars_path.as_path()),
-            );
-            Err(anyhow::anyhow!("{:#}", e))
-        }
-    }
+fn run_installed_boot(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let mut vm = installed_vm(variant, install, ScenarioId::InstalledBoot, run_dir)?;
+    let failed_services = vm
+        .console
+        .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant)?;
+    Ok(if failed_services.is_empty() {
+        "Installed system boot markers detected".to_string()
+    } else {
+        format!(
+            "Installed system boot markers detected; failed services seen: {}",
+            failed_services.join(" | ")
+        )
+    })
 }
 
-fn run_automated_login(variant: &Variant, install_runtime: &InstallScenarioRuntime) -> Result<String> {
-    let mut vm = installed_vm(variant, install_runtime, ScenarioId::AutomatedLogin)?;
+fn run_automated_login(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let mut vm = installed_vm(variant, install, ScenarioId::AutomatedLogin, run_dir)?;
     let console = &mut vm.console;
 
     console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant)?;
@@ -562,6 +547,7 @@ fn run_automated_login(variant: &Variant, install_runtime: &InstallScenarioRunti
 
     let result = console.exec("echo SCENARIO_LOGIN_OK", COMMAND_TIMEOUT)?;
     let script_evidence = evidence_on_console(
+        &variant.repo_root,
         console,
         &scenario_evidence(ScenarioId::AutomatedLogin)?,
     )?;
@@ -577,8 +563,8 @@ fn run_automated_login(variant: &Variant, install_runtime: &InstallScenarioRunti
 }
 
 /// The runtime scenario: the installed system's tools.
-fn run_runtime(variant: &Variant, install_runtime: &InstallScenarioRuntime) -> Result<String> {
-    let mut vm = installed_vm(variant, install_runtime, ScenarioId::Runtime)?;
+fn run_runtime(variant: &Variant, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let mut vm = installed_vm(variant, install, ScenarioId::Runtime, run_dir)?;
     let console = &mut vm.console;
 
     console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, variant)?;
@@ -608,89 +594,44 @@ fn run_runtime(variant: &Variant, install_runtime: &InstallScenarioRuntime) -> R
         );
     }
 
-    let script_evidence = evidence_on_console(console, &scenario_evidence(ScenarioId::Runtime)?)?;
+    let script_evidence = evidence_on_console(&variant.repo_root, console, &scenario_evidence(ScenarioId::Runtime)?)?;
     Ok(format!(
         "All {} runtime tools present; {script_evidence}",
         found.len()
     ))
 }
 
-/// The ISO of the latest successful release build of `product`.
-pub fn resolve_release_iso(distro_id: &str, product: ProductId) -> Result<PathBuf> {
-    let release_root = run_history::release_product_dir(&repo_root(), distro_id, product);
-    let run_id = run_history::latest_successful_run_id(&release_root)?.ok_or_else(|| {
+/// The ISO of the latest successful release build of `product`, and its run.
+fn resolve_release(repo: &Path, distro_id: &str, product: ProductId) -> Result<ReleaseIso> {
+    let release_dir = runs::release_dir(repo, distro_id, product);
+    let (_, manifest) = runs::latest_success(&release_dir)?.ok_or_else(|| {
         anyhow::anyhow!(
             "no successful {product} release for '{distro_id}' under '{}'.\n\
              Build it first: cargo xtask build {product} {distro_id}",
-            release_root.display(),
+            release_dir.display(),
         )
     })?;
-    let run_dir = release_root.join(&run_id);
-    let manifest = run_history::read_run_manifest(&run_dir)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "release product '{product}' for '{distro_id}' is missing run-manifest metadata under '{}'.",
-            run_dir.display()
-        )
-    })?;
-    if manifest.status != run_history::STATUS_SUCCESS {
-        bail!(
-            "latest '{product}' release run for '{distro_id}' is not successful under '{}'",
-            run_dir.display()
-        );
-    }
-    if manifest.target_kind.as_deref() != Some(run_history::TARGET_KIND_RELEASE_PRODUCT)
-        || manifest.target_name.as_deref() != Some(product.name())
-    {
-        bail!(
-            "release run manifest under '{}' does not match expected product '{product}'",
-            run_dir.display(),
-        );
-    }
-
-    manifest
-        .iso_path
-        .as_ref()
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "release product '{product}' for '{distro_id}' is missing ISO output in '{}'.",
-                run_dir.display()
-            )
-        })
+    let iso = runs::latest_release_iso(repo, distro_id, product)?
+        .context("the latest successful release lost its ISO")?;
+    Ok(ReleaseIso {
+        product,
+        iso,
+        run: manifest.reference(),
+    })
 }
 
-/// What a cached pass depends on: the scenario's inputs (its ISO, its
-/// install run), the guest-side scripts it runs, the variant's contract,
-/// and the harness binary, which holds the derived expectations and links
-/// recqemu, recshuttle and recpart, so a change to any of them reruns it.
+/// What a passing run depends on: the runs its inputs come from, the
+/// variant's contract, and the harness's own sources (its derived
+/// expectations, guest-side scripts, and the VM and SSH crates it drives),
+/// so a change to any of them reruns it.
 fn scenario_input_fingerprint(variant: &Variant, inputs: &Inputs) -> Result<String> {
-    let mtime = |path: &Path| -> Result<u64> {
-        Ok(fs::metadata(path)
-            .with_context(|| format!("reading metadata for '{}'", path.display()))?
-            .modified()
-            .with_context(|| format!("reading mtime for '{}'", path.display()))?
-            .duration_since(UNIX_EPOCH)
-            .with_context(|| format!("mtime before UNIX_EPOCH for '{}'", path.display()))?
-            .as_secs())
-    };
-    let mut parts = Vec::new();
-    if let Some((product, iso)) = &inputs.iso {
-        parts.push(format!("iso:{product}:{}:{}", iso.display(), mtime(iso)?));
-    }
-    if let Some(install) = &inputs.install {
-        parts.push(format!("install-runtime:{}", install.run_id));
-    }
-    let harness_path = std::env::current_exe().context("locating the scenario harness binary")?;
-    parts.push(format!(
-        "harness:{}:{}",
-        mtime(&harness_path)?,
-        fs::metadata(&harness_path)?.len()
-    ));
-    parts.push(format!(
-        "scripts:{:016x}",
-        content_hash(&[repo_root().join(TEST_SCRIPTS_DIR)])?
-    ));
+    let mut parts: Vec<String> = inputs
+        .refs()
+        .iter()
+        .map(|run| format!("{}:{}", run.target_name, run.run_id))
+        .collect();
+    let sources: Vec<PathBuf> = HARNESS_SOURCES.iter().map(|dir| variant.repo_root.join(dir)).collect();
+    parts.push(format!("harness:{:016x}", content_hash(&sources)?));
     parts.push(format!("contract:{:016x}", content_hash(&[variant.manifest.clone()])?));
     Ok(parts.join(";"))
 }
@@ -808,6 +749,7 @@ fn collect_live_boot_ssh_diagnostics(console: &mut Console) -> String {
 /// which runs a guest command and returns its exit status and output; the
 /// script must exit 0 and print its pass marker.
 fn run_evidence(
+    repo: &Path,
     evidence: &Evidence,
     env: &[(&str, &str)],
     mut exec: impl FnMut(&str) -> Result<(i32, String)>,
@@ -816,7 +758,7 @@ fn run_evidence(
     if name.components().count() != 1 || !evidence.script.ends_with(".sh") {
         bail!("invalid evidence script name: {}", evidence.script);
     }
-    let scripts = repo_root().join(TEST_SCRIPTS_DIR);
+    let scripts = repo.join(TEST_SCRIPTS_DIR);
     let path = format!("/run/scenario-tests/{}", evidence.script);
     let (code, output) = exec("mkdir -p /run/scenario-tests/lib")?;
     if code != 0 {
@@ -872,20 +814,21 @@ fn run_evidence(
 
 /// `run_evidence` over SSH.
 fn evidence_over_ssh(
+    repo: &Path,
     ssh_host_port: u16,
     evidence: &Evidence,
     env: &[(&str, &str)],
 ) -> Result<String> {
     let remote = Remote::new(ssh_host_port);
-    run_evidence(evidence, env, |cmd| {
+    run_evidence(repo, evidence, env, |cmd| {
         let out = remote.exec(cmd)?;
         Ok((out.exit_code, out.output))
     })
 }
 
 /// `run_evidence` on the serial console.
-fn evidence_on_console(console: &mut Console, evidence: &Evidence) -> Result<String> {
-    run_evidence(evidence, &[], |cmd| {
+fn evidence_on_console(repo: &Path, console: &mut Console, evidence: &Evidence) -> Result<String> {
+    run_evidence(repo, evidence, &[], |cmd| {
         let out = console.exec(cmd, EVIDENCE_TIMEOUT)?;
         Ok((out.exit_code, out.output))
     })
@@ -922,186 +865,33 @@ fn verify_install_ux_split_behavior(remote: &Remote) -> Result<String> {
     Ok("install UX split-pane smoke verified (shell-left + docs-right)".to_string())
 }
 
-#[derive(Debug, Serialize)]
-struct ScenarioRunManifest {
-    run_id: String,
-    distro_id: String,
-    scenario_name: String,
-    status: String,
-    created_at_utc: String,
-    finished_at_utc: Option<String>,
-    scenario_root_dir: String,
-    output_dir: String,
-    evidence_path: Option<String>,
-    disk_path: Option<String>,
-    ovmf_vars_path: Option<String>,
-    source_install_run_id: Option<String>,
-}
-
-struct ScenarioRun {
-    run_id: String,
-    distro_id: String,
-    scenario: ScenarioId,
-    scenario_root_dir: PathBuf,
-    output_dir: PathBuf,
-    created_at_utc: String,
-    source_install_run_id: Option<String>,
-}
-
-impl ScenarioRun {
-    fn start(
-        distro_id: &str,
-        scenario: ScenarioId,
-        source_install_run_id: Option<String>,
-    ) -> Result<Self> {
-        let scenario_root_dir = scenario_runtime_root_dir(distro_id, scenario);
-        let (run_id, output_dir) =
-            run_history::allocate_run_dir(&scenario_root_dir)?;
-        let run = Self {
-            run_id,
-            distro_id: distro_id.to_string(),
-            scenario,
-            scenario_root_dir,
-            output_dir,
-            created_at_utc: now_utc_sortable()?,
-            source_install_run_id,
-        };
-        run.write_manifest(run_history::STATUS_BUILDING, None, None, None, None)?;
-        Ok(run)
-    }
-
-    fn finish_success(
-        &self,
-        evidence: &str,
-        disk_path: Option<&Path>,
-        ovmf_vars_path: Option<&Path>,
-    ) -> Result<()> {
-        let evidence_path = self.write_evidence(evidence)?;
-        self.write_manifest(
-            run_history::STATUS_SUCCESS,
-            Some(now_utc_sortable()?),
-            Some(evidence_path.as_path()),
-            disk_path,
-            ovmf_vars_path,
-        )?;
-        run_history::prune_old_runs(
-            &self.scenario_root_dir,
-            SCENARIO_RUNTIME_RETENTION_COUNT,
+/// The latest successful install run of `distro_id`.
+pub fn resolve_latest_install_run(repo: &Path, distro_id: &str) -> Result<InstallRun> {
+    let install_dir = runs::scenario_dir(repo, distro_id, ScenarioId::Install);
+    let (run_dir, manifest) = runs::latest_success(&install_dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no successful install run for '{distro_id}' under '{}'.\n\
+             Run: cargo xtask test install {distro_id}",
+            install_dir.display(),
         )
-    }
-
-    fn finish_failed(
-        &self,
-        evidence: &str,
-        disk_path: Option<&Path>,
-        ovmf_vars_path: Option<&Path>,
-    ) -> Result<()> {
-        let evidence_path = self.write_evidence(evidence)?;
-        self.write_manifest(
-            run_history::STATUS_FAILED,
-            Some(now_utc_sortable()?),
-            Some(evidence_path.as_path()),
-            disk_path,
-            ovmf_vars_path,
-        )
-    }
-
-    fn write_manifest(
-        &self,
-        status: &str,
-        finished_at_utc: Option<String>,
-        evidence_path: Option<&Path>,
-        disk_path: Option<&Path>,
-        ovmf_vars_path: Option<&Path>,
-    ) -> Result<()> {
-        let metadata = ScenarioRunManifest {
-            run_id: self.run_id.clone(),
-            distro_id: self.distro_id.clone(),
-            scenario_name: self.scenario.key().to_string(),
-            status: status.to_string(),
-            created_at_utc: self.created_at_utc.clone(),
-            finished_at_utc,
-            scenario_root_dir: self.scenario_root_dir.display().to_string(),
-            output_dir: self.output_dir.display().to_string(),
-            evidence_path: evidence_path.map(|p| p.display().to_string()),
-            disk_path: disk_path.map(|p| p.display().to_string()),
-            ovmf_vars_path: ovmf_vars_path.map(|p| p.display().to_string()),
-            source_install_run_id: self.source_install_run_id.clone(),
-        };
-        let manifest_path = run_history::run_manifest_path(&self.output_dir);
-        write_json_atomic(&manifest_path, &metadata).with_context(|| {
-            format!(
-                "writing scenario runtime metadata '{}'",
-                manifest_path.display()
-            )
-        })
-    }
-
-    fn write_evidence(&self, evidence: &str) -> Result<PathBuf> {
-        let evidence_path = self.output_dir.join("last-result.txt");
-        let body = format!(
-            "timestamp_unix_ns={}\ndistro={}\nscenario={}\n{}\n",
-            now_unix_nanos()?,
-            self.distro_id,
-            self.scenario.key(),
-            evidence
-        );
-        fs::write(&evidence_path, body).with_context(|| {
-            format!(
-                "writing scenario runtime evidence '{}'",
-                evidence_path.display()
-            )
-        })?;
-        Ok(evidence_path)
-    }
-}
-
-pub fn resolve_latest_install_runtime(distro_id: &str) -> Result<InstallScenarioRuntime> {
-    let scenario_root = scenario_runtime_root_dir(distro_id, ScenarioId::Install);
-    let run_id = run_history::latest_successful_run_id(&scenario_root)?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "install scenario runtime not found for '{}': no successful runs under '{}'.\n\
-                 Run: cargo xtask test install {}",
-                distro_id,
-                scenario_root.display(),
-                distro_id
-            )
-        })?;
-    let run_dir = scenario_root.join(&run_id);
+    })?;
     let disk_path = run_dir.join(INSTALL_DISK_FILENAME);
     let ovmf_vars_path = run_dir.join(INSTALL_OVMF_VARS_FILENAME);
-    if !disk_path.is_file() {
-        bail!(
-            "install scenario disk image missing for '{}' run '{}': '{}'.\n\
-             Re-run install: cargo xtask test install {} --force",
-            distro_id,
-            run_id,
-            disk_path.display(),
-            distro_id
-        );
+    for (what, path) in [("disk image", &disk_path), ("UEFI variables", &ovmf_vars_path)] {
+        if !path.is_file() {
+            bail!(
+                "the install run '{}' of '{distro_id}' has no {what} '{}'.\n\
+                 Re-run install: cargo xtask test install {distro_id} --force",
+                manifest.run_id,
+                path.display(),
+            );
+        }
     }
-    if !ovmf_vars_path.is_file() {
-        bail!(
-            "install scenario OVMF vars missing for '{}' run '{}': '{}'.\n\
-             Re-run install: cargo xtask test install {} --force",
-            distro_id,
-            run_id,
-            ovmf_vars_path.display(),
-            distro_id
-        );
-    }
-    Ok(InstallScenarioRuntime {
-        run_id,
+    Ok(InstallRun {
+        run: manifest.reference(),
         disk_path,
         ovmf_vars_path,
     })
-}
-
-fn scenario_runtime_root_dir(distro_id: &str, scenario: ScenarioId) -> PathBuf {
-    run_history::distro_output_dir(&repo_root(), distro_id)
-        .join(SCENARIO_ROOT_DIRNAME)
-        .join(scenario.key())
 }
 
 fn transfer_evidence_chunk(
@@ -1118,47 +908,6 @@ fn transfer_evidence_chunk(
         bail!("transferring evidence {dest} failed: {output}");
     }
     Ok(())
-}
-
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "cannot write scenario runtime metadata without parent directory: '{}'",
-            path.display()
-        )
-    })?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("creating metadata parent directory '{}'", parent.display()))?;
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let payload = serde_json::to_vec_pretty(value)
-        .with_context(|| "serializing scenario runtime metadata")?;
-    fs::write(&tmp, payload).with_context(|| format!("writing temp file '{}'", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| {
-        format!(
-            "renaming temp metadata '{}' to '{}'",
-            tmp.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn now_utc_sortable() -> Result<String> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .with_context(|| {
-            "system clock before UNIX_EPOCH while recording scenario runtime metadata".to_string()
-        })?;
-    Ok(format!("{:020}{:09}", now.as_secs(), now.subsec_nanos()))
-}
-
-fn now_unix_nanos() -> Result<u128> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .with_context(|| {
-            "system clock before UNIX_EPOCH while recording scenario runtime evidence".to_string()
-        })?
-        .as_nanos())
 }
 
 fn verify_live_overlay_behavior(console: &mut Console) -> Result<String> {
@@ -1198,18 +947,33 @@ fn scenario_evidence(scenario: ScenarioId) -> Result<Evidence> {
     Evidence::of(scenario).with_context(|| format!("{scenario} runs no guest-side script"))
 }
 
-/// Boot the latest install run's disk.
+/// Boot the install run's disk through an overlay and a copy of its UEFI
+/// variables in `run_dir`, so the install run stays as the install left it.
 fn installed_vm(
     variant: &Variant,
-    install_runtime: &InstallScenarioRuntime,
+    install: &InstallRun,
     scenario: ScenarioId,
+    run_dir: &Path,
 ) -> Result<session::Vm> {
+    let (disk, vars) = overlay_install(install, run_dir)?;
     session::spawn(VmSpec {
         name: &format!("{}-{}", variant.id, scenario.key()),
-        disk: Some(&install_runtime.disk_path),
-        ovmf_vars: Some(&install_runtime.ovmf_vars_path),
+        disk: Some(&disk),
+        ovmf_vars: Some(&vars),
         ..Default::default()
     })
+}
+
+/// A copy-on-write disk over the install run's disk and a copy of its UEFI
+/// variables, in `run_dir`.
+pub(super) fn overlay_install(install: &InstallRun, run_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    let disk = run_dir.join(INSTALL_DISK_FILENAME);
+    let vars = run_dir.join(INSTALL_OVMF_VARS_FILENAME);
+    recqemu::create_overlay(&install.disk_path, &disk)?;
+    fs::copy(&install.ovmf_vars_path, &vars).with_context(|| {
+        format!("copying the install run's UEFI variables '{}'", install.ovmf_vars_path.display())
+    })?;
+    Ok((disk, vars))
 }
 
 enum ToolCheck {

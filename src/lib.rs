@@ -11,9 +11,3 @@ pub mod expect;
 pub mod preflight;
 pub mod qemu;
 pub mod scenarios;
-
-/// The LevitateOS checkout this crate sits in.
-pub(crate) fn repo_root() -> std::path::PathBuf {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    root.canonicalize().unwrap_or(root)
-}
