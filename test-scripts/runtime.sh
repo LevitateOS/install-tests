@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runtime Validation (the runtime scenario)
 #
-# Verifies that daily-driver tools are present and functional on the installed
-# system, not the live ISO.
+# Checks the installed system's privilege policy. The harness runs every
+# contract tool on the installed system itself (the runtime scenario).
 
 set -euo pipefail
 
@@ -19,34 +19,17 @@ fi
 
 scenario_header "Runtime Validation"
 
-info "Testing daily driver tools on installed system"
-echo
-
-section_header "Essential Tools"
+# The harness runs every contract tool, the privilege tool among them. This
+# checks the privilege tool's policy, by the profile's REC_PRIVILEGE fact.
+section_header "Privilege Policy"
 . /etc/os-release
-case "${ID:-}" in
-    levitateos)
-        test_tool "sudo" "sudo --version"
-        test_command "sudo policy syntax" "visudo -c"
-        ;;
-    acornos)
-        test_tool "doas" "doas -C /etc/doas.conf"
-        ;;
+case "${REC_PRIVILEGE:-}" in
+    sudo) test_command "sudo policy syntax" "visudo -c" ;;
+    doas) test_command "doas policy syntax" "doas -C /etc/doas.conf" ;;
     *)
-        echo "ERROR: Unsupported installed distro '${ID:-unknown}'" >&2
+        echo "ERROR: /etc/os-release names no known REC_PRIVILEGE ('${REC_PRIVILEGE:-}')" >&2
         exit 1
         ;;
-esac
-test_tool "ip" "ip -V"
-test_tool "ssh" "ssh -V"
-test_tool "mount" "mount --version"
-test_tool "umount" "umount --version"
-test_tool "dmesg" "dmesg --version || dmesg -h"
-
-section_header "Shell & Core Utils"
-case "$ID" in
-    levitateos) test_tool "bash" "bash --version" ;;
-    acornos) test_tool "ash" "ash -c 'echo test'" ;;
 esac
 
 report_results "Runtime"

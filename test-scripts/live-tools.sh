@@ -1,14 +1,9 @@
 #!/bin/sh
 # Live Tools Validation
 #
-# Verifies that all expected tools are present and functional in the
-# live environment. This actually EXECUTES each tool to ensure:
-# - Binary can execute (not just exist in PATH)
-# - Required libraries are present (no missing .so files)
-# - Environment is properly configured (proc/sys/dev available)
-# - Tool is functional (not broken/corrupted)
-#
-# This is the REAL validation - if a tool passes here, users can actually use it.
+# Verifies the live environment around the tools: PATH, the block and PCI
+# subsystems, kernel modules and the network interfaces. The harness runs
+# every contract tool itself (the live-tools scenario).
 
 set -euo pipefail
 START_TIME="$(date +%s)"
@@ -35,73 +30,16 @@ fi
 
 scenario_header "Live Tools Validation"
 
-info "This scenario verifies that all daily driver tools are present"
-info "and FUNCTIONAL (actually executes them, not just checks existence)"
-echo
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Core Installation Tools
-# ═══════════════════════════════════════════════════════════════════════════
-
-section_header "Core Installation Tools"
+# Every command the contract lists (distro/contract/capabilities.txt, the
+# install tools and the privilege tool) is run by the harness before this
+# script. This checks what the live environment adds around them.
+section_header "Live Environment"
 test_command "PATH includes /usr/local/bin" "echo \"\$PATH\" | tr ':' '\n' | grep -qx '/usr/local/bin'"
-test_tool "recstrap" "recstrap --help"
-test_tool "recfstab" "recfstab --help"
-test_tool "recchroot" "recchroot --help"
-test_tool "sfdisk" "sfdisk --version"
-test_tool "fdisk" "fdisk --version"
-test_tool "lsblk" "lsblk --version"
-test_tool "blkid" "blkid --version"
-test_tool "wipefs" "wipefs --version"
-test_tool "mkfs.ext4" "mkfs.ext4 -V 2>&1 | head -1"
-test_tool "mount" "mount --version"
 test_command "block subsystem visible" "test -d /sys/class/block && ls /sys/class/block >/dev/null"
 test_command "kernel modules installed for the running kernel" "test -f /lib/modules/\$(uname -r)/modules.dep"
 test_command "a modular driver loads (iwlwifi, with cfg80211)" "modprobe iwlwifi && grep -q '^iwlwifi ' /proc/modules"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Network & Connectivity
-# ═══════════════════════════════════════════════════════════════════════════
-
-section_header "Network & Connectivity"
-test_tool "ip" "ip -V"
-test_tool "ping" "ping -V"
-test_tool "curl" "curl --version"
 test_command "network interfaces discoverable" "ip -brief link >/dev/null"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Hardware Diagnostics
-# ═══════════════════════════════════════════════════════════════════════════
-
-section_header "Hardware Diagnostics"
-test_tool "lspci" "lspci --version"
-test_tool "lsusb" "lsusb --version"
-# Disk health tools ship on some variants only; the variant's contract (required_tools)
-# makes them mandatory where they belong.
-if command -v smartctl >/dev/null 2>&1; then test_tool "smartctl" "smartctl --version"; fi
-if command -v hdparm >/dev/null 2>&1; then test_tool "hdparm" "hdparm -V"; fi
 test_command "PCI inventory probe" "lspci -mm >/dev/null"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Editors & Viewers
-# ═══════════════════════════════════════════════════════════════════════════
-
-section_header "Editors & Viewers"
-# vim on AcornOS, vim-minimal's vi on LevitateOS.
-if command -v vim >/dev/null 2>&1; then test_tool "vim" "vim --version"; else test_tool "vi" "vi --version"; fi
-test_tool "less" "less --version"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# System Utilities
-# ═══════════════════════════════════════════════════════════════════════════
-
-section_header "System Utilities"
-if command -v htop >/dev/null 2>&1; then test_tool "htop" "htop --version"; fi
-test_tool "grep" "grep --version"
-test_tool "find" "find --version"
-test_tool "awk" "echo ok | awk '{ print \$1 }'"
-test_tool "sed" "echo ok | sed -n p"
-test_command "shell can execute toolbox binaries" "command -v recstrap recfstab recchroot >/dev/null"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Report Results
