@@ -50,7 +50,7 @@ impl Machine<'_> {
         let mut steps = Vec::new();
         let contract = &self.variant.contract;
         let init = contract.profile.init;
-        let initramfs = contract.artifacts.initramfs_installed.as_deref();
+        let initramfs = Some(contract.artifacts.initramfs_installed.as_str());
         let entry = |slot: &str| {
             format!(
                 "/boot/loader/entries/{}-{slot}.conf",

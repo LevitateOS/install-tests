@@ -479,7 +479,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         root_password: expect::root_password(variant),
     };
     let (target, steps) = install::install(&mut live.remote, variant, &system)?;
-    let initramfs = variant.contract.artifacts.initramfs_installed.clone().unwrap_or_default();
+    let initramfs = variant.contract.artifacts.initramfs_installed.clone();
     let trial_link = recab::trial_service_link(variant.contract.profile.init);
     let mode_name = mode.to_string();
     let evidence = guest::run_evidence(

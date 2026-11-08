@@ -52,14 +52,12 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
             kernel_modules: kernel.join(KERNEL_MODULES_DIR),
         },
     ));
-    if let Some(initramfs) = &artifacts.initramfs_installed {
-        checked.push("installed initramfs");
-        if !run_dir.join(initramfs).is_file() {
-            violations.push(Violation::new(
-                run_dir.join(initramfs).display().to_string(),
-                "the installed system's initramfs, which the variant declares, is missing",
-            ));
-        }
+    checked.push("installed initramfs");
+    if !run_dir.join(&artifacts.initramfs_installed).is_file() {
+        violations.push(Violation::new(
+            run_dir.join(&artifacts.initramfs_installed).display().to_string(),
+            "the installed system's initramfs is missing",
+        ));
     }
     if build.live_session {
         checked.push("live-boot runtime");

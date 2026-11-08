@@ -79,15 +79,16 @@ pub fn install(
         shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/vmlinuz")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
-    // The installed system's initramfs, when the variant declares one: the ISO carries
+    // The installed system's initramfs, the ISO carries
     // it beside its own live one (that one only finds the live medium); recsetup
     // defaults to it, named here so the scenario fails loudly if the ISO lacks it.
-    if let Some(initramfs) = &variant.contract.artifacts.initramfs_installed {
-        setup.push_str(&format!(
-            " --initrd {}",
-            shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/{initramfs}"))
-        ));
-    }
+    setup.push_str(&format!(
+        " --initrd {}",
+        shell_quote(&format!(
+            "{LIVE_MEDIA_DIR}/boot/{}",
+            variant.contract.artifacts.initramfs_installed
+        ))
+    ));
     match system.mode {
         InstallMode::Ab => {
             let slots = &applied.handoff.mode_context;
