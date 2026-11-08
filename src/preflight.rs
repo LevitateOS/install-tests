@@ -24,7 +24,7 @@ use distro_builder::kernel::{
 use distro_builder::run_history::{self, RunMetadata};
 use distro_contract::{
     validate_build_runtime, validate_live_boot_runtime, BuildRuntimeArtifacts,
-    LiveBootRuntimeArtifacts,
+    LiveBootRuntimeArtifacts, Variant,
 };
 use fsdbg::checklist::{ChecklistType, VerificationReport};
 use fsdbg::cpio::CpioReader;
@@ -85,31 +85,17 @@ impl PreflightCheck {
     }
 }
 
+/// The built artifacts against the (already loaded and validated) variant.
 fn verify_conformance_contract(
-    distro_id: &str,
+    bundle: &Variant,
     runtime_artifacts: &ResolvedRuntimeArtifacts,
     validate_live_boot: bool,
 ) -> Result<PreflightCheck> {
     let name = "Contract conformance";
     print!("  Checking {}... ", name);
 
-    let bundle = match distro_contract::load(&repo_root(), distro_id) {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            println!("{}", "FAIL".red().bold());
-            return Ok(PreflightCheck {
-                name: name.to_string(),
-                passed: false,
-                total_checks: 1,
-                passed_checks: 0,
-                failures: 1,
-                details: vec![err.to_string()],
-            });
-        }
-    };
-
     let mut details = Vec::new();
-    let kernel_output_dir = run_history::kernel_output_dir(&repo_root(), distro_id);
+    let kernel_output_dir = run_history::kernel_output_dir(&repo_root(), &bundle.id);
 
     let runtime_report = validate_build_runtime(
         &bundle,
@@ -126,6 +112,7 @@ fn verify_conformance_contract(
 
     if validate_live_boot {
         let live_boot_report = validate_live_boot_runtime(
+            &bundle.contract.profile,
             &bundle.contract.scenarios.live_boot,
             &LiveBootRuntimeArtifacts {
                 rootfs_image: runtime_artifacts.rootfs_image.clone(),
@@ -138,7 +125,7 @@ fn verify_conformance_contract(
         details.extend(live_boot_report.into_iter().map(|v| v.to_string()));
     }
 
-    if let Err(err) = check_kernel_installed(&bundle, &kernel_output_dir) {
+    if let Err(err) = check_kernel_installed(bundle, &kernel_output_dir) {
         details.push(format!("kernel: {err:#}"));
     }
 
@@ -181,20 +168,17 @@ fn should_validate_live_boot_runtime(run_manifest: Option<&RunMetadata>) -> bool
 
 fn resolve_runtime_artifacts(
     artifact_dir: &Path,
-    distro_id: &str,
+    variant: &Variant,
 ) -> Result<ResolvedRuntimeArtifacts> {
-    let canonical_names = canonical_runtime_artifact_names_for_distro(distro_id)?;
+    let transforms = &variant.contract.transforms;
     Ok(ResolvedRuntimeArtifacts {
-        rootfs_image: resolve_required_file(artifact_dir, &canonical_names.rootfs_image)?,
-        initramfs_live: resolve_required_file(artifact_dir, &canonical_names.initramfs_live)?,
-        initramfs_installed: resolve_optional_file(
-            artifact_dir,
-            canonical_names
-                .initramfs_installed
-                .as_deref()
-                .unwrap_or("initramfs-installed.img"),
-        )?,
-        overlay_image: resolve_required_file(artifact_dir, &canonical_names.overlay_image)?,
+        rootfs_image: resolve_required_file(artifact_dir, transforms.rootfs_image.output())?,
+        initramfs_live: resolve_required_file(artifact_dir, transforms.initramfs_live.output())?,
+        initramfs_installed: match &variant.contract.artifacts.initramfs_installed_output {
+            Some(name) => resolve_optional_file(artifact_dir, name)?,
+            None => None,
+        },
+        overlay_image: resolve_required_file(artifact_dir, transforms.overlay_image.output())?,
         live_overlay_dir: resolve_required_dir(artifact_dir, "live-overlay")?,
         rootfs_source_pointer: resolve_required_file(artifact_dir, ".live-rootfs-source.path")?,
     })
@@ -205,13 +189,13 @@ fn resolve_runtime_artifacts(
 pub fn run_preflight(
     iso_dir: &Path,
     iso_filename: Option<&str>,
-    distro_id: &str,
+    variant: &Variant,
 ) -> Result<PreflightResult> {
     println!();
     println!("{}", "=== PREFLIGHT VERIFICATION ===".cyan().bold());
     println!(
         "Verifying contract + ISO artifacts for {} before starting QEMU...",
-        distro_id
+        variant.id
     );
     println!();
 
@@ -227,11 +211,11 @@ pub fn run_preflight(
         .filter(|path| path.is_file())
         .or_else(|| find_iso_file(iso_dir));
     let run_manifest = run_history::read_run_manifest(iso_dir)?;
-    let runtime_artifacts = resolve_runtime_artifacts(iso_dir, distro_id)?;
+    let runtime_artifacts = resolve_runtime_artifacts(iso_dir, variant)?;
     let validate_live_boot = should_validate_live_boot_runtime(run_manifest.as_ref());
 
     result.conformance = Some(verify_conformance_contract(
-        distro_id,
+        variant,
         &runtime_artifacts,
         validate_live_boot,
     )?);
@@ -253,7 +237,8 @@ pub fn run_preflight(
         );
     }
 
-    if distro_id == "levitate" {
+    // The installed system's initramfs, when the variant declares one.
+    if let Some(declared) = &variant.contract.artifacts.initramfs_installed_output {
         if let Some(install_path) = runtime_artifacts.initramfs_installed.as_ref() {
             if install_path.exists() {
                 result.install_initramfs = Some(verify_artifact(
@@ -271,14 +256,10 @@ pub fn run_preflight(
                 );
             }
         } else {
-            let expected_install_path = canonical_runtime_artifact_names_for_distro(distro_id)?
-                .initramfs_installed
-                .map(|name| iso_dir.join(name))
-                .unwrap_or_else(|| iso_dir.join("initramfs-installed.img"));
             println!(
                 "  {} Install initramfs not found at {}",
                 "SKIP".yellow(),
-                expected_install_path.display()
+                iso_dir.join(declared).display()
             );
         }
     }
@@ -298,7 +279,7 @@ pub fn run_preflight(
     };
 
     if iso_path.exists() {
-        result.iso = Some(verify_iso_distro(&iso_path, distro_id)?);
+        result.iso = Some(verify_iso_distro(&iso_path)?);
         if !result.iso.as_ref().unwrap().passed {
             result.overall_pass = false;
         }
@@ -310,28 +291,6 @@ pub fn run_preflight(
     println!();
     print_summary(&result);
     Ok(result)
-}
-
-struct CanonicalRuntimeArtifactNames {
-    rootfs_image: String,
-    initramfs_live: String,
-    initramfs_installed: Option<String>,
-    overlay_image: String,
-}
-
-fn canonical_runtime_artifact_names_for_distro(
-    distro_id: &str,
-) -> Result<CanonicalRuntimeArtifactNames> {
-    let transforms = distro_contract::load(&repo_root(), distro_id)?.contract.transforms;
-    Ok(CanonicalRuntimeArtifactNames {
-        rootfs_image: transforms.rootfs_image.output().to_string(),
-        initramfs_live: transforms.initramfs_live.output().to_string(),
-        initramfs_installed: transforms
-            .initramfs_installed
-            .as_ref()
-            .map(|transform| transform.output().to_string()),
-        overlay_image: transforms.overlay_image.output().to_string(),
-    })
 }
 
 fn resolve_required_file(artifact_dir: &Path, canonical: &str) -> Result<PathBuf> {
@@ -358,8 +317,8 @@ fn resolve_required_dir(artifact_dir: &Path, canonical: &str) -> Result<PathBuf>
     Ok(artifact_dir.join(canonical))
 }
 
-/// Verify an ISO using distro-specific checklist.
-fn verify_iso_distro(path: &Path, distro_id: &str) -> Result<PreflightCheck> {
+/// Verify an ISO against the ISO checklist.
+fn verify_iso_distro(path: &Path) -> Result<PreflightCheck> {
     let name = "Live ISO";
     print!("  Checking {}... ", name);
 
@@ -378,8 +337,6 @@ fn verify_iso_distro(path: &Path, distro_id: &str) -> Result<PreflightCheck> {
             });
         }
     };
-    // TODO: pass distro_id once verify_distro is implemented in fsdbg
-    let _ = distro_id;
     let report = fsdbg::checklist::iso::verify(&reader);
 
     let check = PreflightCheck::from_report(name, &report);
@@ -537,9 +494,9 @@ fn print_summary(result: &PreflightResult) {
 pub fn require_preflight(
     iso_dir: &Path,
     iso_filename: Option<&str>,
-    distro_id: &str,
+    variant: &Variant,
 ) -> Result<()> {
-    let result = run_preflight(iso_dir, iso_filename, distro_id)?;
+    let result = run_preflight(iso_dir, iso_filename, variant)?;
 
     if !result.overall_pass {
         // Collect all failures for the error message
@@ -570,7 +527,7 @@ pub fn require_preflight(
              Rebuild the ISO: cargo xtask build base-rootfs {}\n\
              ALL verification checks must pass before running tests.",
             all_failures.join("\n"),
-            distro_id);
+            variant.id);
     }
 
     Ok(())

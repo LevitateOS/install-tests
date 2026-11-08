@@ -17,13 +17,14 @@ pub mod state;
 
 mod ab_update;
 mod install;
-use crate::distro::{context_for_distro, load_installed_scenario_facts, load_scenarios, DistroContext};
 use crate::preflight::require_preflight;
 use crate::qemu::session;
 use crate::qemu::{Console, SerialExecutorExt};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use distro_contract::RootfsMutability;
+use distro_contract::profile::{InitSystem, PrivilegeTool};
+use distro_contract::{RootfsMutability, Variant};
+use recab::InitSystemExt;
 use recpart::InstallMode;
 use recshuttle::Remote;
 use distro_builder::install_ux::{LAUNCHER, PROBE_PREFIX, SMOKE_ENV, SPLIT, SPLIT_SMOKE_OK};
@@ -152,10 +153,14 @@ pub fn run_scenario_forced(distro_id: &str, scenario: ScenarioId) -> Result<bool
     run_scenario_impl(distro_id, scenario, true)
 }
 
+/// The variant `distro_id`, loaded once for the whole run.
+fn load_variant(distro_id: &str) -> Result<Variant> {
+    Ok(distro_contract::load(&repo_root(), distro_id)?)
+}
+
 fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Result<bool> {
-    let ctx = context_for_distro(distro_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
-    let canonical_distro_id = ctx.id();
+    let variant = load_variant(distro_id)?;
+    let canonical_distro_id = variant.id.as_str();
     let scenario_iso = resolve_iso_artifact_for_scenario(canonical_distro_id, scenario)?;
     if let Some(iso) = scenario_iso.as_ref() {
         let iso_dir = iso.path.parent().ok_or_else(|| {
@@ -164,7 +169,7 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
                 iso.path.display()
             )
         })?;
-        require_preflight(iso_dir, Some(&iso.filename), canonical_distro_id)?;
+        require_preflight(iso_dir, Some(&iso.filename), &variant)?;
     }
 
     let input_fingerprint =
@@ -210,31 +215,31 @@ fn run_scenario_impl(distro_id: &str, scenario: ScenarioId, force: bool) -> Resu
                 .unwrap_or_default()
         )),
         ScenarioId::LiveBoot => run_live_boot(
-            &*ctx,
+            &variant,
             &scenario_iso
                 .as_ref()
                 .expect("live-boot scenario requires ISO")
                 .path,
         ),
         ScenarioId::LiveTools => run_live_tools(
-            &*ctx,
+            &variant,
             &scenario_iso
                 .as_ref()
                 .expect("live-tools scenario requires ISO")
                 .path,
         ),
         ScenarioId::Install => run_installation(
-            &*ctx,
+            &variant,
             &scenario_iso
                 .as_ref()
                 .expect("install scenario requires ISO")
                 .path,
         ),
-        ScenarioId::InstalledBoot => run_installed_boot(&*ctx),
-        ScenarioId::AutomatedLogin => run_automated_login(&*ctx),
-        ScenarioId::Runtime => run_daily_driver_tools(&*ctx),
+        ScenarioId::InstalledBoot => run_installed_boot(&variant),
+        ScenarioId::AutomatedLogin => run_automated_login(&variant),
+        ScenarioId::Runtime => run_daily_driver_tools(&variant),
         ScenarioId::AbUpdate => ab_update::run(
-            &*ctx,
+            &variant,
             &scenario_iso
                 .as_ref()
                 .expect("ab-update scenario requires ISO")
@@ -276,9 +281,11 @@ pub enum ScenarioStatus {
 
 /// Each scenario's status for a distro, in run order.
 pub fn scenario_statuses(distro_id: &str) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
-    let ctx = context_for_distro(distro_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
-    let canonical_distro_id = ctx.id();
+    statuses(&load_variant(distro_id)?)
+}
+
+fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
+    let canonical_distro_id = variant.id.as_str();
     let state = ScenarioState::load(canonical_distro_id)?;
     Ok(ScenarioId::ALL
         .into_iter()
@@ -306,11 +313,10 @@ pub fn scenario_statuses(distro_id: &str) -> Result<Vec<(ScenarioId, ScenarioSta
 
 /// Print scenario status for a distro.
 pub fn print_status(distro_id: &str) -> Result<()> {
-    let ctx = context_for_distro(distro_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?;
-    println!("{} Scenario Status", ctx.name().bold());
+    let variant = load_variant(distro_id)?;
+    println!("{} Scenario Status", variant.contract.identity.os_name.bold());
     println!();
-    for (scenario, status) in scenario_statuses(distro_id)? {
+    for (scenario, status) in statuses(&variant)? {
         let label = match status {
             ScenarioStatus::Stale => "[STALE]".yellow(),
             ScenarioStatus::Pass => "[PASS]".green(),
@@ -330,10 +336,7 @@ pub fn print_status(distro_id: &str) -> Result<()> {
 
 /// Reset all scenario state for a distro.
 pub fn reset_state(distro_id: &str) -> Result<()> {
-    let canonical_distro_id = context_for_distro(distro_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown distro '{}'", distro_id))?
-        .id()
-        .to_string();
+    let canonical_distro_id = load_variant(distro_id)?.id;
     let path = state::state_path(&canonical_distro_id);
     if path.exists() {
         std::fs::remove_file(&path)?;
@@ -352,22 +355,20 @@ pub fn parse_scenario_name(value: &str) -> Result<ScenarioId> {
 }
 
 /// Live Boot scenario — ISO boots in QEMU.
-fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let live_boot_evidence = load_scenarios(ctx.id())?.live_boot.evidence;
+fn run_live_boot(variant: &Variant, iso_path: &Path) -> Result<String> {
+    let scenarios = &variant.contract.scenarios;
     let mut vm = session::spawn(VmSpec {
-        name: &format!("{}-live-boot", ctx.id()),
+        name: &format!("{}-live-boot", variant.id),
         iso: Some(iso_path),
         ssh: true,
         ..Default::default()
     })?;
     let ssh_host_port = vm.ssh_port()?;
     let console = &mut vm.console;
-    let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
-
-    console.wait_for_live_boot_with_context(stall_timeout, ctx)?;
+    console.wait_for_live_boot_with_context(live_boot_stall(variant), scenarios)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    evidence_over_ssh(ssh_host_port, &live_boot_evidence, &[])?;
+    evidence_over_ssh(ssh_host_port, &scenarios.live_boot.evidence, &[])?;
     evidence_over_ssh(
         ssh_host_port,
         &distro_contract::ScriptEvidence {
@@ -388,27 +389,27 @@ fn run_live_boot(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 /// Each tool is run with a harmless invocation where it has one (see
 /// [`check_tool`]), so missing libraries or a broken binary fail, not just
 /// absence from PATH. The live overlay's behavior is checked too.
-fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
+fn run_live_tools(variant: &Variant, iso_path: &Path) -> Result<String> {
+    let scenarios = &variant.contract.scenarios;
     let mut vm = session::spawn(VmSpec {
-        name: &format!("{}-live-tools", ctx.id()),
+        name: &format!("{}-live-tools", variant.id),
         iso: Some(iso_path),
         ssh: true,
         ..Default::default()
     })?;
     let ssh_host_port = vm.ssh_port()?;
     let console = &mut vm.console;
-    wait_for_live_tools_serial_readiness(console, ctx)?;
+    wait_for_live_tools_serial_readiness(console, variant)?;
     verify_live_boot_ssh_login(console, ssh_host_port)?;
 
-    let required_tools = load_scenarios(ctx.id())?.live_tools.required_tools;
-    let tools: Vec<&str> = required_tools.iter().map(String::as_str).collect();
+    let tools: Vec<&str> = scenarios.live_tools.required_tools.iter().map(String::as_str).collect();
     let mut missing = Vec::new();
     let mut found = Vec::new();
     let mut broken = Vec::new();
 
     let remote = Remote::new(ssh_host_port);
     for tool in &tools {
-        match check_tool(tool, |cmd| Ok(remote.exec(cmd)?.exit_code))? {
+        match check_tool(variant, tool, |cmd| Ok(remote.exec(cmd)?.exit_code))? {
             ToolCheck::Works => found.push(*tool),
             ToolCheck::Missing => missing.push(*tool),
             ToolCheck::Broken(code) => broken.push((*tool, code)),
@@ -448,7 +449,7 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
 
     let script_evidence = evidence_over_ssh(
         ssh_host_port,
-        &load_scenarios(ctx.id())?.live_tools.evidence,
+        &scenarios.live_tools.evidence,
         &[],
     )?;
     let install_profile_evidence = format!("install UX verified; {ux_split_evidence}");
@@ -463,27 +464,25 @@ fn run_live_tools(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
     ))
 }
 
-fn wait_for_live_tools_serial_readiness(
-    console: &mut Console,
-    ctx: &dyn DistroContext,
-) -> Result<()> {
-    let stall_timeout = Duration::from_secs(ctx.live_boot_stall_timeout_secs());
+fn wait_for_live_tools_serial_readiness(console: &mut Console, variant: &Variant) -> Result<()> {
     // Live-tools is validated over SSH; the serial console may run the
     // install UX rather than a shell.
     console
-        .wait_for_live_tools_with_context(stall_timeout, ctx)
+        .wait_for_live_tools_with_context(live_boot_stall(variant), &variant.contract.scenarios)
         .context("waiting for live-tools serial readiness")
 }
 
-fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> {
-    let scenario_run = ScenarioRun::start(ctx.id(), ScenarioId::Install, None)?;
+fn run_installation(variant: &Variant, iso_path: &Path) -> Result<String> {
+    let scenarios = &variant.contract.scenarios;
+    let mode = install_mode(variant);
+    let scenario_run = ScenarioRun::start(&variant.id, ScenarioId::Install, None)?;
     let disk_path = scenario_run.output_dir.join(INSTALL_DISK_FILENAME);
     if disk_path.exists() {
         std::fs::remove_file(&disk_path)?;
     }
     // An A/B layout holds two 20 GiB root slots and at least 4 GiB of state
     // (recpart's defaults); the image is sparse either way.
-    let disk_size = match install_mode_for_distro(ctx.id())? {
+    let disk_size = match mode {
         InstallMode::Ab => "48G",
         InstallMode::Mutable => "20G",
     };
@@ -493,7 +492,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
         &scenario_run.output_dir.join(INSTALL_OVMF_VARS_FILENAME),
     )?;
     let mut vm = session::spawn(VmSpec {
-        name: &format!("{}-install", ctx.id()),
+        name: &format!("{}-install", variant.id),
         iso: Some(iso_path),
         disk: Some(&disk_path),
         ovmf_vars: Some(&ovmf_vars_path),
@@ -507,22 +506,18 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     // boot boundary.
     let remote = Remote::new(ssh_host_port);
     let install_result = (|| -> Result<usize> {
-        console.wait_for_live_boot_with_context(
-            Duration::from_secs(ctx.live_boot_stall_timeout_secs()),
-            ctx,
-        )?;
-        remote.wait_ready(Duration::from_secs(ctx.live_boot_stall_timeout_secs()))?;
+        console.wait_for_live_boot_with_context(live_boot_stall(variant), scenarios)?;
+        remote.wait_ready(live_boot_stall(variant))?;
 
-        let root_password = default_password(ctx)?;
+        let root_password = default_password(variant)?;
         let system = install::TestSystem {
-            mode: install_mode_for_distro(ctx.id())?,
+            mode,
             root_password: &root_password,
-            uses_initramfs: ctx.uses_initramfs(),
         };
-        let (target, step_count) = install::install(&remote, ctx, &system)?;
+        let (target, step_count) = install::install(&remote, variant, &system)?;
         evidence_over_ssh(
             ssh_host_port,
-            &load_scenarios(ctx.id())?.install.evidence,
+            &scenarios.install.evidence,
             &[("SCENARIO_INSTALL_TARGET", target.as_str())],
         )?;
 
@@ -531,13 +526,13 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
             ("systemd-boot loader config", format!("cat {target}/boot/loader/loader.conf")),
             ("fstab root entry", format!("awk '$2==\"/\" {{ok=1}} END{{exit(ok?0:1)}}' {target}/etc/fstab")),
         ];
-        let os_id = distro_contract::load(&repo_root(), ctx.id())?.contract.identity.os_id;
+        let os_id = &variant.contract.identity.os_id;
         let kernel_dir = match system.mode {
             InstallMode::Mutable => format!("{target}/boot"),
             InstallMode::Ab => format!("{target}/boot/{}-a", os_id),
         };
         verify.push(("Kernel on ESP", format!("ls {kernel_dir}/vmlinuz")));
-        if system.uses_initramfs {
+        if variant.contract.artifacts.initramfs_installed_output.is_some() {
             verify.push(("Initramfs on ESP", format!("ls {kernel_dir}/initramfs.img")));
         }
         match system.mode {
@@ -560,7 +555,7 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
                 ));
                 verify.push((
                     "recab's trial service enabled",
-                    format!("test -L {target}/{}", ctx.init_system().trial_service_link()),
+                    format!("test -L {target}/{}", variant.contract.profile.init.trial_service_link()),
                 ));
             }
         }
@@ -601,17 +596,18 @@ fn run_installation(ctx: &dyn DistroContext, iso_path: &Path) -> Result<String> 
     }
 }
 
-fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
-    let install_runtime = resolve_latest_install_runtime(ctx.id())?;
+fn run_installed_boot(variant: &Variant) -> Result<String> {
+    let install_runtime = resolve_latest_install_runtime(&variant.id)?;
     let scenario_run = ScenarioRun::start(
-        ctx.id(),
+        &variant.id,
         ScenarioId::InstalledBoot,
         Some(install_runtime.run_id.clone()),
     )?;
-    let mut vm = installed_vm(ctx, &install_runtime, ScenarioId::InstalledBoot)?;
+    let mut vm = installed_vm(variant, &install_runtime, ScenarioId::InstalledBoot)?;
     let console = &mut vm.console;
 
-    let result = console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx);
+    let result = console
+        .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, &variant.contract.scenarios);
     drop(vm);
 
     match result {
@@ -643,19 +639,20 @@ fn run_installed_boot(ctx: &dyn DistroContext) -> Result<String> {
     }
 }
 
-fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
-    let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let mut vm = installed_vm(ctx, &install_runtime, ScenarioId::AutomatedLogin)?;
+fn run_automated_login(variant: &Variant) -> Result<String> {
+    let scenarios = &variant.contract.scenarios;
+    let install_runtime = resolve_latest_install_runtime(&variant.id)?;
+    let mut vm = installed_vm(variant, &install_runtime, ScenarioId::AutomatedLogin)?;
     let console = &mut vm.console;
 
-    console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx)?;
+    console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, scenarios)?;
 
-    console.login("root", &default_password(ctx)?, LOGIN_TIMEOUT)?;
+    console.login("root", &default_password(variant)?, LOGIN_TIMEOUT)?;
 
     let result = console.exec("echo SCENARIO_LOGIN_OK", COMMAND_TIMEOUT)?;
     let script_evidence = evidence_on_console(
         console,
-        &load_scenarios(ctx.id())?.automated_login.evidence,
+        &scenarios.automated_login.evidence,
     )?;
 
     if result.output.contains("SCENARIO_LOGIN_OK") {
@@ -668,16 +665,16 @@ fn run_automated_login(ctx: &dyn DistroContext) -> Result<String> {
     }
 }
 
-fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
-    let install_runtime = resolve_latest_install_runtime(ctx.id())?;
-    let mut vm = installed_vm(ctx, &install_runtime, ScenarioId::Runtime)?;
+fn run_daily_driver_tools(variant: &Variant) -> Result<String> {
+    let scenarios = &variant.contract.scenarios;
+    let install_runtime = resolve_latest_install_runtime(&variant.id)?;
+    let mut vm = installed_vm(variant, &install_runtime, ScenarioId::Runtime)?;
     let console = &mut vm.console;
 
-    console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, ctx)?;
-    let facts = load_installed_scenario_facts(ctx.id())?;
-    console.login("root", &default_password(ctx)?, LOGIN_TIMEOUT)?;
+    console.wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, scenarios)?;
+    console.login("root", &default_password(variant)?, LOGIN_TIMEOUT)?;
 
-    let tools: Vec<&str> = facts
+    let tools: Vec<&str> = scenarios
         .installed_tools
         .required_tools
         .iter()
@@ -688,7 +685,7 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
 
     let mut broken = Vec::new();
     for tool in &tools {
-        match check_tool(tool, |cmd| Ok(console.exec(cmd, COMMAND_TIMEOUT)?.exit_code))? {
+        match check_tool(variant, tool, |cmd| Ok(console.exec(cmd, COMMAND_TIMEOUT)?.exit_code))? {
             ToolCheck::Works => found.push(*tool),
             ToolCheck::Missing => missing.push(*tool),
             ToolCheck::Broken(code) => broken.push(format!("{tool} (exit {code})")),
@@ -705,7 +702,7 @@ fn run_daily_driver_tools(ctx: &dyn DistroContext) -> Result<String> {
         );
     }
 
-    let script_evidence = evidence_on_console(console, &facts.installed_tools.evidence)?;
+    let script_evidence = evidence_on_console(console, &scenarios.installed_tools.evidence)?;
     Ok(format!(
         "All {} daily driver tools present; {script_evidence}",
         found.len()
@@ -1296,40 +1293,49 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Longest silence tolerated during live boot before it counts as a stall:
+/// OpenRC's early boot can stay quiet for longer than systemd's.
+fn live_boot_stall(variant: &Variant) -> Duration {
+    Duration::from_secs(match variant.contract.profile.init {
+        InitSystem::Systemd => 60,
+        InitSystem::Openrc => 180,
+    })
+}
+
 /// The variant's default root password for automated logins.
-fn default_password(ctx: &dyn DistroContext) -> Result<String> {
-    load_installed_scenario_facts(ctx.id())?
+fn default_password(variant: &Variant) -> Result<String> {
+    variant
+        .contract
+        .scenarios
         .automated_login
         .default_password
+        .clone()
         .with_context(|| {
             format!(
                 "missing canonical automated-login default_password for '{}'",
-                ctx.id()
+                variant.id
             )
         })
 }
 
 /// Boot the latest install run's disk.
 fn installed_vm(
-    ctx: &dyn DistroContext,
+    variant: &Variant,
     install_runtime: &InstallScenarioRuntime,
     scenario: ScenarioId,
 ) -> Result<session::Vm> {
     session::spawn(VmSpec {
-        name: &format!("{}-{}", ctx.id(), scenario.key()),
+        name: &format!("{}-{}", variant.id, scenario.key()),
         disk: Some(&install_runtime.disk_path),
         ovmf_vars: Some(&install_runtime.ovmf_vars_path),
         ..Default::default()
     })
 }
 
-fn install_mode_for_distro(distro_id: &str) -> Result<InstallMode> {
-    match load_installed_scenario_facts(distro_id)?
-        .runtime_policy
-        .rootfs_mutability
-    {
-        RootfsMutability::Mutable => Ok(InstallMode::Mutable),
-        RootfsMutability::Immutable => Ok(InstallMode::Ab),
+fn install_mode(variant: &Variant) -> InstallMode {
+    match variant.contract.scenarios.runtime_policy.rootfs_mutability {
+        RootfsMutability::Mutable => InstallMode::Mutable,
+        RootfsMutability::Immutable => InstallMode::Ab,
     }
 }
 
@@ -1342,11 +1348,21 @@ enum ToolCheck {
 /// Check that `tool` is on PATH (`command -v`) and runs: its known harmless
 /// invocation must exit 0. `exec` runs a command in the guest and returns
 /// its exit status.
-fn check_tool(tool: &str, mut exec: impl FnMut(&str) -> Result<i32>) -> Result<ToolCheck> {
+fn check_tool(
+    variant: &Variant,
+    tool: &str,
+    mut exec: impl FnMut(&str) -> Result<i32>,
+) -> Result<ToolCheck> {
     if exec(&format!("command -v {tool} >/dev/null"))? != 0 {
         return Ok(ToolCheck::Missing);
     }
-    let Some(run) = tool_run_command(tool) else {
+    let privilege = variant.contract.profile.privilege;
+    let run = if tool == privilege.as_str() {
+        Some(privilege_check(privilege))
+    } else {
+        tool_run_command(tool)
+    };
+    let Some(run) = run else {
         return Ok(ToolCheck::Works);
     };
     Ok(match exec(&format!("{{ {run}; }} >/dev/null 2>&1"))? {
@@ -1370,8 +1386,6 @@ fn tool_run_command(tool: &str) -> Option<String> {
         "grep" => "echo x | grep x".to_string(),
         "find" => "find / -maxdepth 0".to_string(),
         "ssh" => "ssh -V".to_string(),
-        // OpenDoas has no --version option.
-        "doas" => "doas -C /etc/doas.conf".to_string(),
         "sh" | "ash" => format!("{tool} -c true"),
         "cat" => "cat /dev/null".to_string(),
         "ls" => "ls /".to_string(),
@@ -1380,6 +1394,15 @@ fn tool_run_command(tool: &str) -> Option<String> {
         "vi" => return None,
         _ => format!("{tool} --version"),
     })
+}
+
+/// A harmless invocation of the variant's privilege tool.
+fn privilege_check(tool: PrivilegeTool) -> String {
+    match tool {
+        PrivilegeTool::Sudo => "sudo --version".to_string(),
+        // OpenDoas has no --version option: check its configuration instead.
+        PrivilegeTool::Doas => format!("doas -C {}", tool.config_file()),
+    }
 }
 
 fn print_failure(scenario: ScenarioId, err: &anyhow::Error) {

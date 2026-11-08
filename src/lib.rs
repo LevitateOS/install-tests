@@ -3,10 +3,9 @@
 //! This library provides the shared infrastructure for installation testing:
 //! - QEMU sessions and the serial console (`qemu`)
 //! - Named install-test scenarios (`scenarios`)
-//! - Distro context for multi-distro support
+//! - Preflight checks of built artifacts against the variant (`preflight`)
 
 pub mod boot_injection;
-pub mod distro;
 pub mod preflight;
 pub mod qemu;
 pub mod scenarios;

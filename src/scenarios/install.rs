@@ -8,7 +8,7 @@ use recpart::types::{ApplyResult, DiskListResult, CONFIRM_TOKEN};
 use recpart::InstallMode;
 use recshuttle::Remote;
 
-use crate::distro::DistroContext;
+use distro_contract::Variant;
 
 /// Kernel console arguments for the installed system: the screen and the
 /// serial port the tests read.
@@ -19,8 +19,6 @@ const SERIAL_CONSOLE: &str = "console=ttyS0,115200n8";
 pub struct TestSystem<'a> {
     pub mode: InstallMode,
     pub root_password: &'a str,
-    /// Whether the distro boots through an initramfs (OpenRC/Acorn does not).
-    pub uses_initramfs: bool,
 }
 
 /// Quote `value` as one word for the guest's POSIX shell.
@@ -32,7 +30,7 @@ pub fn shell_quote(value: &str) -> String {
 /// install target. Returns the target and the number of steps run.
 pub fn install(
     remote: &Remote,
-    ctx: &dyn DistroContext,
+    variant: &Variant,
     system: &TestSystem<'_>,
 ) -> Result<(String, usize)> {
     let mut steps = 0usize;
@@ -79,17 +77,17 @@ pub fn install(
     // the setup program installed by the system recipe and boot state to recab.
     let mut setup = format!(
         "recsetup apply --root {t} --hostname {} --root-password --passwords-stdin --machine-id --boot {} --kernel {} --options {}",
-        shell_quote(ctx.default_hostname()), system.mode,
+        shell_quote(&variant.contract.identity.default_hostname), system.mode,
         shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/vmlinuz")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
-    // The installed system's initramfs, which the ISO carries beside its own live one
-    // (that one only finds the live medium); recsetup defaults to it, named here so the
-    // scenario fails loudly if the ISO lacks it.
-    if system.uses_initramfs {
+    // The installed system's initramfs, when the variant declares one: the ISO carries
+    // it beside its own live one (that one only finds the live medium); recsetup
+    // defaults to it, named here so the scenario fails loudly if the ISO lacks it.
+    if let Some(initramfs) = &variant.contract.artifacts.initramfs_installed_output {
         setup.push_str(&format!(
             " --initrd {}",
-            shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/initramfs-installed.img"))
+            shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/{initramfs}"))
         ));
     }
     match system.mode {

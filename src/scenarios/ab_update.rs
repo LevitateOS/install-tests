@@ -5,7 +5,9 @@
 //! recab-trial.service commits, and rollback to the previous slot.
 
 use anyhow::{bail, ensure, Context, Result};
-use recab::{Slot, Status};
+use distro_contract::profile::InitSystem;
+use distro_contract::Variant;
+use recab::{InitSystemExt, Slot, Status};
 use recinit::live::{
     KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
 };
@@ -17,11 +19,10 @@ use std::time::Duration;
 
 use super::install::shell_quote;
 use super::{
-    default_password, install_mode_for_distro, resolve_latest_install_runtime, ScenarioId,
+    default_password, install_mode, resolve_latest_install_runtime, ScenarioId,
     ScenarioRun, INSTALLED_BOOT_STALL, INSTALL_DISK_FILENAME, INSTALL_OVMF_VARS_FILENAME,
     LOGIN_TIMEOUT,
 };
-use crate::distro::DistroContext;
 use crate::qemu::session::{self, VmSpec};
 use crate::qemu::{Console, SerialExecutorExt};
 
@@ -37,15 +38,15 @@ const SLOT_MOUNT: &str = "/run/ab-update-slot";
 /// A service that always fails, so slot B's trial comes up degraded.
 const FAILING_SERVICE: &str = "ab-update-fail";
 
-pub(super) fn run(ctx: &dyn DistroContext, iso: &Path) -> Result<String> {
-    if install_mode_for_distro(ctx.id())? != InstallMode::Ab {
+pub(super) fn run(variant: &Variant, iso: &Path) -> Result<String> {
+    if install_mode(variant) != InstallMode::Ab {
         bail!(
             "{} installs in mutable mode (scenarios.runtime_policy.rootfs_mutability in its distro.toml); ab-update needs an A/B install",
-            ctx.id()
+            variant.id
         );
     }
-    let install = resolve_latest_install_runtime(ctx.id())?;
-    let scenario_run = ScenarioRun::start(ctx.id(), ScenarioId::AbUpdate, Some(install.run_id.clone()))?;
+    let install = resolve_latest_install_runtime(&variant.id)?;
+    let scenario_run = ScenarioRun::start(&variant.id, ScenarioId::AbUpdate, Some(install.run_id.clone()))?;
 
     // A copy-on-write layer over the install disk, so the install result
     // stays as the install scenario left it.
@@ -61,7 +62,7 @@ pub(super) fn run(ctx: &dyn DistroContext, iso: &Path) -> Result<String> {
     ensure!(status.success(), "qemu-img could not create an overlay of '{}'", base.display());
     fs::copy(&install.ovmf_vars_path, &vars).context("copying the install's UEFI variables")?;
 
-    let result = Machine { ctx, disk: &disk, vars: &vars, iso }.exercise();
+    let result = Machine { variant, disk: &disk, vars: &vars, iso }.exercise();
     match result {
         Ok(evidence) => {
             scenario_run.finish_success(&evidence, Some(&disk), Some(&vars))?;
@@ -75,7 +76,7 @@ pub(super) fn run(ctx: &dyn DistroContext, iso: &Path) -> Result<String> {
 }
 
 struct Machine<'a> {
-    ctx: &'a dyn DistroContext,
+    variant: &'a Variant,
     disk: &'a Path,
     vars: &'a Path,
     iso: &'a Path,
@@ -89,7 +90,9 @@ struct Booted {
 impl Machine<'_> {
     fn exercise(&self) -> Result<String> {
         let mut steps = Vec::new();
-        let contract = distro_contract::load(&crate::repo_root(), self.ctx.id())?.contract;
+        let contract = &self.variant.contract;
+        let init = contract.profile.init;
+        let initramfs = contract.artifacts.initramfs_installed_output.as_deref();
         let entry = |slot: &str| {
             format!(
                 "/boot/loader/entries/{}-{slot}.conf",
@@ -103,14 +106,14 @@ impl Machine<'_> {
         expect(&st, Slot::A, true, "after install")?;
         ensure!(st.next_boot == Some(Slot::A), "after install the next boot is {:?}, not A", st.next_boot);
         ensure!(sys.sh("findmnt -n -o SOURCE /var")?.contains("/dev/"), "/var is not its own partition");
-        sys.sh(&format!("test -L /{}", self.ctx.init_system().trial_service_link()))?;
+        sys.sh(&format!("test -L /{}", init.trial_service_link()))?;
         // Installed systems leave sshd off, so there are no host keys yet; make them, as
         // starting sshd would, so the carry into slot B is tested.
         sys.sh("ssh-keygen -A")?;
         let identity = sys.identity()?;
 
         // Stage the release into slot B.
-        sys.stage_from_media(self.ctx, &contract.identity.iso_label)?;
+        sys.stage_from_media(initramfs, &contract.identity.iso_label)?;
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after stage")?;
         ensure!(!st.trial_pending, "stage alone must not schedule a boot");
@@ -119,7 +122,7 @@ impl Machine<'_> {
             staged.contains("panic="),
             "slot B's staged entry lacks panic=:\n{staged}"
         );
-        if self.ctx.uses_initramfs() {
+        if initramfs.is_some() {
             ensure!(
                 staged.contains("rd.emergency=reboot"),
                 "slot B's staged entry lacks the initramfs trial options:\n{staged}"
@@ -134,7 +137,7 @@ impl Machine<'_> {
         );
         sys.sh(&format!(
             "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
-            failing_service(self.ctx.init_system(), true)
+            failing_service(init, true)
         ))?;
         sys.sh("recab set-next B")?;
         let st = sys.status()?;
@@ -156,13 +159,13 @@ impl Machine<'_> {
         // /run is empty again after the reboot.
         sys.sh(&format!(
             "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
-            failing_service(self.ctx.init_system(), false)
+            failing_service(init, false)
         ))?;
         sys.sh("recab set-next B")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
         let hostname = sys.sh("cat /etc/hostname")?;
-        ensure!(hostname == self.ctx.default_hostname(), "slot B's hostname is '{hostname}'");
+        ensure!(hostname == contract.identity.default_hostname, "slot B's hostname is '{hostname}'");
         ensure!(sys.identity()? == identity, "slot B did not keep the machine-id and SSH host keys");
         sys.wait_committed()?;
         let st = sys.status()?;
@@ -180,7 +183,7 @@ impl Machine<'_> {
         // A second generation: from the committed slot B, stage A again.
         let mut sys = self.boot(true)?;
         expect(&sys.status()?, Slot::B, true, "on the boot after the commit")?;
-        sys.stage_from_media(self.ctx, &contract.identity.iso_label)?;
+        sys.stage_from_media(initramfs, &contract.identity.iso_label)?;
         sys.sh("recab set-next A")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
@@ -207,7 +210,7 @@ impl Machine<'_> {
     /// Boot without logging in, and wait for the guest to reboot by itself.
     fn run_unattended(&self, timeout: Duration) -> Result<()> {
         let mut vm = session::spawn(VmSpec {
-            name: &format!("{}-ab-update", self.ctx.id()),
+            name: &format!("{}-ab-update", self.variant.id),
             disk: Some(self.disk),
             ovmf_vars: Some(self.vars),
             ..Default::default()
@@ -217,16 +220,16 @@ impl Machine<'_> {
 
     fn boot(&self, with_media: bool) -> Result<Booted> {
         let mut vm = session::spawn(VmSpec {
-            name: &format!("{}-ab-update", self.ctx.id()),
+            name: &format!("{}-ab-update", self.variant.id),
             disk: Some(self.disk),
             ovmf_vars: Some(self.vars),
             media: with_media.then_some(self.iso),
             ..Default::default()
         })?;
         vm.console
-            .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, self.ctx)?;
+            .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, &self.variant.contract.scenarios)?;
         vm.console
-            .login("root", &default_password(self.ctx)?, LOGIN_TIMEOUT)?;
+            .login("root", &default_password(self.variant)?, LOGIN_TIMEOUT)?;
         Ok(Booted { vm })
     }
 }
@@ -252,10 +255,10 @@ impl Booted {
         Ok(())
     }
 
-    /// Stage the inactive slot from the attached release ISO.
-    /// `iso_label` picks the release ISO out of the attached discs (the boot-injection
+    /// Stage the inactive slot from the attached release ISO, with the installed
+    /// initramfs the variant declares, if any. `iso_label` picks the release ISO out of the attached discs (the boot-injection
     /// disc is ISO 9660 too, and blkid lists the discs in no set order).
-    fn stage_from_media(&mut self, ctx: &dyn DistroContext, iso_label: &str) -> Result<()> {
+    fn stage_from_media(&mut self, initramfs: Option<&str>, iso_label: &str) -> Result<()> {
         let media = self.sh(&format!(
             "blkid -t LABEL={} -o device | head -n1",
             shell_quote(iso_label)
@@ -273,10 +276,10 @@ impl Booted {
             "recab stage --rootfs {} --kernel {MEDIA_MOUNT}/{KERNEL_ISO_PATH}",
             shell_quote(&rootfs)
         );
-        if ctx.uses_initramfs() {
+        if let Some(initramfs) = initramfs {
             // The installed system's initramfs, which the ISO carries beside its live one
             // (that one only looks for the live medium), as the install uses.
-            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/boot/initramfs-installed.img"));
+            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/boot/{initramfs}"));
         }
         self.run(&stage, STAGE_TIMEOUT)?;
         self.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
@@ -331,14 +334,14 @@ fn expect(st: &Status, active: Slot, committed: bool, when: &str) -> Result<()> 
 
 /// Shell that adds (or removes) a service that always fails to slot B,
 /// mounted at [`SLOT_MOUNT`], enabled in the init system's normal boot.
-fn failing_service(init: recab::InitSystem, add: bool) -> String {
+fn failing_service(init: InitSystem, add: bool) -> String {
     let (script, link, content) = match init {
-        recab::InitSystem::Systemd => (
+        InitSystem::Systemd => (
             format!("{SLOT_MOUNT}/etc/systemd/system/{FAILING_SERVICE}.service"),
             format!("{SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_SERVICE}.service"),
             "[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n",
         ),
-        recab::InitSystem::OpenRc => (
+        InitSystem::Openrc => (
             format!("{SLOT_MOUNT}/etc/init.d/{FAILING_SERVICE}"),
             format!("{SLOT_MOUNT}/etc/runlevels/default/{FAILING_SERVICE}"),
             "#!/sbin/openrc-run\\nstart() {\\n\\treturn 1\\n}\\n",

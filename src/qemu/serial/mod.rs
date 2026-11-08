@@ -3,9 +3,8 @@
 
 pub use recqemu::serial::Console;
 
-use crate::distro::{load_scenarios, DistroContext};
 use anyhow::Result;
-use distro_contract::BootScenario;
+use distro_contract::{BootScenario, ScenarioContract};
 use recinit::live::ROOTFS_MISSING_MESSAGE;
 use recqemu::serial::BootPatterns;
 use std::time::Duration;
@@ -15,7 +14,7 @@ pub trait SerialExecutorExt {
     fn wait_for_live_boot_with_context(
         &mut self,
         stall_timeout: Duration,
-        ctx: &dyn DistroContext,
+        scenarios: &ScenarioContract,
     ) -> Result<()>;
 
     /// Wait for the live system when its serial console may run the install
@@ -23,14 +22,14 @@ pub trait SerialExecutorExt {
     fn wait_for_live_tools_with_context(
         &mut self,
         stall_timeout: Duration,
-        ctx: &dyn DistroContext,
+        scenarios: &ScenarioContract,
     ) -> Result<()>;
 
     /// Wait for the installed system; returns the failed-service lines seen.
     fn wait_for_installed_boot_with_context(
         &mut self,
         stall_timeout: Duration,
-        ctx: &dyn DistroContext,
+        scenarios: &ScenarioContract,
     ) -> Result<Vec<String>>;
 }
 
@@ -45,14 +44,14 @@ impl SerialExecutorExt for Console {
     fn wait_for_live_boot_with_context(
         &mut self,
         stall_timeout: Duration,
-        ctx: &dyn DistroContext,
+        scenarios: &ScenarioContract,
     ) -> Result<()> {
-        let live_boot = load_scenarios(ctx.id())?.live_boot;
+        let live_boot = &scenarios.live_boot;
         self.wait_for_boot(
             stall_timeout,
             &BootPatterns {
                 success: &live_boot.success_patterns,
-                fatal: &live_fatal(&live_boot),
+                fatal: &live_fatal(live_boot),
                 service_failures: &live_boot.service_failure_patterns,
             },
         )?;
@@ -62,9 +61,8 @@ impl SerialExecutorExt for Console {
     fn wait_for_live_tools_with_context(
         &mut self,
         stall_timeout: Duration,
-        ctx: &dyn DistroContext,
+        scenarios: &ScenarioContract,
     ) -> Result<()> {
-        let scenarios = load_scenarios(ctx.id())?;
         let mut success = scenarios.live_boot.success_patterns.clone();
         success.extend(scenarios.live_tools.serial_ready_patterns.iter().cloned());
         // The live issue text the live overlay writes also means the console is up.
@@ -83,9 +81,9 @@ impl SerialExecutorExt for Console {
     fn wait_for_installed_boot_with_context(
         &mut self,
         stall_timeout: Duration,
-        ctx: &dyn DistroContext,
+        scenarios: &ScenarioContract,
     ) -> Result<Vec<String>> {
-        let installed = load_scenarios(ctx.id())?.installed_boot;
+        let installed = &scenarios.installed_boot;
         self.wait_for_boot(
             stall_timeout,
             &BootPatterns {
