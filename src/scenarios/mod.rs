@@ -595,7 +595,7 @@ fn scenario_input_fingerprint(variant: &Variant, inputs: &Inputs) -> Result<Stri
         .collect();
     let sources: Vec<PathBuf> = HARNESS_SOURCES.iter().map(|dir| variant.repo_root.join(dir)).collect();
     parts.push(format!("harness:{:016x}", content_hash(&sources)?));
-    parts.push(format!("contract:{:016x}", content_hash(&[variant.manifest.clone()])?));
+    parts.push(format!("contract:{:016x}", content_hash(std::slice::from_ref(&variant.manifest))?));
     Ok(parts.join(";"))
 }
 
