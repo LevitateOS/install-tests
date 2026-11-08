@@ -179,6 +179,8 @@ fn check_tool(guest: &mut dyn Guest, variant: &Variant, tool: &str) -> Result<To
 fn tool_run_command(tool: &str) -> Option<String> {
     Some(match tool {
         "recpart" | "recstrap" | "recfstab" | "recchroot" => format!("{tool} --help"),
+        // A TUI app's --help runs the compiled binary's app and exits before the TTY check.
+        "recab-tui" => format!("{tool} --help"),
         "mkfs.ext4" => "mkfs.ext4 -V".to_string(),
         "nvme" => "nvme version".to_string(),
         "hdparm" => "hdparm -V".to_string(),
