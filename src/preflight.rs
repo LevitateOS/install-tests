@@ -70,7 +70,7 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
                 initramfs_live: run_dir.join(&artifacts.initramfs_live),
                 overlay_image: run_dir.join(&artifacts.overlay),
                 live_overlay_dir: run_dir.join(build.overlay_dir),
-                rootfs_source_pointer: run_dir.join(build.rootfs_source_pointer),
+                rootfs_source_dir: distro_builder::PreparedProduct::read(run_dir)?.rootfs_source(run_dir),
             },
         ));
     }
