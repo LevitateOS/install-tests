@@ -242,10 +242,7 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
         bail!("ab-update updates an A/B install; it has no {} mode", h.install_mode);
     }
     let inputs = Inputs::resolve(repo, distro_id, scenario, h.install_mode)?;
-    let mut fingerprint = scenario_input_fingerprint(variant, &inputs)?;
-    if scenario == ScenarioId::Install {
-        fingerprint.push_str(&format!(";mode:{}", h.install_mode));
-    }
+    let fingerprint = scenario_input_fingerprint(variant, scenario, &inputs, h.install_mode)?;
 
     if force {
         eprintln!("Forcing {} rerun.", scenario.title());
@@ -359,6 +356,18 @@ pub fn scenario_statuses(repo: &Path, distro_id: &str) -> Result<Vec<(ScenarioId
     statuses(&load_variant(repo, distro_id)?)
 }
 
+/// The layout the latest install run installed, which the installed-system
+/// scenarios were last run against (the default before any install run).
+fn last_install_mode(variant: &Variant) -> Result<InstallMode> {
+    let mode = match latest_result(variant, ScenarioId::Install)? {
+        Some(Ok(last)) => last.install_mode,
+        _ => None,
+    };
+    Ok(mode
+        .and_then(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
+        .unwrap_or_default())
+}
+
 fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
     ScenarioId::ALL
         .into_iter()
@@ -368,8 +377,9 @@ fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
                 Some(Err(why)) => return Ok((scenario, ScenarioStatus::Error(why))),
                 Some(Ok(last)) => last,
             };
-            let fingerprint = Inputs::resolve(&variant.repo_root, &variant.id, scenario, InstallMode::default())
-                .and_then(|inputs| scenario_input_fingerprint(variant, &inputs));
+            let mode = last_install_mode(variant)?;
+            let fingerprint = Inputs::resolve(&variant.repo_root, &variant.id, scenario, mode)
+                .and_then(|inputs| scenario_input_fingerprint(variant, scenario, &inputs, mode));
             let status = match fingerprint {
                 Err(err) => ScenarioStatus::Error(format!("{err:#}")),
                 Ok(fingerprint) if last.fingerprint.as_deref() != Some(fingerprint.as_str()) => {
@@ -479,8 +489,13 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         root_password: expect::root_password(variant),
     };
     let (target, steps) = install::install(&mut live.remote, variant, &system)?;
-    let initramfs = variant.contract.artifacts.initramfs_installed.clone();
     let trial_link = recab::trial_service_link(variant.contract.profile.init);
+    // The directory recab puts the installed kernel in: slot A's, or the one root's.
+    let kernel_dir = recab::layout_name(
+        &variant.contract.identity.os_id,
+        (mode == InstallMode::Ab).then_some(recab::Slot::A),
+    );
+    let state_file = recab::state_file();
     let mode_name = mode.to_string();
     let evidence = guest::run_evidence(
         &mut live.remote,
@@ -489,7 +504,8 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         &[
             ("SCENARIO_INSTALL_TARGET", target.as_str()),
             ("SCENARIO_INSTALL_MODE", mode_name.as_str()),
-            ("SCENARIO_INITRAMFS", initramfs.as_str()),
+            ("SCENARIO_KERNEL_DIR", kernel_dir.as_str()),
+            ("SCENARIO_STATE_FILE", state_file.as_str()),
             ("SCENARIO_TRIAL_LINK", trial_link),
         ],
     )?;
@@ -587,7 +603,12 @@ pub fn resolve_latest_install_run(repo: &Path, distro_id: &str, mode: InstallMod
 /// variant's contract, and the harness's own sources (its derived
 /// expectations, guest-side scripts, and the VM and SSH crates it drives),
 /// so a change to any of them reruns it.
-fn scenario_input_fingerprint(variant: &Variant, inputs: &Inputs) -> Result<String> {
+fn scenario_input_fingerprint(
+    variant: &Variant,
+    scenario: ScenarioId,
+    inputs: &Inputs,
+    mode: InstallMode,
+) -> Result<String> {
     let mut parts: Vec<String> = inputs
         .refs()
         .iter()
@@ -596,6 +617,9 @@ fn scenario_input_fingerprint(variant: &Variant, inputs: &Inputs) -> Result<Stri
     let sources: Vec<PathBuf> = HARNESS_SOURCES.iter().map(|dir| variant.repo_root.join(dir)).collect();
     parts.push(format!("harness:{:016x}", content_hash(&sources)?));
     parts.push(format!("contract:{:016x}", content_hash(std::slice::from_ref(&variant.manifest))?));
+    if scenario == ScenarioId::Install {
+        parts.push(format!("mode:{mode}"));
+    }
     Ok(parts.join(";"))
 }
 

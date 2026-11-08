@@ -2,8 +2,7 @@
 //! variant's contract, the same way for every variant. Every artifact the
 //! contract declares for the product must be in the release's run directory
 //! (the ISO the run manifest names, the rootfs and overlay images, the live
-//! initramfs, the installed system's initramfs when the variant declares
-//! one, and for a live-session product its overlay and rootfs trees), and
+//! initramfs, the installed system's initramfs, and for a live-session product its overlay and rootfs trees), and
 //! the contract's runtime checks must pass
 //! (`distro_contract::validate_build_runtime`, `validate_live_boot_runtime`).
 //!

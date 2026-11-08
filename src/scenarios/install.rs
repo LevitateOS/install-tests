@@ -3,7 +3,7 @@
 //! recstrap, recfstab, recsetup), with test-specific choices supplied as inputs.
 
 use anyhow::{Context, Result};
-use recinit::live::LIVE_MEDIA_DIR;
+use recinit::live::{INITRAMFS_INSTALLED_ISO_PATH, KERNEL_ISO_PATH, LIVE_MEDIA_DIR};
 use recpart::types::{ApplyResult, DiskListResult, CONFIRM_TOKEN};
 use recpart::InstallMode;
 use recqemu::shell_quote;
@@ -76,7 +76,7 @@ pub fn install(
     let mut setup = format!(
         "recsetup apply --root {t} --hostname {} --root-password --passwords-stdin --machine-id --boot {} --kernel {} --options {}",
         shell_quote(&variant.contract.identity.default_hostname), system.mode,
-        shell_quote(&format!("{LIVE_MEDIA_DIR}/boot/vmlinuz")),
+        shell_quote(&format!("{LIVE_MEDIA_DIR}/{KERNEL_ISO_PATH}")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
     // The installed system's initramfs, the ISO carries
@@ -84,10 +84,7 @@ pub fn install(
     // defaults to it, named here so the scenario fails loudly if the ISO lacks it.
     setup.push_str(&format!(
         " --initrd {}",
-        shell_quote(&format!(
-            "{LIVE_MEDIA_DIR}/boot/{}",
-            variant.contract.artifacts.initramfs_installed
-        ))
+        shell_quote(&format!("{LIVE_MEDIA_DIR}/{INITRAMFS_INSTALLED_ISO_PATH}"))
     ));
     match system.mode {
         InstallMode::Ab => {

@@ -7,10 +7,9 @@
 use anyhow::{bail, ensure, Context, Result};
 use distro_contract::Variant;
 use recab::{Slot, Status};
-use recinit::live::{
-    KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
-};
+use recinit::live::FAIL_REBOOT_OPTION;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use super::{Harness, InstallRun, ScenarioId};
 use crate::budget::Budget;
@@ -19,7 +18,6 @@ use crate::qemu::session::{self, Vars, VmSpec};
 use crate::qemu::{wait_installed_boot, Console};
 use recqemu::{shell_quote, Guest, Outcome};
 
-const MEDIA_MOUNT: &str = "/run/ab-update-media";
 /// Where the scenario mounts slot B to break and repair it.
 const SLOT_MOUNT: &str = "/run/ab-update-slot";
 /// A service that always fails, so slot B's trial comes up degraded.
@@ -50,13 +48,11 @@ impl Machine<'_> {
         let mut steps = Vec::new();
         let contract = &self.variant.contract;
         let init = contract.profile.init;
-        let initramfs = Some(contract.artifacts.initramfs_installed.as_str());
-        let entry = |slot: &str| {
-            format!(
-                "/boot/loader/entries/{}-{slot}.conf",
-                contract.identity.os_id
-            )
-        };
+        let entry_b = format!(
+            "/boot/{}/{}",
+            recab::ENTRIES_DIR,
+            recab::entry_name(&contract.identity.os_id, Slot::B)
+        );
 
         // Installed: slot A runs, is the known-good default, and supervises trials.
         let mut sys = self.boot(true)?;
@@ -71,28 +67,28 @@ impl Machine<'_> {
         let identity = sys.identity()?;
 
         // Stage the release into slot B.
-        sys.stage_from_media(initramfs, &contract.identity.iso_label)?;
+        sys.stage_from_media(&contract.identity.iso_label)?;
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after stage")?;
         ensure!(!st.trial_pending, "stage alone must not schedule a boot");
-        let staged = sys.sh(&format!("cat {}", entry("b")))?;
+        let staged = sys.sh(&format!("cat {entry_b}"))?;
         ensure!(
             staged.contains("panic="),
             "slot B's staged entry lacks panic=:\n{staged}"
         );
-        if initramfs.is_some() {
-            ensure!(
-                staged.contains("rd.emergency=reboot"),
-                "slot B's staged entry lacks the initramfs trial options:\n{staged}"
-            );
-        }
+        ensure!(
+            staged.contains(FAIL_REBOOT_OPTION),
+            "slot B's staged entry lacks the initramfs trial options:\n{staged}"
+        );
         steps.push("staged slot B from the release image");
 
         // A trial that comes up degraded reboots back to A by itself.
-        let slot_b = format!(
-            "/dev/disk/by-partuuid/$(sed -n 's/.*root=PARTUUID=\\([^ ]*\\).*/\\1/p' {})",
-            entry("b")
-        );
+        let slot_b = st
+            .slots
+            .iter()
+            .find(|view| view.slot == Slot::B)
+            .and_then(|view| view.device.clone())
+            .with_context(|| format!("recab status names no device for slot B: {st:?}"))?;
         sys.on_slot(&slot_b, &format!("svc_add_failing {SLOT_MOUNT} {FAILING_SERVICE}"))?;
         sys.sh("recab set-next B")?;
         let st = sys.status()?;
@@ -119,14 +115,14 @@ impl Machine<'_> {
         let hostname = sys.sh("cat /etc/hostname")?;
         ensure!(hostname == contract.identity.default_hostname, "slot B's hostname is '{hostname}'");
         ensure!(sys.identity()? == identity, "slot B did not keep the machine-id and SSH host keys");
-        sys.wait_committed()?;
+        sys.wait_committed(Slot::B)?;
         let st = sys.status()?;
         expect(&st, Slot::B, true, "after the healthy trial")?;
         ensure!(st.default_slot == Some(Slot::B), "the commit did not make B the default: {st:?}");
         ensure!(st.rollback_slot == Some(Slot::A), "after the commit rollback should return to A: {st:?}");
-        let committed_entry = sys.sh(&format!("cat {}", entry("b")))?;
+        let committed_entry = sys.sh(&format!("cat {entry_b}"))?;
         ensure!(
-            !committed_entry.contains("rd.emergency=reboot"),
+            !committed_entry.contains(FAIL_REBOOT_OPTION),
             "slot B kept the trial options after its commit:\n{committed_entry}"
         );
         steps.push("a healthy trial of slot B, with the machine's identity, committed itself");
@@ -135,12 +131,12 @@ impl Machine<'_> {
         // A second generation: from the committed slot B, stage A again.
         let mut sys = self.boot(true)?;
         expect(&sys.status()?, Slot::B, true, "on the boot after the commit")?;
-        sys.stage_from_media(initramfs, &contract.identity.iso_label)?;
+        sys.stage_from_media(&contract.identity.iso_label)?;
         sys.sh("recab set-next A")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
         ensure!(sys.identity()? == identity, "slot A, staged from B, did not keep the machine's identity");
-        sys.wait_committed()?;
+        sys.wait_committed(Slot::A)?;
         let st = sys.status()?;
         expect(&st, Slot::A, true, "after the second-generation trial")?;
         ensure!(st.rollback_slot == Some(Slot::B), "after the commit rollback should return to B: {st:?}");
@@ -206,45 +202,32 @@ impl Booted<'_> {
         self.sh("cat /etc/machine-id 2>/dev/null; for k in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$k\"; done")
     }
 
-    /// Wait for recab-trial.service to commit the running trial.
-    fn wait_committed(&mut self) -> Result<()> {
-        self.run(
-            // A subshell: `exit` in the console's own shell would log it out.
-            "(for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1)",
-            Budget::Commit,
-        )
-        .context("the healthy trial was not committed")?;
-        Ok(())
+    /// Wait for recab-trial.service to commit the running trial of `slot`.
+    fn wait_committed(&mut self, slot: Slot) -> Result<()> {
+        let deadline = Instant::now() + Budget::Commit.get();
+        loop {
+            let st = self.status()?;
+            if st.active_slot == slot && st.committed {
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "the healthy trial of slot {slot} was not committed: {st:?}"
+            );
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 
-    /// Stage the inactive slot from the attached release ISO, with the installed
-    /// initramfs the variant declares, if any. `iso_label` picks the release ISO out of the attached discs (the boot-injection
+    /// Stage the inactive slot from the attached release ISO with
+    /// `recab stage --from-media`. `iso_label` picks the release ISO out of the attached discs (the boot-injection
     /// disc is ISO 9660 too, and blkid lists the discs in no set order).
-    fn stage_from_media(&mut self, initramfs: Option<&str>, iso_label: &str) -> Result<()> {
+    fn stage_from_media(&mut self, iso_label: &str) -> Result<()> {
         let media = self.sh(&format!(
             "blkid -t LABEL={} -o device | head -n1",
             shell_quote(iso_label)
         ))?;
         ensure!(!media.is_empty(), "the update medium (ISO label {iso_label}) is not attached");
-        self.sh(&format!("mkdir -p {MEDIA_MOUNT} && mount -o ro {} {MEDIA_MOUNT}", shell_quote(&media)))?;
-        // The rootfs is a file in the ISO, or (the default layout) an
-        // appended partition, which a CD drive does not expose: a read-only
-        // partition-scanning loop device over the CD does.
-        let rootfs = self.sh(&format!(
-            "f={MEDIA_MOUNT}/{ROOTFS_ISO_PATH}; if [ -s \"$f\" ] && [ $(stat -c %s \"$f\") -gt 65536 ]; then echo \"$f\"; else l=$(losetup --find --show --read-only --partscan {}) && for i in $(seq 50); do [ -e \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\" ] && break; sleep 0.1; done; echo \"${{l}}p{ROOTFS_PAYLOAD_PARTITION}\"; fi",
-            shell_quote(&media)
-        ))?;
-        let mut stage = format!(
-            "recab stage --rootfs {} --kernel {MEDIA_MOUNT}/{KERNEL_ISO_PATH}",
-            shell_quote(&rootfs)
-        );
-        if let Some(initramfs) = initramfs {
-            // The installed system's initramfs, which the ISO carries beside its live one
-            // (that one only looks for the live medium), as the install uses.
-            stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/boot/{initramfs}"));
-        }
-        self.run(&stage, Budget::Stage)?;
-        self.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
+        self.run(&format!("recab stage --from-media {}", shell_quote(&media)), Budget::Stage)?;
         Ok(())
     }
 
