@@ -528,7 +528,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
             ("SCENARIO_INSTALL_MODE", mode_name.as_str()),
             ("SCENARIO_KERNEL_DIR", kernel_dir.as_str()),
             ("SCENARIO_STATE_FILE", state_file.as_str()),
-            ("SCENARIO_TRIAL_LINK", trial_link),
+            ("SCENARIO_TRIAL_LINK", &trial_link),
         ],
     )?;
     let target_q = recqemu::shell_quote(&target);
