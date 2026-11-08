@@ -1,36 +1,18 @@
 #!/bin/sh
-# Runtime Validation (the runtime scenario)
-#
-# Checks the installed system's privilege policy. The harness runs every
-# contract tool on the installed system itself (the runtime scenario).
-
-set -euo pipefail
+# Runtime: the installed system's privilege policy. The harness runs every
+# contract tool itself (the runtime scenario), and passes the privilege
+# tool (SCENARIO_PRIVILEGE) and its configuration file.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/common.sh"
 
-if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
-    . "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/scenario-tests/common.sh" ]; then
-    . "/usr/local/lib/scenario-tests/common.sh"
-else
-    echo "ERROR: Cannot find common.sh library" >&2
-    exit 1
-fi
+scenario_header "Runtime"
 
-scenario_header "Runtime Validation"
-
-# The harness runs every contract tool, the privilege tool among them. This
-# checks the privilege tool's policy, by the profile's REC_PRIVILEGE fact.
 section_header "Privilege Policy"
-. /etc/os-release
-case "${REC_PRIVILEGE:-}" in
+case "${SCENARIO_PRIVILEGE:?SCENARIO_PRIVILEGE is not set}" in
     sudo) test_command "sudo policy syntax" "visudo -c" ;;
-    doas) test_command "doas policy syntax" "doas -C /etc/doas.conf" ;;
-    *)
-        echo "ERROR: /etc/os-release names no known REC_PRIVILEGE ('${REC_PRIVILEGE:-}')" >&2
-        exit 1
-        ;;
+    doas) test_command "doas policy syntax" "doas -C '${SCENARIO_PRIVILEGE_CONFIG:?}'" ;;
+    *) record_failed "unknown privilege tool '$SCENARIO_PRIVILEGE'" ;;
 esac
 
 report_results "Runtime"
-exit $?

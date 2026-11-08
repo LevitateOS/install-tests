@@ -1,8 +1,7 @@
 //! The scenario VMs: `session` is the one launcher (libvirt domains through
-//! `recqemu::libvirt`), and `serial` adds the variant's boot patterns to
-//! `recqemu::Console`.
+//! `recqemu::libvirt`), and `serial` holds the boot waits.
 
 pub mod serial;
 pub mod session;
 
-pub use serial::{Console, SerialExecutorExt};
+pub use serial::{wait_installed_boot, wait_live_boot, Console};

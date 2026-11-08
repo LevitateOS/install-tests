@@ -5,26 +5,21 @@
 //! recab-trial.service commits, and rollback to the previous slot.
 
 use anyhow::{bail, ensure, Context, Result};
-use distro_contract::profile::InitSystem;
 use distro_contract::Variant;
 use recab::{Slot, Status};
 use recinit::live::{
     KERNEL_ISO_PATH, ROOTFS_ISO_PATH, ROOTFS_PAYLOAD_PARTITION,
 };
 use std::path::Path;
-use std::time::Duration;
 
-use super::install::shell_quote;
-use super::{Harness, InstallRun, ScenarioId, INSTALLED_BOOT_STALL, LOGIN_TIMEOUT, SHUTDOWN_TIMEOUT};
+use super::{Harness, InstallRun, ScenarioId};
+use crate::budget::Budget;
+use crate::guest;
 use crate::qemu::session::{self, Vars, VmSpec};
-use crate::qemu::{Console, SerialExecutorExt};
+use crate::qemu::{wait_installed_boot, Console};
+use recqemu::{shell_quote, Guest, Outcome};
 
 const MEDIA_MOUNT: &str = "/run/ab-update-media";
-const STAGE_TIMEOUT: Duration = Duration::from_secs(900);
-const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
-/// A degraded trial: boot, startup, recab's decision, and the reboot.
-const TRIAL_REBOOT_TIMEOUT: Duration = Duration::from_secs(300);
-const COMMIT_WAIT: Duration = Duration::from_secs(200);
 /// Where the scenario mounts slot B to break and repair it.
 const SLOT_MOUNT: &str = "/run/ab-update-slot";
 /// A service that always fails, so slot B's trial comes up degraded.
@@ -45,8 +40,9 @@ struct Machine<'a> {
 }
 
 /// A booted, logged-in installed system.
-struct Booted {
+struct Booted<'a> {
     vm: session::Vm,
+    variant: &'a Variant,
 }
 
 impl Machine<'_> {
@@ -97,15 +93,12 @@ impl Machine<'_> {
             "/dev/disk/by-partuuid/$(sed -n 's/.*root=PARTUUID=\\([^ ]*\\).*/\\1/p' {})",
             entry("b")
         );
-        sys.sh(&format!(
-            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
-            failing_service(init, true)
-        ))?;
+        sys.on_slot(&slot_b, &format!("svc_add_failing {SLOT_MOUNT} {FAILING_SERVICE}"))?;
         sys.sh("recab set-next B")?;
         let st = sys.status()?;
         ensure!(st.trial_pending && st.next_boot == Some(Slot::B), "set-next B did not schedule a trial: {st:?}");
         sys.reboot()?;
-        self.run_unattended(TRIAL_REBOOT_TIMEOUT)
+        self.run_unattended(Budget::TrialReboot.get())
             .context("the degraded trial of slot B did not reboot by itself")?;
         let mut sys = self.boot(false)?;
         let st = sys.status()?;
@@ -119,10 +112,7 @@ impl Machine<'_> {
 
         // Repair B: the healthy trial commits itself.
         // /run is empty again after the reboot.
-        sys.sh(&format!(
-            "mkdir -p {SLOT_MOUNT} && mount {slot_b} {SLOT_MOUNT} && {} && umount {SLOT_MOUNT}",
-            failing_service(init, false)
-        ))?;
+        sys.on_slot(&slot_b, &format!("svc_remove {SLOT_MOUNT} {FAILING_SERVICE}"))?;
         sys.sh("recab set-next B")?;
         sys.reboot()?;
         let mut sys = self.boot(false)?;
@@ -170,7 +160,7 @@ impl Machine<'_> {
     }
 
     /// Boot without logging in, and wait for the guest to reboot by itself.
-    fn run_unattended(&self, timeout: Duration) -> Result<()> {
+    fn run_unattended(&self, timeout: std::time::Duration) -> Result<()> {
         let mut vm = session::spawn(VmSpec {
             disk: Some(self.disk),
             vars: Vars::Existing(self.vars),
@@ -179,24 +169,36 @@ impl Machine<'_> {
         vm.wait_for_exit(timeout)
     }
 
-    fn boot(&self, with_media: bool) -> Result<Booted> {
+    fn boot(&self, with_media: bool) -> Result<Booted<'_>> {
         let mut vm = session::spawn(VmSpec {
             disk: Some(self.disk),
             vars: Vars::Existing(self.vars),
             media: with_media.then_some(self.iso),
             ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
         })?;
+        wait_installed_boot(vm.console()?, self.variant)?;
         vm.console()?
-            .wait_for_installed_boot_with_context(INSTALLED_BOOT_STALL, self.variant)?;
-        vm.console()?
-            .login("root", crate::expect::root_password(self.variant), LOGIN_TIMEOUT)?;
-        Ok(Booted { vm })
+            .login("root", crate::expect::root_password(self.variant), Budget::Login.get())?;
+        Ok(Booted { vm, variant: self.variant })
     }
 }
 
-impl Booted {
+impl Booted<'_> {
     fn console(&mut self) -> Result<&mut Console> {
         self.vm.console()
+    }
+
+    /// Mount the slot `device`, run init-backend `call` on it, and unmount it.
+    fn on_slot(&mut self, device: &str, call: &str) -> Result<()> {
+        self.sh(&format!("mkdir -p {SLOT_MOUNT} && mount {device} {SLOT_MOUNT}"))?;
+        let variant = self.variant;
+        guest::install_lib(self.console()?, variant)?;
+        let outcome = guest::backend(self.console()?, variant, call, Budget::Command)?;
+        if !outcome.success() {
+            bail!("'{call}' on slot B failed ({}): {}", outcome.describe(), outcome.output().trim());
+        }
+        self.sh(&format!("umount {SLOT_MOUNT}"))?;
+        Ok(())
     }
 
     /// The machine-id and SSH host key fingerprints, which `stage` carries.
@@ -209,7 +211,7 @@ impl Booted {
         self.run(
             // A subshell: `exit` in the console's own shell would log it out.
             "(for i in $(seq 90); do recab status --json | grep -q '\"committed\": true' && exit 0; sleep 2; done; exit 1)",
-            COMMIT_WAIT,
+            Budget::Commit,
         )
         .context("the healthy trial was not committed")?;
         Ok(())
@@ -241,24 +243,20 @@ impl Booted {
             // (that one only looks for the live medium), as the install uses.
             stage.push_str(&format!(" --initrd {MEDIA_MOUNT}/boot/{initramfs}"));
         }
-        self.run(&stage, STAGE_TIMEOUT)?;
+        self.run(&stage, Budget::Stage)?;
         self.sh(&format!("umount {MEDIA_MOUNT}; losetup -D"))?;
         Ok(())
     }
 
-    fn run(&mut self, command: &str, timeout: Duration) -> Result<String> {
-        let result = self.console()?.exec(command, timeout)?;
-        if !result.completed {
-            bail!("'{command}' did not finish within {}s:\n{}", timeout.as_secs(), result.output);
+    fn run(&mut self, command: &str, budget: Budget) -> Result<String> {
+        match self.console()?.exec(command, budget.get())? {
+            Outcome::Exited { code: 0, output, .. } => Ok(output.trim().to_string()),
+            outcome => bail!("'{command}' {}:\n{}", outcome.describe(), outcome.output()),
         }
-        if result.exit_code != 0 {
-            bail!("'{command}' exited {}:\n{}", result.exit_code, result.output);
-        }
-        Ok(result.output.trim().to_string())
     }
 
     fn sh(&mut self, command: &str) -> Result<String> {
-        self.run(command, SHELL_TIMEOUT)
+        self.run(command, Budget::Command)
     }
 
     fn status(&mut self) -> Result<Status> {
@@ -273,11 +271,11 @@ impl Booted {
     /// Reboot; a guest reboot ends the domain, and the next `boot` starts
     /// it again with the same disk and UEFI variables.
     fn reboot(mut self) -> Result<()> {
-        self.vm.shutdown_from_guest("reboot", SHUTDOWN_TIMEOUT)
+        self.vm.shutdown_from_guest("reboot")
     }
 
     fn poweroff(mut self) -> Result<()> {
-        self.vm.shutdown_from_guest("poweroff", SHUTDOWN_TIMEOUT)
+        self.vm.shutdown_from_guest("poweroff")
     }
 }
 
@@ -288,27 +286,4 @@ fn expect(st: &Status, active: Slot, committed: bool, when: &str) -> Result<()> 
         if committed { "committed" } else { "uncommitted" }
     );
     Ok(())
-}
-
-/// Shell that adds (or removes) a service that always fails to slot B,
-/// mounted at [`SLOT_MOUNT`], enabled in the init system's normal boot.
-fn failing_service(init: InitSystem, add: bool) -> String {
-    let (script, link, content) = match init {
-        InitSystem::Systemd => (
-            format!("{SLOT_MOUNT}/etc/systemd/system/{FAILING_SERVICE}.service"),
-            format!("{SLOT_MOUNT}/etc/systemd/system/multi-user.target.wants/{FAILING_SERVICE}.service"),
-            "[Service]\\nType=oneshot\\nExecStart=/bin/false\\n[Install]\\nWantedBy=multi-user.target\\n",
-        ),
-        InitSystem::Openrc => (
-            format!("{SLOT_MOUNT}/etc/init.d/{FAILING_SERVICE}"),
-            format!("{SLOT_MOUNT}/etc/runlevels/default/{FAILING_SERVICE}"),
-            "#!/sbin/openrc-run\\nstart() {\\n\\treturn 1\\n}\\n",
-        ),
-    };
-    let target = script.trim_start_matches(SLOT_MOUNT);
-    if add {
-        format!("printf '{content}' > {script} && chmod 755 {script} && ln -s {target} {link}")
-    } else {
-        format!("rm {script} {link}")
-    }
 }

@@ -7,6 +7,8 @@
 //! - Preflight checks of built artifacts against the variant (`preflight`)
 
 pub mod boot_injection;
+pub mod budget;
+pub mod guest;
 pub mod expect;
 pub mod interactive;
 pub mod preflight;

@@ -6,7 +6,10 @@ use anyhow::{Context, Result};
 use recinit::live::LIVE_MEDIA_DIR;
 use recpart::types::{ApplyResult, DiskListResult, CONFIRM_TOKEN};
 use recpart::InstallMode;
+use recqemu::shell_quote;
 use recshuttle::Remote;
+
+use crate::budget::Budget;
 
 use distro_contract::Variant;
 
@@ -21,15 +24,10 @@ pub struct TestSystem<'a> {
     pub root_password: &'a str,
 }
 
-/// Quote `value` as one word for the guest's POSIX shell.
-pub fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 /// Install onto the guest's first writable disk and leave it mounted at the
 /// install target. Returns the target and the number of steps run.
 pub fn install(
-    remote: &Remote,
+    remote: &mut Remote,
     variant: &Variant,
     system: &TestSystem<'_>,
 ) -> Result<(String, usize)> {
@@ -37,7 +35,7 @@ pub fn install(
     let mut run = |what: &str, cmd: String| -> Result<String> {
         eprintln!("    -> {what}");
         steps += 1;
-        remote.run(what, &cmd)
+        remote.run(what, &cmd, Budget::Stage.get())
     };
 
     let disks: DiskListResult =

@@ -16,9 +16,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// How long the serial socket may take to appear after the domain is created.
-const SERIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-
 /// The UEFI variable store a VM boots with.
 #[derive(Default)]
 pub enum Vars<'a> {
@@ -118,14 +115,14 @@ impl Vm {
     }
 
     /// Type `command` (`poweroff`, `reboot`) into the guest's serial shell and
-    /// wait for the domain to end; it fails unless it ends within `timeout`.
-    /// The shell's connection drops while the guest goes down, so there is no
+    /// wait for the domain to end; it fails unless it ends within the
+    /// shutdown budget. The shell goes down with the guest, so there is no
     /// command result to read.
-    pub fn shutdown_from_guest(&mut self, command: &str, timeout: Duration) -> Result<()> {
+    pub fn shutdown_from_guest(&mut self, command: &str) -> Result<()> {
         self.console()?
             .send(&format!("{command}\n"))
             .with_context(|| format!("typing '{command}' into the guest"))?;
-        self.wait_for_exit(timeout)
+        self.wait_for_exit(crate::budget::Budget::Shutdown.get())
             .with_context(|| format!("the guest did not end after '{command}'"))
     }
 
@@ -197,7 +194,7 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
 
     let domain = Domain::create_paused(&domain_spec)?;
     let console = match spec.serial {
-        Serial::Harness => Some(Console::connect(&socket, SERIAL_CONNECT_TIMEOUT)?),
+        Serial::Harness => Some(Console::connect(&socket, crate::budget::Budget::SerialConnect.get())?),
         Serial::Terminal => None,
     };
     domain.resume()?;

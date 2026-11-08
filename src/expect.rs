@@ -1,5 +1,6 @@
 //! What each scenario expects of a variant, derived from the scenario, the
-//! variant's init system and its identity; no variant declares it.
+//! variant's init system and its identity; no variant declares it. Both
+//! variants are judged by the same oracle.
 
 use distro_contract::profile::InitSystem;
 use distro_contract::{ScenarioId, Variant};
@@ -32,96 +33,57 @@ const BOOT_FATAL: &[&str] = &[
     "core dumped",
 ];
 
-/// What the console says under one init system. The two strictnesses differ
-/// as the variants had them (one oracle for both is G26's).
-struct InitPatterns {
-    /// Fatal on every boot.
-    boot_fatal: &'static [&'static str],
-    /// Fatal on a live boot only.
-    live_fatal: &'static [&'static str],
-    /// Besides the login prompt, lines that mean the installed system is up.
-    installed_success: &'static [&'static str],
-    /// Lines that report a failed service on the installed system: recorded, not fatal.
-    installed_service_failures: &'static [&'static str],
-}
-
-fn init_patterns(init: InitSystem) -> InitPatterns {
+/// Console lines that mean a boot failed under one init system: its own
+/// rescue paths. Service failures are not judged on the console: the
+/// installed system's init is asked for them after login
+/// (`test-scripts/lib/init/*.sh`, `svc_failed`), the same on every variant.
+fn init_fatal(init: InitSystem) -> &'static [&'static str] {
     match init {
-        InitSystem::Systemd => InitPatterns {
-            boot_fatal: &[
-                "SQUASHFS error",
-                "emergency shell",
-                "Emergency shell",
-                "emergency.target",
-                "rescue.target",
-                "Timed out waiting for device",
-            ],
-            live_fatal: &["Failed to start sshd.service", "sshd.service: Failed with result"],
-            installed_success: &["multi-user.target"],
-            installed_service_failures: &["Failed to start", "[FAILED]", "Dependency failed"],
-        },
-        InitSystem::Openrc => InitPatterns {
-            boot_fatal: &[],
-            // Any OpenRC service error, sshd's among them.
-            live_fatal: &["ERROR: "],
-            installed_success: &["login:"],
-            installed_service_failures: &["ERROR: cannot start", "* ERROR:", "crashed"],
-        },
+        InitSystem::Systemd => &[
+            "SQUASHFS error",
+            "emergency shell",
+            "Emergency shell",
+            "emergency.target",
+            "rescue.target",
+            "Timed out waiting for device",
+        ],
+        InitSystem::Openrc => &[],
     }
 }
 
-/// What a boot's console output means. The serial test protocol's readiness
-/// marker always means success (recqemu adds it).
+/// What a boot's console output means.
 #[derive(Debug, Clone)]
 pub struct BootExpect {
     pub success: Vec<String>,
     pub fatal: Vec<String>,
-    pub service_failures: Vec<String>,
 }
 
-fn strings(lists: &[&[&str]]) -> Vec<String> {
-    lists.iter().flat_map(|list| list.iter()).map(|s| s.to_string()).collect()
+fn fatal(variant: &Variant) -> Vec<String> {
+    BOOT_FATAL
+        .iter()
+        .chain(init_fatal(variant.contract.profile.init))
+        .map(|s| s.to_string())
+        .collect()
 }
 
-/// A live ISO's boot: the live init's rootfs-missing message is fatal too.
+/// A live ISO's boot: done when the live shell prints the serial test
+/// protocol's readiness marker (scenario boots never run the install screen
+/// on the serial console); the live init's rootfs-missing message is fatal.
 pub fn live_boot(variant: &Variant) -> BootExpect {
-    let init = init_patterns(variant.contract.profile.init);
-    let mut fatal = strings(&[BOOT_FATAL, init.boot_fatal, init.live_fatal]);
+    let mut fatal = fatal(variant);
     fatal.push(recinit::live::ROOTFS_MISSING_MESSAGE.to_string());
     BootExpect {
-        success: Vec::new(),
+        success: vec![recqemu::serial::protocol::SHELL_READY_MARKER.to_string()],
         fatal,
-        service_failures: Vec::new(),
     }
 }
 
-/// A live-tools boot, whose serial console may run the install screen
-/// instead of a shell: a login prompt or the live issue text the live
-/// overlay writes also mean it is up.
-pub fn live_tools(variant: &Variant) -> BootExpect {
-    let mut expect = live_boot(variant);
-    expect.success.push(" login:".to_string());
-    expect
-        .success
-        .push(distro_builder::install_ux::LIVE_LOGIN_HINT.to_string());
-    expect
-}
-
-/// The installed system's boot: its login prompt, or the init system's
-/// sign of being up.
+/// The installed system's boot: done at its getty's login prompt, which
+/// names the hostname the install sets (`identity.default_hostname`).
 pub fn installed_boot(variant: &Variant) -> BootExpect {
-    let init = init_patterns(variant.contract.profile.init);
-    let identity = &variant.contract.identity;
-    let mut success = vec![identity.login_prompt.clone()];
-    success.extend(strings(&[init.installed_success]));
-    if variant.contract.profile.init == InitSystem::Openrc {
-        // AcornOS's installed issue text.
-        success.push(format!("Welcome to {}", identity.os_name));
-    }
     BootExpect {
-        success,
-        fatal: strings(&[BOOT_FATAL, init.boot_fatal]),
-        service_failures: strings(&[init.installed_service_failures]),
+        success: vec![variant.contract.identity.login_prompt.clone()],
+        fatal: fatal(variant),
     }
 }
 

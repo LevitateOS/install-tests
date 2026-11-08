@@ -14,7 +14,7 @@ The scenario harness for both distros; `README.md` says where each part lives.
 
 | Don't put here | Put it in |
 |----------------|-----------|
-| Built-artifact validation | `testing/fsdbg/` |
+| Checks of a built artifact's contents | its producer (recinit, reciso, the builder), when it writes it |
 | Per-distro facts (identity, services, tools) | the variant contract, `distro/variants/<id>/distro.toml` |
 | Domain definition and sizing | `tools/recqemu` |
 

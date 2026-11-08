@@ -2,7 +2,7 @@
 //! launcher, injection, boot judge and SSH login as the scenarios.
 
 use crate::qemu::session::{self, Serial, Ssh, Vars, VmSpec};
-use crate::qemu::SerialExecutorExt;
+use crate::qemu::wait_live_boot;
 use crate::scenarios::{self, Harness, RunOptions, ScenarioId};
 use anyhow::{bail, Context, Result};
 use recqemu::libvirt::runtime_dir;
@@ -61,7 +61,7 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
             ..VmSpec::new(variant, scenario)
         })?
     } else {
-        let install = scenarios::resolve_latest_install_run(repo, distro_id)?;
+        let install = scenarios::resolve_latest_install_run(repo, distro_id, options.install_mode)?;
         let dir = runtime_dir().join(format!("{distro_id}-{scenario}"));
         std::fs::create_dir_all(&dir).with_context(|| format!("creating '{}'", dir.display()))?;
         let (disk, vars) = scenarios::overlay_install(&install, &dir)?;
@@ -99,19 +99,18 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
             Ok(())
         }
         Mode::Check => {
-            vm.console()?
-                .wait_for_live_boot_with_context(scenarios::live_boot_stall(variant), variant)?;
+            wait_live_boot(vm.console()?, variant)?;
             eprintln!("{name} booted.");
             Ok(())
         }
         Mode::Ssh { shell, .. } => {
             let port = vm.ssh_port()?;
-            vm.console()?
-                .wait_for_live_boot_with_context(scenarios::live_boot_stall(variant), variant)?;
-            scenarios::verify_live_boot_ssh_login(&h, vm.console()?, port)?;
+            let mut remote = h.remote(port)?;
+            wait_live_boot(vm.console()?, variant)?;
+            scenarios::verify_live_boot_ssh_login(&h, &mut vm, &mut remote)?;
             eprintln!("{name} takes SSH logins on {}:{port}.", recqemu::HOSTFWD_ADDRESS);
             if shell {
-                h.remote(port)?.interactive()?;
+                remote.interactive()?;
             }
             Ok(())
         }

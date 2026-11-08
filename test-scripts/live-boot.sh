@@ -1,62 +1,28 @@
 #!/bin/sh
-# Live Boot Validation
-#
-# Verifies that the live ISO boots successfully and reaches a usable shell.
-# This is the simplest live scenario: if this script runs, the boot succeeded.
+# Live boot: the live system is up and serves SSH, the same checks on every
+# variant. The harness passes the services the contract says the live system
+# runs (SCENARIO_SERVICES, init-system unit names) and has already logged in
+# over SSH as root.
 
-set -euo pipefail
-
-# Find script directory and load common functions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/common.sh"
 
-if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
-    . "$SCRIPT_DIR/lib/common.sh"
-elif [ -f "/usr/local/lib/scenario-tests/common.sh" ]; then
-    . "/usr/local/lib/scenario-tests/common.sh"
-else
-    echo "ERROR: Cannot find common.sh library" >&2
-    exit 1
-fi
+scenario_header "Live Boot"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Main Test
-# ═══════════════════════════════════════════════════════════════════════════
-
-scenario_header "Live Boot Validation"
-
-info "If you can read this, the live ISO booted successfully!"
-echo
-
-# Basic sanity checks
-section_header "Basic System Checks"
-test_file_exists "/proc/cmdline" "Kernel command line"
-test_file_exists "/sys" "/sys filesystem"
-test_file_exists "/dev" "/dev filesystem"
-test_command "Shell is functional" "echo 'test' | grep 'test'"
+section_header "System"
+test_file_exists /proc/cmdline "Kernel command line"
 test_command "Root filesystem is writable" "touch /tmp/.scenario-test && rm /tmp/.scenario-test"
+test_command "PID 1 is the init system" "[ \"\$(cat /proc/1/comm)\" = \"$(svc_pid1)\" ]"
 
-section_header "Live Boot First-Class Services"
-if command -v systemctl >/dev/null 2>&1; then
-    test_command "Kernel cmdline includes inst.sshd=0" "grep -qw 'inst.sshd=0' /proc/cmdline"
-    test_command "OpenSSH is enabled (systemd)" "systemctl is-enabled sshd.service | grep -q '^enabled$'"
-    test_command "OpenSSH is active (systemd)" "systemctl is-active sshd.service | grep -q '^active$'"
-    test_command "OpenSSH config validates" "sshd -t"
-    test_command "tmpfiles policy creates /run/sshd" "test -f /usr/lib/tmpfiles.d/sshd.conf -o -f /etc/tmpfiles.d/sshd-local.conf"
-elif command -v rc-service >/dev/null 2>&1; then
-    test_command "OpenRC networking config exists" "test -f /etc/network/interfaces"
-    test_command "OpenRC networking in boot runlevel" "test -L /etc/runlevels/boot/networking"
-    test_command "OpenRC dhcpcd in default runlevel" "test -L /etc/runlevels/default/dhcpcd"
-    test_command "OpenRC networking service is running" "rc-service networking status"
-    test_command "OpenRC dhcpcd service is running" "rc-service dhcpcd status"
-    test_command "Live environment has a default route" "ip route | grep -q '^default '"
-    test_command "OpenSSH in default runlevel (OpenRC)" "test -L /etc/runlevels/default/sshd"
-    test_command "OpenSSH is running (OpenRC)" "rc-service sshd status"
-    test_command "OpenSSH config validates" "sshd -t"
-else
-    error "No supported init service manager found for SSH checks"
-    record_failed "OpenSSH service checks unavailable"
-fi
+section_header "Services"
+for service in ${SCENARIO_SERVICES:?SCENARIO_SERVICES is not set}; do
+    test_command "$service is enabled" "svc_enabled $service"
+    test_command "$service is running" "svc_running $service"
+done
+test_command "sshd configuration validates" "sshd -t"
+test_command "root has an SSH directory" "test -d /root/.ssh"
 
-# Report results
+section_header "Network"
+test_command "A default route exists" "ip route | grep -q '^default '"
+
 report_results "Live Boot"
-exit $?
