@@ -120,6 +120,48 @@ pub fn run_evidence(
     Ok(format!("{} passed", evidence.script))
 }
 
+/// Exercise the actual installed UI on SSH's guest PTY and keep its transcript.
+/// No extra terminal-recording utility is required in either product.
+pub fn install_pty(
+    remote: &mut recshuttle::Remote,
+    variant: &Variant,
+    launcher: &str,
+    receipt: &Path,
+) -> Result<()> {
+    let work = remote.run("preparing installer PTY check", "mktemp -d /run/install-pty.XXXXXX", Budget::Command.get())?;
+    let work = work.trim();
+    let terminal = remote.terminal_command(&format!(
+        "stty cols 120 rows 40; export TERM=xterm-256color; exec {}", shell_quote(launcher)
+    ));
+    let result = (|| -> Result<()> {
+        let output = std::process::Command::new("sh")
+            .arg(variant.repo_root.join("testing/install-tests/test-scripts/install-pty.sh"))
+            .arg(work)
+            .arg(terminal.get_args().last().context("missing guest PTY command")?)
+            .arg(terminal.get_program())
+            .args(terminal.get_args().take(terminal.get_args().len() - 1))
+            .output()
+            .context("driving the installer's actual SSH PTY")?;
+        let mut transcript = output.stdout;
+        transcript.extend_from_slice(&output.stderr);
+        fs::write(receipt, &transcript)
+            .with_context(|| format!("saving installer PTY receipt {}", receipt.display()))?;
+        if !output.status.success() || !String::from_utf8_lossy(&transcript).contains("INSTALL_PTY_PASS ") {
+            bail!("installer PTY interaction failed ({}); transcript: {}", output.status, receipt.display());
+        }
+        // Files are read over a separate connection: echoed keyboard bytes
+        // cannot satisfy the execution handshakes.
+        remote.run("checking installer shell handoffs", &format!(
+            "test \"$(cat {}/hub)\" = hub-shell-ok && test \"$(cat {}/fallback)\" = fallback-shell-ok", shell_quote(work), shell_quote(work)
+        ), Budget::Command.get())?;
+        Ok(())
+    })();
+    let cleanup = remote.run("cleaning installer PTY check", &format!("rm -rf -- {}", shell_quote(work)), Budget::Command.get());
+    result?;
+    cleanup?;
+    Ok(())
+}
+
 /// How a tool fared.
 enum ToolCheck {
     Works,

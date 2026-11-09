@@ -273,7 +273,7 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
         match scenario {
             ScenarioId::BuildPreflight => bail!("the registry gives build-preflight no ISO"),
             ScenarioId::LiveBoot => run_live_boot(h, inputs.iso(scenario)?),
-            ScenarioId::LiveTools => run_live_tools(h, inputs.iso(scenario)?),
+            ScenarioId::LiveTools => run_live_tools(h, inputs.iso(scenario)?, &run.dir),
             ScenarioId::Install => run_installation(h, inputs.iso(scenario)?, &mut run),
             ScenarioId::InstalledBoot => run_installed_boot(h, inputs.install(scenario)?, &run.dir),
             ScenarioId::AutomatedLogin => run_automated_login(h, inputs.install(scenario)?, &run.dir),
@@ -455,15 +455,16 @@ fn run_live_boot(h: &Harness, iso: &Path) -> Result<String> {
 
 /// Live tools: every tool the contract lists runs, the install screen's
 /// launcher works, and the live environment is set up (all over SSH).
-fn run_live_tools(h: &Harness, iso: &Path) -> Result<String> {
+fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut live = boot_live(h, ScenarioId::LiveTools, iso, None)?;
     let remote = &mut live.remote;
     let tools = guest::check_tools(remote, variant, &variant.contract.live_tools())?;
     remote.run("checking the install screen launcher", &format!("test -x /{LAUNCHER}"), Budget::Command.get())?;
     let ux = verify_install_ux_split_behavior(remote)?;
+    guest::install_pty(remote, variant, &format!("/{LAUNCHER}"), &run_dir.join("install-pty.log"))?;
     let evidence = guest::run_evidence(remote, variant, &scenario_evidence(ScenarioId::LiveTools)?, &[])?;
-    Ok(format!("{tools}; {ux}; {evidence}"))
+    Ok(format!("{tools}; {ux}; actual installer PTY interaction passed (install-pty.log); {evidence}"))
 }
 
 /// Desktop boot: the live-desktop ISO boots into the desktop. Its display
@@ -532,7 +533,13 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         ],
     )?;
     let target_q = recqemu::shell_quote(&target);
-    live.remote.run("unmounting the install target", &format!("sync && umount -R {target_q}"), Budget::Command.get())?;
+    // Flushing a freshly extracted install is a disk-writing stage, not a
+    // short probe. Keep it separate from unmount so a timeout identifies the
+    // operation that stalled; neither failure permits a passing install.
+    eprintln!("    -> Flush installed filesystem writes");
+    live.remote.run("flushing installed filesystem writes", "sync", Budget::Stage.get())?;
+    eprintln!("    -> Unmount the install target");
+    live.remote.run("unmounting the install target", &format!("umount -R {target_q}"), Budget::Command.get())?;
     // A clean power-off, so the install disk is left as a shut-down system.
     live.vm.shutdown_from_guest("poweroff")?;
     Ok(format!("{mode} install: {steps} install steps over SSH; {evidence}"))
