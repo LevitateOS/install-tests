@@ -23,7 +23,7 @@ trap 'exit 1' HUP INT TERM
 mkfifo "$work/input"
 # ssh -tt allocates the real guest PTY even with the FIFO as local stdin.
 # The watchdog cannot count as pass; SSH owns the session/PTY teardown.
-timeout 75 "$@" "$terminal_command" <"$work/input" >"$work/terminal" 2>&1 &
+timeout --kill-after=5 75 "$@" "$terminal_command" <"$work/input" >"$work/terminal" 2>&1 &
 pid=$!
 exec 3>"$work/input"
 wait_text() {
@@ -40,7 +40,7 @@ wait_file() {
     n=0
     # A separate real SSH connection observes a file written by the shell.
     # Terminal screen painting need not preserve contiguous output markers.
-    while ! "$@" "test -f '$file'" >/dev/null 2>&1; do
+    while ! timeout --kill-after=1 5 "$@" "test -f '$file'" >/dev/null 2>&1; do
         kill -0 "$pid" 2>/dev/null || return 1
         n=$((n + 1)); [ "$n" -lt 100 ] || return 1
         sleep 0.1
@@ -70,4 +70,13 @@ wait_file "$guest_work/fallback" "$@"
 exec 3>&-
 wait "$pid"
 pid=
-printf 'INSTALL_PTY_PASS hub-shell=1 docs-input=1 host-quit=1 fallback-shell=1\n'
+# A repeated status glyph is a valid Facts label; rendering it must not
+# produce React's duplicate-child-key warning in the actual terminal session.
+python3 - "$work/terminal" <<'PY_CHECK'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+if "Encounteredtwochildrenwiththesamekey" in "".join(text.split()):
+    sys.exit("installer rendered duplicate React child keys")
+PY_CHECK
+printf 'INSTALL_PTY_PASS hub-shell=1 docs-input=1 host-quit=1 fallback-shell=1 unique-row-keys=1\n'
