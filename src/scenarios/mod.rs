@@ -469,11 +469,19 @@ fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
 
 /// Desktop boot: the live-desktop ISO boots into the desktop. Its display
 /// manager runs and has logged the live user into a graphical session, no
-/// service failed, and the image says it is the desktop system
+/// service failed, the image says it is the desktop system, and each
+/// desktop app (`DESKTOP_APPS`) is installed, has its menu entry and starts
 /// (`desktop-boot.sh`, over SSH).
 fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut live = boot_live(h, ScenarioId::DesktopBoot, iso, None)?;
+    // Each desktop app as program:menu-entry, for the guest script.
+    let desktop_apps = distro_contract::DESKTOP_APPS
+        .iter()
+        .zip(distro_contract::DESKTOP_APP_ENTRIES)
+        .map(|(app, entry)| format!("{app}:{entry}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let evidence = guest::run_evidence(
         &mut live.remote,
         variant,
@@ -483,9 +491,10 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
             ("SCENARIO_LIVE_USER", distro_contract::install_ux::LIVE_DESKTOP_USER),
             ("SCENARIO_FLAVOUR_FIELD", distro_contract::profile::REC_FLAVOUR),
             ("SCENARIO_FLAVOUR", ProductId::LiveDesktop.flavour().as_str()),
+            ("SCENARIO_DESKTOP_APPS", desktop_apps.as_str()),
         ],
     )?;
-    Ok(format!("desktop session up; {evidence}"))
+    Ok(format!("desktop session up with its apps; {evidence}"))
 }
 
 /// Install: the live-tools ISO installs to a disk in `h.install_mode` with
@@ -779,6 +788,7 @@ fn failure_hints(scenario: ScenarioId) -> &'static [&'static str] {
             "the desktop system lacks a package its session needs (the desktop lock)",
             "the display manager did not start, or its autologin found no session",
             "a desktop package's setup (accounts, caches, services) did not run in the rootfs recipe",
+            "a desktop app is missing, or was compiled against another Qt than the desktop ships",
         ],
     }
 }

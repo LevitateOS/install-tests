@@ -4,8 +4,10 @@
 # session, no service failed, and the image is the desktop system. The
 # harness passes SCENARIO_DISPLAY_MANAGER (the contract's display manager),
 # SCENARIO_LIVE_USER (whom it logs in), and SCENARIO_FLAVOUR_FIELD and
-# SCENARIO_FLAVOUR (the image's os-release field and its value), and has
-# already logged in over SSH as root.
+# SCENARIO_FLAVOUR (the image's os-release field and its value), and
+# SCENARIO_DESKTOP_APPS (the desktop apps the system carries, each as
+# program:menu-entry-path, separated by spaces), and has already logged in
+# over SSH as root.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
@@ -14,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 : "${SCENARIO_LIVE_USER:?SCENARIO_LIVE_USER is not set}"
 : "${SCENARIO_FLAVOUR_FIELD:?SCENARIO_FLAVOUR_FIELD is not set}"
 : "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}"
+: "${SCENARIO_DESKTOP_APPS:?SCENARIO_DESKTOP_APPS is not set}"
 
 # The id of the live user's session, once logind (elogind on OpenRC) has it.
 live_session() {
@@ -43,5 +46,18 @@ test_command "$SCENARIO_LIVE_USER has a session" "[ -n \"\$(live_session)\" ]"
 test_command "The session is graphical (x11 or wayland)" \
     "case \"\$(loginctl show-session \"\$(live_session)\" -p Type --value)\" in x11|wayland) true ;; *) false ;; esac"
 test_command "$SCENARIO_LIVE_USER's session runs processes" "pgrep -u $SCENARIO_LIVE_USER >/dev/null"
+
+# The desktop apps (gui/): each is on PATH, has its menu entry where the
+# desktop's menu looks, and starts. Asked for its version with Qt's offscreen
+# platform it needs no display, but it does load the system's own Qt, so a
+# program compiled against another Qt or C library fails here.
+section_header "Desktop apps"
+for app in $SCENARIO_DESKTOP_APPS; do
+    program=${app%%:*}
+    entry=${app#*:}
+    test_command "$program is installed" "command -v $program"
+    test_command "$program has its menu entry" "[ -f /$entry ]"
+    test_command "$program starts" "QT_QPA_PLATFORM=offscreen $program --version | grep -q '^$program '"
+done
 
 report_results "Desktop Boot"
