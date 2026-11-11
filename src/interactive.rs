@@ -4,7 +4,7 @@
 use crate::qemu::session::{self, Serial, Ssh, Vars, VmSpec};
 use crate::qemu::wait_live_boot;
 use crate::scenarios::{self, Harness, RunOptions, ScenarioId};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use recqemu::libvirt::runtime_dir;
 use std::path::Path;
 use std::process::Command;
@@ -25,11 +25,17 @@ pub enum Mode {
 
 /// Boot `scenario`'s input (its ISO, or an overlay of the latest install
 /// run's disk, so the install run stays as it is) for distro `distro_id`.
-pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, options: &RunOptions) -> Result<()> {
+pub fn open(
+    repo: &Path,
+    distro_id: &str,
+    scenario: ScenarioId,
+    mode: Mode,
+    options: &RunOptions,
+) -> Result<()> {
     if !scenario.is_runnable() {
         bail!("{scenario} boots nothing of its own to open");
     }
-    let installed = scenario.input().iso.is_none();
+    let installed = scenario.input_for(options.flavour).iso.is_none();
     if installed && !matches!(mode, Mode::Console) {
         bail!("{scenario} opens the installed system's serial console only");
     }
@@ -40,20 +46,33 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
         Mode::Ssh { .. } | Mode::Check => Serial::Harness,
     };
 
-    let mut vm = if let Some(product) = scenario.input().iso {
-        let iso = scenarios::resolve_release(repo, distro_id, product)?.iso;
+    let mut vm = if let Some(product) = scenario.input_for(options.flavour).iso {
+        let iso = scenarios::resolve_release_selected(
+            repo,
+            distro_id,
+            product,
+            options.release_run.as_deref(),
+        )?
+        .iso;
         // On an interactive serial console the live system runs the install screen.
         let extra = match mode {
             Mode::Console => vec![format!("{}=1", distro_builder::install_ux::SERIAL_KEY)],
             _ => Vec::new(),
         };
         let injection = h.live_injection(&extra)?;
-        eprintln!("Booting {} {scenario} from {}...", variant.contract.identity.os_name, iso.display());
+        eprintln!(
+            "Booting {} {scenario} from {}...",
+            variant.contract.identity.os_name,
+            iso.display()
+        );
         session::spawn(VmSpec {
             iso: Some(&iso),
+            flavour: product.flavour(),
             injection: Some(&injection),
             ssh: match mode {
-                Mode::Ssh { port: Some(port), .. } => Ssh::Port(port),
+                Mode::Ssh {
+                    port: Some(port), ..
+                } => Ssh::Port(port),
                 Mode::Ssh { port: None, .. } => Ssh::Free,
                 _ => Ssh::None,
             },
@@ -61,7 +80,7 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
             ..VmSpec::new(variant, scenario)
         })?
     } else {
-        let install = scenarios::resolve_latest_install_run(repo, distro_id, options.install_mode)?;
+        let install = scenarios::resolve_install_selected(repo, distro_id, options)?;
         let dir = runtime_dir().join(format!("{distro_id}-{scenario}"));
         std::fs::create_dir_all(&dir).with_context(|| format!("creating '{}'", dir.display()))?;
         let (disk, vars) = scenarios::overlay_install(&install, &dir)?;
@@ -73,6 +92,7 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
         );
         session::spawn(VmSpec {
             disk: Some(&disk),
+            flavour: install.flavour,
             vars: Vars::Existing(&vars),
             serial,
             ..VmSpec::new(variant, scenario)
@@ -80,7 +100,9 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
     };
     let name = vm.domain().name().to_string();
     let uri = vm.domain().uri().to_string();
-    eprintln!("VM '{name}' runs on {uri}: watch it in Cockpit (Virtual Machines) or `virsh -c {uri} console {name}`.");
+    eprintln!(
+        "VM '{name}' runs on {uri}: watch it in Cockpit (Virtual Machines) or `virsh -c {uri} console {name}`."
+    );
 
     match mode {
         Mode::Console => {
@@ -90,7 +112,9 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
                 .status()
                 .context("running virsh console")?;
             if vm.domain().is_running()? {
-                eprintln!("Left the console; '{name}' keeps running. Stop it in Cockpit or with: virsh -c {uri} destroy {name}");
+                eprintln!(
+                    "Left the console; '{name}' keeps running. Stop it in Cockpit or with: virsh -c {uri} destroy {name}"
+                );
                 vm.keep_running();
             }
             if !status.success() {
@@ -108,7 +132,10 @@ pub fn open(repo: &Path, distro_id: &str, scenario: ScenarioId, mode: Mode, opti
             let mut remote = h.remote(port)?;
             wait_live_boot(vm.console()?, variant)?;
             scenarios::verify_live_boot_ssh_login(&h, &mut vm, &mut remote)?;
-            eprintln!("{name} takes SSH logins on {}:{port}.", recqemu::HOSTFWD_ADDRESS);
+            eprintln!(
+                "{name} takes SSH logins on {}:{port}.",
+                recqemu::HOSTFWD_ADDRESS
+            );
             if shell {
                 remote.interactive()?;
             }

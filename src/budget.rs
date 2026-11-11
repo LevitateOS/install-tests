@@ -34,6 +34,8 @@ pub enum Budget {
     TrialReboot,
     /// For recab-trial to commit a healthy trial.
     Commit,
+    /// Explicit public payload download/interruption; bounded independently of local staging.
+    PublicDownload,
 }
 
 impl Budget {
@@ -49,6 +51,7 @@ impl Budget {
             Self::Shutdown => 180,
             Self::TrialReboot => 300,
             Self::Commit => 200,
+            Self::PublicDownload => 3600,
         }
     }
 

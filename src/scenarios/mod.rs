@@ -18,7 +18,8 @@ use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use distro_builder::install_ux::{LAUNCHER, PROBE_PREFIX, SMOKE_ENV, SPLIT, SPLIT_SMOKE_OK};
 use distro_contract::runs::{self, Run, RunManifest, RunRef, RunStatus};
-use distro_contract::{Missing, ProductId, Variant};
+use distro_contract::{Missing, ProductId, Variant, profile::Flavour};
+use recqemu::Guest;
 use recshuttle::{Login, Remote};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ const HARNESS_SOURCES: &[&str] = &[
 pub struct InstallRun {
     pub run: RunRef,
     pub mode: InstallMode,
+    pub flavour: Flavour,
     pub disk_path: PathBuf,
     pub ovmf_vars_path: PathBuf,
 }
@@ -60,6 +62,8 @@ struct Inputs {
     iso: Option<ReleaseIso>,
     install: Option<InstallRun>,
     update_fixture: Option<PathBuf>,
+    public_update: Option<PathBuf>,
+    flavour: Flavour,
 }
 
 impl Inputs {
@@ -67,36 +71,74 @@ impl Inputs {
         repo: &Path,
         distro_id: &str,
         scenario: ScenarioId,
-        mode: InstallMode,
-        fixture: Option<&Path>,
+        options: &RunOptions,
     ) -> Result<Self> {
-        let input = scenario.input();
-        let fixture = if matches!(scenario, ScenarioId::Install | ScenarioId::AbUpdate) {
-            fixture
-                .map(|p| {
-                    fs::canonicalize(p).with_context(|| format!("update fixture '{}'", p.display()))
-                })
+        anyhow::ensure!(
+            options.update_fixture.is_none() || options.public_update.is_none(),
+            "choose --update-fixture or --public-update, never both"
+        );
+        let input = scenario.input_for(options.flavour);
+        let uses_update = matches!(scenario, ScenarioId::Install | ScenarioId::AbUpdate);
+        let fixture = if uses_update {
+            options
+                .update_fixture
+                .as_ref()
+                .map(fs::canonicalize)
                 .transpose()?
         } else {
             None
         };
-        if scenario == ScenarioId::AbUpdate && fixture.is_none() {
+        let public_update = if uses_update {
+            options
+                .public_update
+                .as_ref()
+                .map(fs::canonicalize)
+                .transpose()?
+        } else {
+            None
+        };
+        if scenario == ScenarioId::AbUpdate && fixture.is_none() && public_update.is_none() {
             bail!(
-                "ab-update requires --update-fixture <existing RECAB_P13 ISO>; a matching install run must already exist"
+                "ab-update requires explicit --update-fixture ISO or --public-update JSON and an existing matching install"
             );
         }
         if let Some(path) = &fixture {
             anyhow::ensure!(path.is_file(), "update fixture must be a regular ISO file");
         }
+        if let Some(path) = &public_update {
+            let public = crate::update_fixture::PublicUpdate::read(path)?;
+            public.for_variant(&load_variant(repo, distro_id)?, options.flavour)?;
+            anyhow::ensure!(
+                options.install_mode == InstallMode::Ab,
+                "public-origin mode needs A/B installation"
+            );
+            anyhow::ensure!(
+                scenario != ScenarioId::Install || options.release_run.is_some(),
+                "public install requires explicit --release-run DIR"
+            );
+            anyhow::ensure!(
+                scenario != ScenarioId::AbUpdate || options.install_run.is_some(),
+                "public ab-update requires explicit --install-run DIR"
+            );
+        }
+        let iso = input
+            .iso
+            .map(|product| {
+                resolve_release_selected(repo, distro_id, product, options.release_run.as_deref())
+            })
+            .transpose()?;
+        let flavour = iso
+            .as_ref()
+            .map(|r| r.product.flavour())
+            .unwrap_or(options.flavour);
         Ok(Self {
             update_fixture: fixture,
-            iso: input
-                .iso
-                .map(|product| resolve_release(repo, distro_id, product))
-                .transpose()?,
+            public_update,
+            flavour,
+            iso,
             install: input
                 .install_run
-                .then(|| resolve_latest_install_run(repo, distro_id, mode))
+                .then(|| resolve_install_selected(repo, distro_id, options))
                 .transpose()?,
         })
     }
@@ -142,7 +184,7 @@ fn latest_result(
 }
 
 /// How `run` runs the scenarios.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RunOptions {
     /// Rerun scenarios that already passed for the same inputs.
     pub force: bool,
@@ -156,6 +198,26 @@ pub struct RunOptions {
     pub install_mode: InstallMode,
     /// Explicit existing signed-feed fixture; never built by a scenario.
     pub update_fixture: Option<PathBuf>,
+    pub public_update: Option<PathBuf>,
+    pub flavour: Flavour,
+    pub release_run: Option<PathBuf>,
+    pub install_run: Option<PathBuf>,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            force: false,
+            injection: vec![],
+            login_key: None,
+            install_mode: Default::default(),
+            update_fixture: None,
+            public_update: None,
+            flavour: Flavour::Base,
+            release_run: None,
+            install_run: None,
+        }
+    }
 }
 
 /// What became of one scenario.
@@ -182,6 +244,7 @@ pub(crate) struct Harness {
     pub install_mode: InstallMode,
     /// Explicit existing signed-feed fixture; never built by a scenario.
     pub update_fixture: Option<PathBuf>,
+    pub selection: RunOptions,
 }
 
 impl Harness {
@@ -192,6 +255,14 @@ impl Harness {
         boots: bool,
     ) -> Result<Self> {
         let variant = load_variant(repo, distro_id)?;
+        if let Some(path) = &options.public_update {
+            anyhow::ensure!(
+                options.update_fixture.is_none(),
+                "public mode cannot use local fixture media"
+            );
+            crate::update_fixture::PublicUpdate::read(path)?
+                .for_variant(&variant, options.flavour)?;
+        }
         let login = if boots {
             let key = match &options.login_key {
                 Some(key) => key.clone(),
@@ -210,6 +281,7 @@ impl Harness {
             injection: options.injection.clone(),
             install_mode: options.install_mode,
             update_fixture: options.update_fixture.clone(),
+            selection: options.clone(),
         })
     }
 
@@ -259,7 +331,10 @@ pub fn run(
     let mut outcomes = Vec::new();
     let mut install_failed = false;
     for &scenario in scenarios {
-        let outcome = if install_failed && scenario.input().install_run {
+        let outcome = if install_failed
+            && scenario.input().install_run
+            && options.install_run.is_none()
+        {
             Outcome::NotRun("needs a passing install, and install failed in this run".to_string())
         } else {
             match run_one(&harness, scenario, options.force) {
@@ -293,13 +368,7 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
             h.install_mode
         );
     }
-    let inputs = Inputs::resolve(
-        repo,
-        distro_id,
-        scenario,
-        h.install_mode,
-        h.update_fixture.as_deref(),
-    )?;
+    let inputs = Inputs::resolve(repo, distro_id, scenario, &h.selection)?;
     let fingerprint = scenario_input_fingerprint(variant, scenario, &inputs, h.install_mode)?;
 
     if force {
@@ -321,6 +390,22 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
     let mut run = Run::start_scenario(repo, distro_id, scenario)?;
     run.manifest.inputs = inputs.refs();
     run.manifest.update_fixture = inputs.update_fixture.clone();
+    run.manifest.flavour = Some(inputs.flavour);
+    run.manifest.release_input = inputs
+        .iso
+        .as_ref()
+        .map(|r| r.iso.parent().unwrap().to_path_buf());
+    run.manifest.install_input = inputs
+        .install
+        .as_ref()
+        .map(|r| r.disk_path.parent().unwrap().to_path_buf());
+    run.manifest.public_update = inputs.public_update.clone();
+    run.manifest.public_update_binding = inputs
+        .public_update
+        .as_ref()
+        .map(|p| crate::update_fixture::PublicUpdate::read(p)?.installation_binding())
+        .transpose()?;
+    run.manifest.install_mode = Some(h.install_mode.to_string());
     run.manifest.fingerprint = Some(fingerprint);
     run.save()?;
 
@@ -341,15 +426,17 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
                 run_automated_login(h, inputs.install(scenario)?, &run.dir)
             }
             ScenarioId::Runtime => run_runtime(h, inputs.install(scenario)?, &run.dir),
-            ScenarioId::AbUpdate => ab_update::run(
-                h,
-                inputs.install(scenario)?,
-                inputs
-                    .update_fixture
-                    .as_deref()
-                    .context("update fixture missing")?,
-                &run.dir,
-            ),
+            ScenarioId::AbUpdate => {
+                let (evidence, public) = ab_update::run(
+                    h,
+                    inputs.install(scenario)?,
+                    inputs.update_fixture.as_deref(),
+                    inputs.public_update.as_deref(),
+                    &run.dir,
+                )?;
+                run.manifest.public_update_result = public;
+                Ok(evidence)
+            }
             ScenarioId::DesktopBoot => run_desktop_boot(h, inputs.iso(scenario)?),
         }
     })();
@@ -366,6 +453,9 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
         );
         Ok(evidence)
     });
+    if result.is_err() {
+        run.manifest.public_update_result = None;
+    }
     run.manifest.evidence = Some(match &result {
         Ok(evidence) => evidence.clone(),
         Err(err) => format!("FAIL: {err:#}"),
@@ -446,18 +536,7 @@ pub fn scenario_statuses(
     statuses(&load_variant(repo, distro_id)?)
 }
 
-/// The layout the latest install run installed, which the installed-system
-/// scenarios were last run against (the default before any install run).
-fn last_install_mode(variant: &Variant) -> Result<InstallMode> {
-    let mode = match latest_result(variant, ScenarioId::Install)? {
-        Some(Ok(last)) => last.install_mode,
-        _ => None,
-    };
-    Ok(mode
-        .and_then(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
-        .unwrap_or_default())
-}
-
+/// Recheck the exact recorded inputs, including their system flavour and public descriptor.
 fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
     ScenarioId::ALL
         .into_iter()
@@ -467,15 +546,41 @@ fn statuses(variant: &Variant) -> Result<Vec<(ScenarioId, ScenarioStatus)>> {
                 Some(Err(why)) => return Ok((scenario, ScenarioStatus::Error(why))),
                 Some(Ok(last)) => last,
             };
-            let mode = last_install_mode(variant)?;
-            let fingerprint = Inputs::resolve(
-                &variant.repo_root,
-                &variant.id,
-                scenario,
-                mode,
-                last.update_fixture.as_deref(),
-            )
-            .and_then(|inputs| scenario_input_fingerprint(variant, scenario, &inputs, mode));
+            let mode = last
+                .install_mode
+                .as_deref()
+                .and_then(|s| serde_json::from_value(serde_json::Value::String(s.into())).ok())
+                .unwrap_or_default();
+            let mut options = RunOptions {
+                install_mode: mode,
+                update_fixture: last.update_fixture.clone(),
+                public_update: last.public_update.clone(),
+                flavour: last.flavour.unwrap_or(Flavour::Base),
+                release_run: last.release_input.clone(),
+                install_run: last.install_input.clone(),
+                ..Default::default()
+            };
+            for input in &last.inputs {
+                if input.target_kind == runs::RunKind::ReleaseProduct {
+                    if let Some(product) = ProductId::from_name(&input.target_name)
+                        .filter(|_| options.release_run.is_none())
+                    {
+                        options.release_run = Some(
+                            runs::release_dir(&variant.repo_root, &variant.id, product)
+                                .join(&input.run_id),
+                        );
+                    }
+                } else if input.target_name == ScenarioId::Install.key()
+                    && options.install_run.is_none()
+                {
+                    options.install_run = Some(
+                        runs::scenario_dir(&variant.repo_root, &variant.id, ScenarioId::Install)
+                            .join(&input.run_id),
+                    );
+                }
+            }
+            let fingerprint = Inputs::resolve(&variant.repo_root, &variant.id, scenario, &options)
+                .and_then(|inputs| scenario_input_fingerprint(variant, scenario, &inputs, mode));
             let status = match fingerprint {
                 Err(err) => ScenarioStatus::Error(format!("{err:#}")),
                 Ok(fingerprint) if last.fingerprint.as_deref() != Some(fingerprint.as_str()) => {
@@ -519,6 +624,11 @@ fn boot_live(
     let injection = h.live_injection(&[])?;
     let mut vm = session::spawn(VmSpec {
         iso: Some(iso),
+        flavour: scenario
+            .input_for(h.selection.flavour)
+            .iso
+            .unwrap()
+            .flavour(),
         disk: disk.map(|(disk, _)| disk),
         vars: match disk {
             Some((_, vars)) => Vars::FreshAt(vars),
@@ -653,8 +763,15 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
     let disk_path = run.dir.join(INSTALL_DISK_FILENAME);
     let vars_path = run.dir.join(INSTALL_OVMF_VARS_FILENAME);
     // An A/B layout holds two 20 GiB root slots and at least 4 GiB of state
-    // (recpart's defaults); the image is sparse either way.
+    // (recpart's defaults). Public mode reserves additional shared space for
+    // compressed desktop transport, the frozen verifier copy and retry scratch;
+    // recpart assigns remaining space to state. Every image remains sparse.
     let disk_size = match mode {
+        InstallMode::Ab
+            if h.selection.public_update.is_some() || h.selection.flavour == Flavour::Desktop =>
+        {
+            "96G"
+        }
         InstallMode::Ab => "48G",
         InstallMode::Mutable => "20G",
     };
@@ -665,6 +782,13 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         mode,
         root_password: expect::root_password(variant),
         update_fixture: h.update_fixture.is_some(),
+        public_update: h
+            .selection
+            .public_update
+            .as_deref()
+            .map(crate::update_fixture::PublicUpdate::read)
+            .transpose()?,
+        flavour: h.selection.flavour,
     };
     let (target, steps) = install::install(&mut live.remote, variant, &system)?;
     let trial_link = recab::trial_service_link(variant.contract.profile.init);
@@ -722,6 +846,11 @@ fn installed_login(
     let console = vm.console()?;
     wait_installed_boot(console, variant)?;
     console.login("root", expect::root_password(variant), Budget::Login.get())?;
+    let os = console.exec("cat /etc/os-release", Budget::Command.get())?;
+    anyhow::ensure!(
+        os.success() && Flavour::from_os_release(os.output())? == install.flavour,
+        "booted install differs from the selected base/desktop artifact"
+    );
     Ok(vm)
 }
 
@@ -804,7 +933,8 @@ pub fn resolve_latest_install_run(
         .find_map(|run| match run.manifest {
             Ok(m)
                 if m.status == RunStatus::Success
-                    && m.install_mode.as_deref() == Some(mode_name.as_str()) =>
+                    && m.install_mode.as_deref() == Some(mode_name.as_str())
+                    && m.flavour.unwrap_or(Flavour::Base) == Flavour::Base =>
             {
                 Some((run.dir, m))
             }
@@ -822,9 +952,107 @@ pub fn resolve_latest_install_run(
     Ok(InstallRun {
         run: manifest.reference(),
         mode,
+        flavour: manifest.flavour.unwrap_or(Flavour::Base),
         disk_path,
         ovmf_vars_path,
     })
+}
+
+pub(crate) fn resolve_release_selected(
+    repo: &Path,
+    distro: &str,
+    product: ProductId,
+    selected: Option<&Path>,
+) -> Result<ReleaseIso> {
+    let Some(directory) = selected else {
+        return resolve_release(repo, distro, product);
+    };
+    let directory = fs::canonicalize(directory)
+        .with_context(|| format!("explicit --release-run {}", directory.display()))?;
+    let manifest = runs::read(&directory).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        manifest.status == RunStatus::Success
+            && manifest.distro_id == distro
+            && manifest.product() == Some(product),
+        "explicit release run does not match selected distro/product/flavour or did not pass"
+    );
+    let iso = manifest
+        .iso_path
+        .as_ref()
+        .context("explicit release run has no ISO")?
+        .clone();
+    anyhow::ensure!(
+        iso.is_file() && iso.parent() == Some(directory.as_path()),
+        "explicit release ISO must exist in its recorded run directory"
+    );
+    Ok(ReleaseIso {
+        product,
+        iso,
+        run: manifest.reference(),
+    })
+}
+pub(crate) fn resolve_install_selected(
+    repo: &Path,
+    distro: &str,
+    options: &RunOptions,
+) -> Result<InstallRun> {
+    let binding = options
+        .public_update
+        .as_deref()
+        .map(|p| crate::update_fixture::PublicUpdate::read(p)?.installation_binding())
+        .transpose()?;
+    let candidates = if let Some(path) = &options.install_run {
+        vec![
+            fs::canonicalize(path)
+                .with_context(|| format!("explicit --install-run {}", path.display()))?,
+        ]
+    } else {
+        runs::list(&runs::scenario_dir(repo, distro, ScenarioId::Install))?
+            .into_iter()
+            .map(|r| r.dir)
+            .collect()
+    };
+    for path in candidates {
+        let m = match runs::read(&path) {
+            Ok(m) => m,
+            Err(_) if options.install_run.is_none() => continue,
+            Err(e) => return Err(anyhow::Error::msg(e)),
+        };
+        let matches = m.status == RunStatus::Success
+            && m.target_kind == runs::RunKind::Scenario
+            && m.target_name == "install"
+            && m.distro_id == distro
+            && m.install_mode.as_deref() == Some(options.install_mode.to_string().as_str())
+            && m.flavour.unwrap_or(Flavour::Base) == options.flavour
+            && binding
+                .as_ref()
+                .is_none_or(|b| m.public_update_binding.as_ref() == Some(b));
+        if !matches {
+            anyhow::ensure!(
+                options.install_run.is_none(),
+                "explicit install run differs from requested mode/flavour/public baseline policy"
+            );
+            continue;
+        }
+        let disk_path = path.join(INSTALL_DISK_FILENAME);
+        let ovmf_vars_path = path.join(INSTALL_OVMF_VARS_FILENAME);
+        anyhow::ensure!(
+            disk_path.is_file() && ovmf_vars_path.is_file(),
+            "selected install run has lost its disk/UEFI variables"
+        );
+        return Ok(InstallRun {
+            run: m.reference(),
+            mode: options.install_mode,
+            flavour: options.flavour,
+            disk_path,
+            ovmf_vars_path,
+        });
+    }
+    bail!(
+        "no existing successful {} {} install matches the requested inputs; supply --install-run DIR",
+        options.flavour,
+        options.install_mode
+    )
 }
 
 /// What a passing run depends on: the runs its inputs come from, the
@@ -851,9 +1079,7 @@ fn scenario_input_fingerprint(
         "contract:{:016x}",
         content_hash(std::slice::from_ref(&variant.manifest))?
     ));
-    if scenario == ScenarioId::Install {
-        parts.push(format!("mode:{mode}"));
-    }
+    parts.push(format!("mode:{mode}"));
     if let Some(fixture) = &inputs.update_fixture {
         use sha2::Digest;
         use std::io::Read;
@@ -873,7 +1099,58 @@ fn scenario_input_fingerprint(
             hash.finalize()
         ));
     }
+    parts.push(format!("scenario:{scenario};flavour:{}", inputs.flavour));
+    if let Some(path) = &inputs.public_update {
+        parts.push(format!(
+            "public-update:{}:{}",
+            path.display(),
+            distro_contract::release::digest(&fs::read(path)?)
+        ));
+    }
+    if let Some(iso) = &inputs.iso {
+        parts.push(format!(
+            "release-manifest:{}",
+            artifact_digest(&iso.iso.parent().unwrap().join("run-manifest.json"))?
+        ));
+        parts.push(format!("iso:{}", artifact_digest(&iso.iso)?));
+    }
+    if let Some(install) = &inputs.install {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::metadata(&install.disk_path)?;
+        parts.push(format!(
+            "install-disk:{}:{}:{}:{}:{}:{}:{}",
+            m.dev(),
+            m.ino(),
+            m.len(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec()
+        ));
+        parts.push(format!(
+            "install-manifest:{}",
+            artifact_digest(
+                &install
+                    .disk_path
+                    .parent()
+                    .unwrap()
+                    .join("run-manifest.json")
+            )?
+        ));
+        parts.push(format!(
+            "install-firmware:{}",
+            artifact_digest(&install.ovmf_vars_path)?
+        ));
+    }
     Ok(parts.join(";"))
+}
+
+fn artifact_digest(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash)?;
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 /// A hash of the names and contents of the files at or under `paths`.
@@ -952,6 +1229,7 @@ fn installed_vm(
     let (disk, vars) = overlay_install(install, run_dir)?;
     session::spawn(VmSpec {
         disk: Some(&disk),
+        flavour: install.flavour,
         vars: Vars::Existing(&vars),
         ..VmSpec::new(variant, scenario)
     })

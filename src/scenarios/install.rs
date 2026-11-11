@@ -23,6 +23,8 @@ pub struct TestSystem<'a> {
     pub mode: InstallMode,
     pub root_password: &'a str,
     pub update_fixture: bool,
+    pub public_update: Option<crate::update_fixture::PublicUpdate>,
+    pub flavour: distro_contract::profile::Flavour,
 }
 
 /// Install onto the guest's first writable disk and leave it mounted at the
@@ -72,6 +74,52 @@ pub fn install(
             shell_quote(&format!("{target}/etc/fstab"))
         ),
     )?;
+    let os = run(
+        "Verify selected installed flavour",
+        format!("cat {t}/etc/os-release"),
+    )?;
+    anyhow::ensure!(
+        distro_contract::profile::Flavour::from_os_release(&os)? == system.flavour,
+        "selected installer extracted another system flavour"
+    );
+    if let Some(public) = &system.public_update {
+        anyhow::ensure!(
+            !system.update_fixture && system.mode == InstallMode::Ab,
+            "public mode cannot mount local fixture media or install a mutable system"
+        );
+        let original: distro_contract::release::Policy = serde_json::from_str(&run(
+            "Read original production policy",
+            format!("cat {t}/usr/lib/recab/update-source.json"),
+        )?)?;
+        public.personalize(&original)?;
+        let raw = run(
+            "Bind the exact existing baseline release",
+            format!("cat {LIVE_MEDIA_DIR}/release.json"),
+        )?;
+        let manifest = distro_contract::release::ReleaseManifest::parse(raw.as_bytes())?;
+        // SSH output may append framing whitespace; hash the actual media bytes in the guest.
+        let digest = run(
+            "Hash canonical baseline manifest",
+            format!("sha256sum {LIVE_MEDIA_DIR}/release.json"),
+        )?;
+        anyhow::ensure!(
+            manifest.identity == public.baseline
+                && digest.split_whitespace().next() == Some(public.baseline_release.as_str()),
+            "public descriptor does not identify this exact baseline release"
+        );
+        run(
+            "Capture baseline before candidate policy personalization",
+            format!("recab baseline --root {t}"),
+        )?;
+        let raw = serde_json::to_string(&public.source)?;
+        run(
+            "Personalize candidate discovery before both roots are sealed",
+            format!(
+                "printf '%s' {} > {t}/usr/lib/recab/update-source.json && chmod 644 {t}/usr/lib/recab/update-source.json",
+                shell_quote(&raw)
+            ),
+        )?;
+    }
     if system.update_fixture {
         anyhow::ensure!(
             system.mode == InstallMode::Ab,
@@ -100,6 +148,8 @@ pub fn install(
                 "recab baseline --root {t} && cp /run/recab-p13-media/source.json {t}/usr/lib/recab/update-source.json && cp /run/recab-p13-media/acquire.rhai {t}/usr/share/recab/update-acquire.rhai && umount /run/recab-p13-media"
             ),
         )?;
+    }
+    if system.update_fixture || system.public_update.is_some() {
         run(
             "Seed local fidelity probes before either root is sealed",
             format!(
@@ -116,7 +166,7 @@ pub fn install(
         shell_quote(&format!("{LIVE_MEDIA_DIR}/{KERNEL_ISO_PATH}")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
-    if system.update_fixture {
+    if system.update_fixture || system.public_update.is_some() {
         setup.push_str(" --service sshd");
     }
     // The installed system's initramfs, the ISO carries

@@ -26,6 +26,102 @@ returns; `cargo xtask --help` is the command reference.
 Scenarios consume existing artifacts; products are built explicitly with
 `cargo xtask build`.
 
+## Explicit base/desktop artifacts
+
+`cargo xtask test` and `cargo xtask run` accept `--flavour base|desktop`,
+`--release-run /absolute/existing/run` and `--install-run /absolute/existing/run`.
+Installation and build preflight select live-desktop for desktop, and the
+existing base products for base. Installed boot/login/runtime checks select an
+install of that exact flavour; the VM gets the corresponding memory size and
+the guest's actual flavour is checked. Live-only scenarios retain their own
+named product. A wrong explicit run fails rather than substituting the newest
+product or another flavour. Old install records without a flavour establish base only.
+
+Selected ISO bytes, run records, public descriptor and install disk/firmware
+identity participate in result reuse. Status rechecks the same recorded paths,
+including explicit historical artifacts. Preflight checks the selected release's
+own canonical payload hashes and kernel/module binding; it does not substitute
+the checkout's current kernel for a selected historical baseline. No input
+selector builds artifacts or invokes another scenario as a prerequisite.
+
+## Public-origin A/B scenario (x86_64)
+
+This mode is implemented but its VM lifecycle has **not been run**. Production
+provisioning and enablement remain pending. It uses the existing named
+`ab-update` lifecycle with real candidate discovery and acquisition by the
+installed Recipe/Ginux producer. It cannot mount a RECAB_P13 feed ISO, launch a
+loopback helper, accept a private key or substitute a local payload tree.
+
+Use a complete existing stable baseline and a genuinely newer immutable
+publication of the same distro/init/libc/flavour. Generate a small public JSON
+input from their existing signed metadata and inventories:
+
+```sh
+target/debug/ab-update-fixture public --repo-root /absolute/repo --distro levitate \
+  --baseline-manifest /absolute/baseline/release.json \
+  --base-policy /absolute/baseline/rootfs-source/usr/lib/recab/update-source.json \
+  --publication /absolute/new-publication --inventory /absolute/new-release/system-inventory.json \
+  --updated-path usr/share/example-release-data --conflict-path etc/example.conf \
+  --output /absolute/public-update.json
+```
+
+The generator verifies signatures/delegation, manifest and inventory hashes,
+exact publication bytes, x86_64 execution profile and sequence advancement. Both
+observation paths must actually change upstream and be ordinary files in the
+old and new inventories. It writes metadata only; no image build, payload copy,
+signing, network request or VM boot occurs. The input binds baseline/release IDs,
+expected identity, candidate policy, exact publication SHA-256 and source commit.
+The canonical Pages/Release origins must match the approved production design.
+
+When an installation run is explicitly authorized, it consumes its selected
+existing producer run and personalizes only candidate audience/index settings
+before recsetup seals both identical roots. It retains the baseline trust anchor,
+factory proof and delivery grants; old development media cannot be promoted by
+this personalization. Public and desktop A/B test disks are sparse 96 GiB, leaving shared
+space for desktop transport, verifier copies and retry scratch. This does not
+change installed production disk defaults. For example:
+
+```sh
+cargo xtask test install levitate --flavour desktop --mode ab \
+  --release-run /absolute/existing-live-desktop-run --public-update /absolute/public-update.json
+```
+
+The independent lifecycle run consumes an already successful compatible paired
+installation through an overlay; it does not call `install` or build anything:
+
+```sh
+cargo xtask test ab-update levitate --flavour desktop --mode ab \
+  --install-run /absolute/existing-public-install-run --public-update /absolute/public-update.json
+```
+
+Use the same selectors for AcornOS and for base. A public install requires an
+explicit release run; public `ab-update` requires an explicit install run. Its
+baseline/policy binding permits reuse for a later compatible target descriptor.
+
+The guest checks actual signed discovery against the exact expected release and
+reconstructs its publication binding from the authenticated pin. It interrupts
+an actual acquisition process group after a durable part checkpoint and before
+all parts complete, then requires verified saved-part/object reuse. An origin
+failure or a transfer too fast to observe interruption fails clearly; it never
+substitutes the local truncation helper or invents a cancellation receipt.
+Download waiting has a separate bounded public-transfer budget. All subsequent
+X/conflict/reproduction, failed/healthy trial, reverse Y, profile/data preservation
+and write-reduction observations use the existing lifecycle engine. Resolving
+source-policy conflicts retains the incoming authority/delivery policy and its
+baseline sequence, then applies only the explicit candidate audience/index
+personalization. The incoming policy is read from the verified release through
+a read-only EROFS mount; the running and prepared systems are not remounted
+writable. Every reboot checks the selected base/desktop flavour.
+
+Only a completely successful actual public-origin run writes
+`public_update_result` in `run-manifest.json`, bound to the descriptor, release,
+source commit, publication, flavour, public index and both lifecycle directions.
+Partial observations and every boot transcript remain in the run directory.
+`cargo xtask release record-validation /absolute/passing-run` exports the
+matching small validation/run records for review without signing, pushing or
+enabling production. Stable promotion checks these structured observations; a
+local-fixture run or an operator boolean alone cannot satisfy that guard.
+
 ## A/B continuation and signed update fixture
 
 `ab-update` exercises the existing installed disk through overlays. It checks

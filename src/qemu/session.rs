@@ -55,6 +55,7 @@ pub struct VmSpec<'a> {
     pub variant: &'a Variant,
     /// The domain is named `<distro>-<scenario>`.
     pub scenario: ScenarioId,
+    pub flavour: Flavour,
     /// Live ISO to boot from (first in the boot order).
     pub iso: Option<&'a Path>,
     /// Disk to install to or boot from.
@@ -75,6 +76,11 @@ impl<'a> VmSpec<'a> {
         Self {
             variant,
             scenario,
+            flavour: scenario
+                .input()
+                .iso
+                .map(|p| p.flavour())
+                .unwrap_or(Flavour::Base),
             iso: None,
             disk: None,
             vars: Vars::Temporary,
@@ -140,9 +146,9 @@ impl Vm {
 
 /// The guest memory for `scenario`'s VM: recqemu's desktop size when it
 /// boots a desktop system's ISO, the default otherwise.
-fn memory_mib(scenario: ScenarioId) -> u32 {
-    match scenario.input().iso.map(|product| product.flavour()) {
-        Some(Flavour::Desktop) => DomainSpec::DESKTOP_MEMORY_MIB,
+fn memory_mib(flavour: Flavour) -> u32 {
+    match flavour {
+        Flavour::Desktop => DomainSpec::DESKTOP_MEMORY_MIB,
         _ => DomainSpec::DEFAULT_MEMORY_MIB,
     }
 }
@@ -204,7 +210,7 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     let domain_spec = DomainSpec {
         name: name.clone(),
         title: format!("Scenario VM {name}"),
-        memory_mib: memory_mib(spec.scenario),
+        memory_mib: memory_mib(spec.flavour),
         vcpus: DomainSpec::DEFAULT_VCPUS,
         uefi_code: recqemu::find_ovmf()?,
         uefi_vars,

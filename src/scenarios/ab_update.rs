@@ -2,7 +2,7 @@
 //! No scenario builds a release, edits the running root, or mounts a candidate writable.
 use super::{Harness, InstallRun, ScenarioId};
 use crate::update_fixture::{
-    Fixture, failure_recipe, metadata_recipe, probe_recipe, profile_recipe,
+    Fixture, PublicUpdate, failure_recipe, metadata_recipe, probe_recipe, profile_recipe,
 };
 use crate::{
     budget::Budget,
@@ -30,9 +30,10 @@ const RANGE: u64 = 1024 * 1024;
 pub(super) fn run(
     h: &Harness,
     install: &InstallRun,
-    fixture: &Path,
+    fixture: Option<&Path>,
+    public_path: Option<&Path>,
     run_dir: &Path,
-) -> Result<String> {
+) -> Result<(String, Option<distro_contract::runs::PublicUpdateEvidence>)> {
     let installed = distro_contract::runs::read(
         install
             .disk_path
@@ -40,27 +41,77 @@ pub(super) fn run(
             .context("install directory missing")?,
     )
     .map_err(anyhow::Error::msg)?;
-    ensure!(
-        installed.update_fixture.is_some(),
-        "ab-update needs an existing install configured with a signed update fixture before sealing"
-    );
+    let public = public_path.map(PublicUpdate::read).transpose()?;
+    let descriptor_sha256 = public_path
+        .map(|p| fs::read(p).map(|b| distro_contract::release::digest(&b)))
+        .transpose()?;
+    if let Some(public) = &public {
+        public.for_variant(&h.variant, h.selection.flavour)?;
+        ensure!(
+            fixture.is_none()
+                && installed.public_update_binding.as_deref()
+                    == Some(public.installation_binding()?.as_str()),
+            "public mode requires the matching existing candidate-personalized paired install; local fixture media is prohibited"
+        );
+    } else {
+        ensure!(
+            fixture.is_some()
+                && installed.update_fixture.is_some()
+                && installed.public_update.is_none(),
+            "local ab-update needs its existing fixture-configured install"
+        );
+    }
     let (disk, vars) = super::overlay_install(install, run_dir)?;
-    Machine {
+    let result = Machine {
         variant: &h.variant,
         disk: &disk,
         vars: &vars,
         fixture,
+        public: public.clone(),
+        descriptor_sha256: descriptor_sha256.clone(),
+        flavour: install.flavour,
         run_dir,
         boots: 0,
-        records: Vec::new(),
+        records: vec![],
+        completed: false,
+        resolved_policy: None,
     }
-    .exercise()
+    .exercise()?;
+    let evidence = public.map(|p| public_evidence(&p, descriptor_sha256.unwrap(), true));
+    Ok((result, evidence))
 }
+fn public_evidence(
+    public: &PublicUpdate,
+    descriptor_sha256: String,
+    passed: bool,
+) -> distro_contract::runs::PublicUpdateEvidence {
+    distro_contract::runs::PublicUpdateEvidence {
+        baseline_release: public.baseline_release.clone(),
+        release_id: public.release.clone(),
+        public_index: public.source.source.as_ref().unwrap().index.clone(),
+        descriptor_sha256,
+        publication_sha256: public.publication_sha256.clone(),
+        source_commit: public.source_commit.clone(),
+        flavour: public.expected.flavour,
+        x86_64_lifecycle_passed: passed,
+        directions: if passed {
+            vec!["A->B".into(), "B->A".into()]
+        } else {
+            vec![]
+        },
+    }
+}
+
 struct Machine<'a> {
     variant: &'a Variant,
     disk: &'a Path,
     vars: &'a Path,
-    fixture: &'a Path,
+    fixture: Option<&'a Path>,
+    public: Option<PublicUpdate>,
+    descriptor_sha256: Option<String>,
+    flavour: distro_contract::profile::Flavour,
+    completed: bool,
+    resolved_policy: Option<Policy>,
     run_dir: &'a Path,
     boots: u32,
     records: Vec<Value>,
@@ -76,7 +127,8 @@ impl Machine<'_> {
         fs::write(
             self.run_dir.join("ab-update.json"),
             serde_json::to_vec_pretty(&json!({
-                "schema_version":1,"boots":self.boots,"observations":self.records,
+                "schema_version":2,"boots":self.boots,"observations":self.records,"flavour":self.flavour,
+                "public_update":self.public.as_ref().map(|p|public_evidence(p,self.descriptor_sha256.clone().unwrap(),self.completed)),
                 "scope":"guest application counters and virtual block-device sectors; not SSD SMART or physical wear"
             }))?,
         )?;
@@ -119,30 +171,39 @@ impl Machine<'_> {
             "execution-architecture",
             json!({"guest":sys.sh("uname -m")?,"required_architectures":["x86_64"]}),
         )?;
-        sys.mount_media()?;
-        let fixture: Fixture = sys.json(&format!("cat {MEDIA}/fixture.json"), Budget::Command)?;
-        fixture.validate()?;
-        let architecture = sys.sh("uname -m")?;
-        let expected = match fixture.architecture {
-            distro_contract::release::Architecture::X86_64 => "x86_64",
-            _ => bail!("ab-update supports native Linux x86_64 fixtures only"),
+        let (fixture, source) = if let Some(public) = &self.public {
+            let baseline: Value =
+                sys.json("cat /usr/lib/recab/release-baseline.json", Budget::Command)?;
+            ensure!(
+                baseline["identity"] == serde_json::to_value(&public.baseline)?,
+                "installed release baseline differs from public descriptor"
+            );
+            sys.sh(&format!(
+                "test ! -e /dev/disk/by-label/RECAB_P13 && test ! -e {WORK}/origin"
+            ))?;
+            (public.fixture(), public.source.clone())
+        } else {
+            sys.mount_media()?;
+            (
+                sys.json::<Fixture>(&format!("cat {MEDIA}/fixture.json"), Budget::Command)?,
+                sys.json::<Policy>(&format!("cat {MEDIA}/source.json"), Budget::Command)?,
+            )
         };
-        ensure!(
-            architecture == expected,
-            "update fixture architecture does not match the installed system"
-        );
-        let source: Policy = sys.json(&format!("cat {MEDIA}/source.json"), Budget::Command)?;
+        fixture.validate()?;
         source.validate()?;
+        ensure!(
+            sys.sh("uname -m")? == "x86_64",
+            "ab-update supports x86_64 only"
+        );
         let installed: Policy =
             sys.json("cat /usr/lib/recab/update-source.json", Budget::Command)?;
         ensure!(
-            serde_json::to_value(&source)? == serde_json::to_value(&installed)?,
-            "install does not contain this fixture's public source policy; supply an existing install with the matching public source policy"
+            source == installed
+                && source.source.is_some()
+                && (source.trust.is_some() || source.production.is_some()),
+            "install lacks the exact source policy configured before sealing"
         );
-        ensure!(
-            source.source.is_some() && source.trust.is_some(),
-            "fixture needs a signed update source"
-        );
+        self.save("acquisition-source",json!({"public_origin":self.public.is_some(),"policy":source,"local_origin_started":false}))?;
         let identity = sys.identity()?;
         ensure!(!identity.is_empty(), "initial machine identity is missing");
         let fs_ids = sys.filesystem_ids(&initial)?;
@@ -183,7 +244,9 @@ impl Machine<'_> {
             !before_release.starts_with(&fixture.updated_sha256),
             "fixture's newer release must actually change updated_path"
         );
-        sys.origin(&source, &fixture)?;
+        if self.public.is_none() {
+            sys.origin(&source, &fixture)?;
+        }
         let before = sys.sectors(&initial)?;
         let prepared: Preparation = sys.json("recab --json prepare", Budget::Stage)?;
         ensure!(
@@ -249,15 +312,42 @@ impl Machine<'_> {
                 .is_some_and(|n| n > source.sequence),
             "fixture must be newer than the installed release"
         );
+        let incoming_sequence = discovery["available"]["sequence"]
+            .as_u64()
+            .context("release sequence missing")?;
         self.save("signed-discovery", discovery)?;
-        sys.refuse("recab --json update download")?; // origin deliberately truncates one EROFS transfer.
+        if let Some(public) = &self.public {
+            let pin: Value = sys.json(
+                &format!("cat /var/lib/recab/updates/pins/{}.json", fixture.release),
+                Budget::Command,
+            )?;
+            let parts = public_pin(public, &pin, &self.variant.id)?;
+            self.save("public-authenticated-transport",json!({"release":fixture.release,"parts":parts,"publication_sha256":public.publication_sha256}))?;
+            sys.cancel_public_download(&fixture.release, parts)?;
+        } else {
+            sys.refuse("recab --json update download")?;
+        } // Local origin deliberately truncates one transfer.
         let interrupted = self.observe(&mut sys, "interrupted-download")?;
         same_preparation(&interrupted, &p)?;
         ensure!(
             boot_selection(&interrupted) == selection,
             "interrupted acquisition changed boot selection"
         );
-        let download: Value = sys.json("recab --json update download", Budget::Stage)?;
+        let download: Value = sys.json(
+            &format!("recab --json update download {}", fixture.release),
+            if self.public.is_some() {
+                Budget::PublicDownload
+            } else {
+                Budget::Stage
+            },
+        )?;
+        if self.public.is_some() {
+            ensure!(
+                download["download"]["reused_parts"].as_u64().unwrap_or(0) > 0
+                    || download["download"]["reused_files"].as_u64().unwrap_or(0) > 0,
+                "resumed public transfer did not reuse authenticated saved parts"
+            );
+        }
         ensure!(
             download["download"]["downloaded"] == true
                 && download["download"]["release"] == fixture.release,
@@ -275,6 +365,35 @@ impl Machine<'_> {
             "check/download changed the running root"
         );
         sys.inactive(&downloaded,&format!("test \"$(cat -- {})\" = 'local X survives the release' && test -e {MOUNT}/{PROBE}/X",shell_quote(&format!("{MOUNT}/{}",fixture.conflict_path))))?;
+        let mut resolved = sys.release_policy(&fixture.release)?;
+        ensure!(
+            resolved.sequence == incoming_sequence && resolved.channel == source.channel,
+            "incoming policy lost release identity"
+        );
+        if let Some(public) = &self.public {
+            let production = resolved
+                .production
+                .as_mut()
+                .context("incoming public release lost delegated authority")?;
+            ensure!(
+                production.root.lineage == public.source.production.as_ref().unwrap().root.lineage,
+                "incoming public release changed trust lineage"
+            );
+            production.audience = distro_contract::release::production::Audience::Candidate;
+            resolved
+                .source
+                .as_mut()
+                .context("incoming release source missing")?
+                .index = format!(
+                "{}{}/candidate/x86_64/index.json",
+                production.metadata_base, self.variant.id
+            );
+        } else {
+            resolved.source = source.source.clone();
+            resolved.trust = source.trust.clone();
+        }
+        resolved.validate()?;
+        self.resolved_policy = Some(resolved.clone());
         let old_revision = p.revision;
         let merge: Value = sys.json(
             &format!(
@@ -301,7 +420,7 @@ impl Machine<'_> {
             &format!("{WORK}/metadata-release.rhai"),
             &metadata_recipe(2, true),
         )?;
-        self.resolve(&mut sys, &fixture)?;
+        self.resolve(&mut sys, &fixture, &resolved, incoming_sequence)?;
         sys.refuse(&format!(
             "recab finalize --preparation {} --revision {old_revision}",
             p.id
@@ -599,6 +718,8 @@ impl Machine<'_> {
         sys.shared(&shared)?;
         self.observe(&mut sys, "rollback-to-previous-complete-generation")?;
         sys.poweroff()?;
+        self.completed = true;
+        self.save("lifecycle-complete",json!({"public_origin":self.public.is_some(),"release":fixture.release,"flavour":self.flavour}))?;
         Ok(format!(
             "A/B lifecycle across {} actual boots; signed release {}; X/update/Y retained; zero unchanged payload writes, bounded large-file writes, Recipe IO and block-sector observations in ab-update.json",
             self.boots, fixture.release
@@ -679,7 +800,13 @@ impl Machine<'_> {
             json!({"before_sectors":before,"after_sectors":after,"sector_bytes":512}),
         )
     }
-    fn resolve(&mut self, sys: &mut Booted, fixture: &Fixture) -> Result<()> {
+    fn resolve(
+        &mut self,
+        sys: &mut Booted,
+        fixture: &Fixture,
+        source: &Policy,
+        sequence: u64,
+    ) -> Result<()> {
         for _ in 0..64 {
             let u: Value = sys.json("recab --json update status", Budget::Command)?;
             if u["merge_complete"] == true {
@@ -747,6 +874,13 @@ impl Machine<'_> {
                     "--recipe".into(),
                     format!("{WORK}/{recipe}"),
                 ]
+            } else if conflict["path"] == distro_contract::release::SOURCE_CONFIG {
+                let mut policy = source.clone();
+                policy.sequence = sequence;
+                policy.validate()?;
+                let path = format!("{WORK}/resolved-update-source.json");
+                sys.write(&path, &serde_json::to_string(&policy)?)?;
+                vec!["--choice".into(), "edited".into(), "--file".into(), path]
             } else {
                 vec!["--choice".into(), "local".into()]
             };
@@ -765,7 +899,8 @@ impl Machine<'_> {
             disk: Some(self.disk),
             serial_log: Some(&log),
             vars: Vars::Existing(self.vars),
-            media: Some(self.fixture),
+            media: self.fixture,
+            flavour: self.flavour,
             ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
         })?;
         wait_installed_boot(vm.console()?, self.variant)?;
@@ -774,7 +909,32 @@ impl Machine<'_> {
             crate::expect::root_password(self.variant),
             Budget::Login.get(),
         )?;
-        Ok(Booted { vm })
+        let mut sys = Booted { vm };
+        ensure!(
+            distro_contract::profile::Flavour::from_os_release(&sys.sh("cat /etc/os-release")?)?
+                == self.flavour,
+            "booted system differs from selected base/desktop profile"
+        );
+        if let Some(public) = &self.public {
+            let actual: Policy =
+                sys.json("cat /usr/lib/recab/update-source.json", Budget::Command)?;
+            let expected = if actual.sequence == public.baseline.sequence {
+                &public.source
+            } else {
+                ensure!(
+                    actual.sequence == public.expected.sequence,
+                    "booted policy has an unexpected release sequence"
+                );
+                self.resolved_policy
+                    .as_ref()
+                    .context("updated policy was not captured from the verified release")?
+            };
+            ensure!(
+                &actual == expected,
+                "boot lost its candidate audience or changed the captured release policy"
+            );
+        }
+        Ok(sys)
     }
     fn unattended(&mut self) -> Result<()> {
         self.boots += 1;
@@ -786,6 +946,7 @@ impl Machine<'_> {
             disk: Some(self.disk),
             serial_log: Some(&log),
             vars: Vars::Existing(self.vars),
+            flavour: self.flavour,
             ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
         })?;
         vm.wait_for_exit(Budget::TrialReboot.get())
@@ -1027,4 +1188,113 @@ fn metadata_node(inventory: &Value) -> Result<Value> {
 fn boot_selection(status: &Status) -> Value {
     json!({"active":status.active_slot,"next":status.next_boot,"default":status.default_slot,
         "known_good":status.known_good_slot,"scheduled":status.scheduled_trial,"trial_pending":status.trial_pending})
+}
+
+/// Authenticate the actual guest pin and bind its observed transport to the
+/// immutable publisher record expected by the descriptor, without fetching any
+/// bytes outside the installed Recipe coordinator.
+fn public_pin(public: &PublicUpdate, pin: &Value, distro: &str) -> Result<u64> {
+    use distro_contract::release::{self as f, production::*};
+    let proof = &pin["production"];
+    let authority: AuthorityProof = serde_json::from_value(proof["authority"].clone())?;
+    let at = proof["accepted_at"]
+        .as_u64()
+        .context("pin acceptance time missing")?;
+    let policy = public.source.production.as_ref().unwrap();
+    let verified = authority.verify(
+        policy,
+        &public.expected.distro,
+        &public.expected.channel,
+        at,
+    )?;
+    let raw = proof["index"].as_str().context("signed index missing")?;
+    let signature: Vec<u8> = serde_json::from_value(proof["signature"].clone())?;
+    let index = ReleaseIndexV2::authenticate(raw.as_bytes(), &signature, &verified, policy, at)?;
+    let raw = pin["manifest_json"].as_str().context("manifest missing")?;
+    let manifest = f::ReleaseManifest::parse(raw.as_bytes())?;
+    ensure!(
+        f::digest(raw.as_bytes()) == public.release && manifest.identity == public.expected,
+        "public discovery differs from exact expected identity/id"
+    );
+    let signature: Vec<u8> = serde_json::from_value(pin["signature"].clone())?;
+    verified.verify(SigningRole::Release, raw.as_bytes(), &signature)?;
+    let entry = index
+        .releases
+        .into_iter()
+        .find(|e| e.release.manifest.sha256 == public.release)
+        .context("expected release missing from signed transport")?;
+    entry.for_manifest(&manifest, policy)?;
+    ensure!(
+        entry.release.manifest.size == raw.len() as u64
+            && entry.release.signature.size == signature.len() as u64
+            && entry.release.signature.sha256 == f::digest(&signature),
+        "pin signature/manifest bytes differ from the signed publication"
+    );
+    let total = entry.parts.values().map(|p| p.len() as u64).sum();
+    let record = distro_builder::release_index::production_publish::Publication {
+        schema_version: 1,
+        distro: distro.into(),
+        source_commit: public.source_commit.clone(),
+        id: public.release.clone(),
+        tag: format!(
+            "os-{distro}-x86_64-{}-{}-{}",
+            public.expected.flavour,
+            public.expected.sequence,
+            &public.release[..16]
+        ),
+        entry,
+    };
+    ensure!(
+        f::digest(&serde_json::to_vec_pretty(&record)?) == public.publication_sha256,
+        "guest transport/source does not match the exact immutable publication record"
+    );
+    Ok(total)
+}
+impl Booted {
+    fn release_policy(&mut self, release: &str) -> Result<Policy> {
+        let raw = self.sh(&format!(
+            "cat /var/lib/recab/releases/{release}/release.json"
+        ))?;
+        let manifest = distro_contract::release::ReleaseManifest::parse(raw.as_bytes())?;
+        let path = format!(
+            "/var/lib/recab/releases/{release}/{}",
+            manifest.artifacts.rootfs.path
+        );
+        let mount = "/run/recab-p13-release-policy";
+        self.json(&format!("(mkdir -p {mount} && mount -t erofs -o loop,ro,nosuid,nodev,noexec {} {mount} && {{ trap 'umount {mount}' 0; cat {mount}/usr/lib/recab/update-source.json; }})",shell_quote(&path)),Budget::Command)
+    }
+    fn cancel_public_download(&mut self, release: &str, total: u64) -> Result<()> {
+        ensure!(total >= 4, "public transport has too few members");
+        let command = format!(
+            r#"(
+set -eu
+mkdir -p {WORK}
+test ! -e /var/lib/recab/releases/{release}/release.json
+rm -f {WORK}/download.pid {WORK}/download.done
+setsid sh -c 'echo $$ > {WORK}/download.pid; set +e; recab --json update download {release} > {WORK}/public-download.json 2> {WORK}/public-download.log; code=$?; echo "$code" > {WORK}/download.done' </dev/null >/dev/null 2>&1 &
+i=0
+while ! test -s {WORK}/download.pid; do i=$((i+1)); test "$i" -lt 100; sleep 0.1; done
+pid=$(cat {WORK}/download.pid)
+case "$pid" in ''|*[!0-9]*) exit 1;; esac
+trap 'kill -KILL -"$pid" 2>/dev/null || true' 0
+i=0
+while :; do
+    if test -e {WORK}/download.done; then cat {WORK}/public-download.log; echo 'public transfer ended before interruption could be observed' >&2; exit 1; fi
+    parts=$(sed -n 's/.*"verified_parts":\([0-9][0-9]*\).*/\1/p' /var/lib/recab/updates/status.json)
+    if test -n "$parts" && test "$parts" -gt 0 && test "$parts" -lt {total}; then
+        kill -STOP -"$pid"
+        cp /var/lib/recab/updates/status.json {WORK}/public-interrupted-status.json
+        parts=$(sed -n 's/.*"verified_parts":\([0-9][0-9]*\).*/\1/p' {WORK}/public-interrupted-status.json)
+        test "$parts" -gt 0 && test "$parts" -lt {total}
+        test ! -e /var/lib/recab/releases/{release}/release.json
+        kill -KILL -"$pid"
+        break
+    fi
+    i=$((i+1)); test "$i" -lt 30000; sleep 0.1
+done
+)"#
+        );
+        self.run(&command, Budget::PublicDownload)?;
+        Ok(())
+    }
 }

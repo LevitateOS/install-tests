@@ -1,5 +1,5 @@
 //! Inputs and Recipe probes for the explicit RECAB_P13 integration artifact.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::path::Path;
 const PROBE: &str = "usr/share/recab-p13";
 
@@ -243,4 +243,182 @@ pub fn check_origin(
         );
     }
     Ok(())
+}
+
+/// Public metadata only. The actual signed release is acquired by the guest's
+/// installed Recipe producer; no origin helper, key or payload tree is supplied.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicUpdate {
+    pub schema_version: u32,
+    pub baseline_release: String,
+    pub baseline: distro_contract::release::Identity,
+    pub release: String,
+    pub expected: distro_contract::release::Identity,
+    pub source: distro_contract::release::Policy,
+    pub publication_sha256: String,
+    pub source_commit: String,
+    pub updated_path: String,
+    pub updated_sha256: String,
+    pub conflict_path: String,
+}
+impl PublicUpdate {
+    pub fn read(path: &Path) -> Result<Self> {
+        use std::io::Read;
+        let file = std::fs::File::open(path)?;
+        ensure!(
+            file.metadata()?.is_file() && file.metadata()?.len() <= 65536,
+            "public update descriptor must be a bounded regular JSON file"
+        );
+        let mut raw = Vec::new();
+        file.take(65537).read_to_end(&mut raw)?;
+        ensure!(raw.len() <= 65536, "public update descriptor exceeds bound");
+        let value: Self = serde_json::from_slice(&raw)?;
+        value.validate()?;
+        Ok(value)
+    }
+    pub fn validate(&self) -> Result<()> {
+        use distro_contract::release::{self as f, production::Audience};
+        ensure!(
+            self.schema_version == 1,
+            "unsupported public update descriptor"
+        );
+        for hash in [
+            &self.baseline_release,
+            &self.release,
+            &self.publication_sha256,
+            &self.updated_sha256,
+        ] {
+            f::hash(hash)?;
+        }
+        ensure!(
+            self.baseline_release != self.release
+                && self.source_commit.len() == 40
+                && self
+                    .source_commit
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "invalid public release/source identity"
+        );
+        ensure!(
+            self.baseline.architecture == f::Architecture::X86_64
+                && self.expected.architecture == f::Architecture::X86_64
+                && self.baseline.distro == self.expected.distro
+                && self.baseline.init == self.expected.init
+                && self.baseline.libc == self.expected.libc
+                && self.baseline.flavour == self.expected.flavour
+                && self.baseline.channel == "stable"
+                && self.expected.channel == "stable"
+                && self.baseline.sequence > 0
+                && self.expected.sequence > self.baseline.sequence,
+            "public update must be newer than the matching stable x86_64 baseline/profile"
+        );
+        self.source.validate()?;
+        let p = self
+            .source
+            .production
+            .as_ref()
+            .context("public update requires delegated production authority")?;
+        ensure!(
+            p.audience == Audience::Candidate
+                && self.source.trust.is_none()
+                && self.source.channel == "stable"
+                && self.source.sequence == self.baseline.sequence,
+            "public validation requires candidate discovery for the exact baseline"
+        );
+        ensure!(
+            p.metadata_base == "https://levitateos.github.io/LevitateOS/updates/"
+                && p.asset_prefix == "https://github.com/LevitateOS/LevitateOS/releases/download/"
+                && self
+                    .source
+                    .source
+                    .as_ref()
+                    .is_some_and(|s| s.recipe == f::ACQUISITION_RECIPE),
+            "public mode requires approved HTTPS delivery and the installed Recipe producer; local origins are refused"
+        );
+        ensure!(
+            ![f::SOURCE_CONFIG, f::ACQUISITION_RECIPE, "etc/os-release"]
+                .contains(&self.conflict_path.as_str()),
+            "choose an ordinary release-owned conflict file, not identity/discovery policy"
+        );
+        self.fixture().validate()?;
+        Ok(())
+    }
+    pub fn for_variant(
+        &self,
+        variant: &distro_contract::Variant,
+        flavour: distro_contract::profile::Flavour,
+    ) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.expected.distro == variant.contract.identity.os_id
+                && self.expected.init == variant.contract.profile.init
+                && self.expected.libc == variant.contract.profile.libc
+                && self.expected.flavour == flavour,
+            "public descriptor differs from selected distro/flavour/profile"
+        );
+        let index = format!(
+            "{}{}/candidate/x86_64/index.json",
+            self.source.production.as_ref().unwrap().metadata_base,
+            variant.id
+        );
+        ensure!(
+            self.source.source.as_ref().unwrap().index == index,
+            "public descriptor must use the exact candidate feed for this distro"
+        );
+        Ok(())
+    }
+    /// Only audience/index may be personalized on the explicit baseline install.
+    /// The original trust anchor, grants, release identity and factory proof stay authoritative.
+    pub fn personalize(&self, original: &distro_contract::release::Policy) -> Result<()> {
+        use distro_contract::release::production::Audience;
+        ensure!(
+            original.source.as_ref().is_some_and(|s| s.index
+                == self
+                    .source
+                    .source
+                    .as_ref()
+                    .unwrap()
+                    .index
+                    .replace("/candidate/x86_64/index.json", "/stable/x86_64/index.json")),
+            "baseline does not carry the normal stable index for this candidate feed"
+        );
+        let mut expected = original.clone();
+        let production = expected.production.as_mut().context(
+            "baseline lacks production reader/policy; use a new compatible paired installation",
+        )?;
+        ensure!(
+            production.audience == Audience::Stable,
+            "baseline must carry the normal stable discovery policy"
+        );
+        production.audience = Audience::Candidate;
+        expected
+            .source
+            .as_mut()
+            .context("baseline lacks update source")?
+            .index = self.source.source.as_ref().unwrap().index.clone();
+        ensure!(
+            expected == self.source,
+            "public personalization cannot change baseline trust, delivery grants, identity or Recipe ownership"
+        );
+        Ok(())
+    }
+    pub fn installation_binding(&self) -> Result<String> {
+        Ok(distro_contract::release::digest(&serde_json::to_vec(&(
+            &self.baseline_release,
+            &self.baseline,
+            &self.source,
+        ))?))
+    }
+    pub fn fixture(&self) -> Fixture {
+        Fixture {
+            schema_version: 1,
+            release: self.release.clone(),
+            architecture: self.expected.architecture.clone(),
+            interrupt_path: "public-transfer".into(),
+            updated_path: self.updated_path.clone(),
+            updated_sha256: self.updated_sha256.clone(),
+            conflict_path: self.conflict_path.clone(),
+        }
+    }
 }
