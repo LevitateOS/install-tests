@@ -6,7 +6,9 @@
 # SCENARIO_LIVE_USER (whom it logs in), and SCENARIO_FLAVOUR_FIELD and
 # SCENARIO_FLAVOUR (the image's os-release field and its value), and
 # SCENARIO_DESKTOP_APPS (the desktop apps the system carries, each as
-# program:menu-entry-path, separated by spaces), and has already logged in
+# program:menu-entry-path, separated by spaces), SCENARIO_DESKTOP_HELPERS (the
+# programs the apps run, which have no menu entry and no window, separated by
+# spaces), and has already logged in
 # over SSH as root.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,6 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 : "${SCENARIO_FLAVOUR_FIELD:?SCENARIO_FLAVOUR_FIELD is not set}"
 : "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}"
 : "${SCENARIO_DESKTOP_APPS:?SCENARIO_DESKTOP_APPS is not set}"
+: "${SCENARIO_DESKTOP_HELPERS:?SCENARIO_DESKTOP_HELPERS is not set}"
 
 # The id of the live user's session, once logind (elogind on OpenRC) has it.
 live_session() {
@@ -58,6 +61,14 @@ for app in $SCENARIO_DESKTOP_APPS; do
     test_command "$program is installed" "command -v $program"
     test_command "$program has its menu entry" "[ -f /$entry ]"
     test_command "$program starts" "QT_QPA_PLATFORM=offscreen $program --version | grep -q '^$program '"
+done
+
+# The helpers have no menu entry and no window: each is on PATH and answers
+# --version, which needs no display and no agent program.
+section_header "Desktop helpers"
+for helper in $SCENARIO_DESKTOP_HELPERS; do
+    test_command "$helper is installed" "command -v $helper"
+    test_command "$helper answers --version" "$helper --version | grep -q '^$helper '"
 done
 
 report_results "Desktop Boot"

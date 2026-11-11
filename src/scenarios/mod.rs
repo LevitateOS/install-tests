@@ -600,7 +600,8 @@ fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
 /// Desktop boot: the live-desktop ISO boots into the desktop. Its display
 /// manager runs and has logged the live user into a graphical session, no
 /// service failed, the image says it is the desktop system, and each
-/// desktop app (`DESKTOP_APPS`) is installed, has its menu entry and starts
+/// desktop app (`DESKTOP_APPS`) is installed, has its menu entry and starts,
+/// and each helper (`DESKTOP_HELPERS`) is installed and answers `--version`
 /// (`desktop-boot.sh`, over SSH).
 fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     let variant = &h.variant;
@@ -612,6 +613,7 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
         .map(|(app, entry)| format!("{app}:{entry}"))
         .collect::<Vec<_>>()
         .join(" ");
+    let desktop_helpers = distro_contract::DESKTOP_HELPERS.join(" ");
     let evidence = guest::run_evidence(
         &mut live.remote,
         variant,
@@ -634,6 +636,7 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
                 ProductId::LiveDesktop.flavour().as_str(),
             ),
             ("SCENARIO_DESKTOP_APPS", desktop_apps.as_str()),
+            ("SCENARIO_DESKTOP_HELPERS", desktop_helpers.as_str()),
         ],
     )?;
     Ok(format!("desktop session up with its apps; {evidence}"))
