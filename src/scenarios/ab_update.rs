@@ -875,7 +875,7 @@ impl Booted {
             "P13 fixture source must use loopback HTTP /index.json"
         );
         let port = url.port_or_known_default().context("origin port missing")?;
-        self.sh(&format!("mkdir -p {WORK}; rm -f {WORK}/origin.ready; cp {MEDIA}/origin {WORK}/origin; chmod 755 {WORK}/origin; {WORK}/origin --root {MEDIA}/feed --port {port} --ready {WORK}/origin.ready {} >{WORK}/origin.log 2>&1 </dev/null &",format!("--interrupt-once {WORK}/origin.interrupted --interrupt-path {}",shell_quote(&fixture.interrupt_path))))?;
+        self.sh(&format!("mkdir -p {WORK}; rm -f {WORK}/origin.ready; cp {MEDIA}/origin {WORK}/origin; chmod 755 {WORK}/origin; {WORK}/origin --root {MEDIA}/feed --port {port} --ready {WORK}/origin.ready {} >{WORK}/origin.log 2>&1 </dev/null &",format_args!("--interrupt-once {WORK}/origin.interrupted --interrupt-path {}",shell_quote(&fixture.interrupt_path))))?;
         self.sh(&format!("i=0; while ! test -f {WORK}/origin.ready; do i=$((i+1)); test $i -lt 50 || {{ cat {WORK}/origin.log; exit 1; }}; sleep 0.1; done"))?;
         Ok(())
     }
