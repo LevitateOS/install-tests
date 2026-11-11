@@ -160,7 +160,14 @@ fn main() -> Result<()> {
             };
             index.validate()?;
             let bytes = serde_json::to_vec(&index)?;
-            fs::write(feed.join("index.sig"), format::sign(&bytes, &key, &trust)?)?;
+            let signature = format::sign(&bytes, &key, &trust)?;
+            fs::create_dir(feed.join("index-signatures"))?;
+            fs::write(
+                feed.join("index-signatures")
+                    .join(format!("{:x}.sig", Sha256::digest(&bytes))),
+                &signature,
+            )?;
+            fs::write(feed.join("index.sig"), signature)?;
             fs::write(feed.join("index.json"), bytes)?;
             fs::write(root.join("fixture.json"), serde_json::to_vec(&fixture)?)?;
             fs::write(root.join("source.json"), serde_json::to_vec(&policy)?)?;
