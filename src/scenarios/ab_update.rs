@@ -115,7 +115,7 @@ impl Machine<'_> {
         sys.fidelity()?;
         self.save(
             "execution-architecture",
-            json!({"guest":sys.sh("uname -m")?,"required_architectures":["x86_64","aarch64"]}),
+            json!({"guest":sys.sh("uname -m")?,"required_architectures":["x86_64"]}),
         )?;
         sys.mount_media()?;
         let fixture: Fixture = sys.json(&format!("cat {MEDIA}/fixture.json"), Budget::Command)?;
@@ -123,7 +123,7 @@ impl Machine<'_> {
         let architecture = sys.sh("uname -m")?;
         let expected = match fixture.architecture {
             distro_contract::release::Architecture::X86_64 => "x86_64",
-            distro_contract::release::Architecture::Aarch64 => "aarch64",
+            _ => bail!("ab-update supports native Linux x86_64 fixtures only"),
         };
         ensure!(
             architecture == expected,

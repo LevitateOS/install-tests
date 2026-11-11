@@ -19,6 +19,10 @@ pub struct Fixture {
 impl Fixture {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.schema_version == 1, "unsupported RECAB_P13 fixture");
+        ensure!(
+            self.architecture == distro_contract::release::Architecture::X86_64,
+            "RECAB_P13 supports x86_64 only"
+        );
         distro_contract::release::hash(&self.release)?;
         distro_contract::release::hash(&self.updated_sha256)?;
         for p in [
@@ -122,6 +126,10 @@ pub fn check_origin(
     bytes: &[u8],
     architecture: &distro_contract::release::Architecture,
 ) -> Result<()> {
+    ensure!(
+        architecture == &distro_contract::release::Architecture::X86_64,
+        "RECAB_P13 supports x86_64 only"
+    );
     ensure!(
         bytes.len() >= 64
             && bytes.len() <= 64 * 1024 * 1024

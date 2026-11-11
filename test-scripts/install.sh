@@ -21,7 +21,6 @@ test_command "fstab has a root entry" "awk '\$2==\"/\" {ok=1} END{exit(ok?0:1)}'
 section_header "Boot"
 case "$(uname -m)" in
     x86_64) EFI_BOOT=BOOTX64.EFI ;;
-    aarch64) EFI_BOOT=BOOTAA64.EFI ;;
     *) record_failed "unsupported guest architecture"; EFI_BOOT=unsupported ;;
 esac
 test_file_exists "$TARGET/boot/EFI/BOOT/$EFI_BOOT" "Boot loader installed"

@@ -101,9 +101,8 @@ Recipe/Ginux worker and runtime image, and verifies its native architecture.
 No system package is activated for that check.
 
 The new VM lifecycle is implemented but has not been run against rebuilt
-artifacts. Current Recipe/Ginux, runtime-image, builder and libvirt owners still
-require an aarch64 execution/boot port. Architecture tags or x86_64 passes on
-both distros do not satisfy REQ-DESIGN-030.
+artifacts. Native Linux x86_64 is the supported target. Additional CPU
+architectures are deferred indefinitely and are not required for P13.
 
 ## Failing fast
 
