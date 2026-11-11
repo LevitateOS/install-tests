@@ -4,8 +4,8 @@
 
 use anyhow::{Context, Result};
 use recinit::live::{INITRAMFS_INSTALLED_ISO_PATH, KERNEL_ISO_PATH, LIVE_MEDIA_DIR};
-use recpart::types::{ApplyResult, DiskListResult, CONFIRM_TOKEN};
 use recpart::InstallMode;
+use recpart::types::{ApplyResult, CONFIRM_TOKEN, DiskListResult};
 use recqemu::shell_quote;
 use recshuttle::Remote;
 
@@ -22,6 +22,7 @@ const SERIAL_CONSOLE: &str = "console=ttyS0,115200n8";
 pub struct TestSystem<'a> {
     pub mode: InstallMode,
     pub root_password: &'a str,
+    pub update_fixture: bool,
 }
 
 /// Install onto the guest's first writable disk and leave it mounted at the
@@ -71,14 +72,53 @@ pub fn install(
             shell_quote(&format!("{target}/etc/fstab"))
         ),
     )?;
+    if system.update_fixture {
+        anyhow::ensure!(
+            system.mode == InstallMode::Ab,
+            "update fixture requires an A/B installation"
+        );
+        run("Mount explicit update fixture", "mkdir -p /run/recab-p13-media && mount -o ro /dev/disk/by-label/RECAB_P13 /run/recab-p13-media".into())?;
+        let original: distro_contract::release::Policy = serde_json::from_str(&run(
+            "Read original release policy",
+            format!("cat {t}/usr/lib/recab/update-source.json"),
+        )?)?;
+        let fixture: distro_contract::release::Policy = serde_json::from_str(&run(
+            "Read fixture public source policy",
+            "cat /run/recab-p13-media/source.json".into(),
+        )?)?;
+        fixture.validate()?;
+        anyhow::ensure!(
+            original.channel == fixture.channel
+                && original.sequence == fixture.sequence
+                && fixture.source.is_some()
+                && fixture.trust.is_some(),
+            "fixture must configure this original release, not change its identity/sequence"
+        );
+        run(
+            "Capture original release and seed public test policy",
+            format!(
+                "recab baseline --root {t} && cp /run/recab-p13-media/source.json {t}/usr/lib/recab/update-source.json && cp /run/recab-p13-media/acquire.rhai {t}/usr/share/recab/update-acquire.rhai && umount /run/recab-p13-media"
+            ),
+        )?;
+        run(
+            "Seed local fidelity probes before either root is sealed",
+            format!(
+                r#"mkdir -p {t}/etc/p13-local && printf 'local hardlinks and metadata\n' > {t}/etc/p13-local/hard-a && chmod 640 {t}/etc/p13-local/hard-a && chown 1001:1002 {t}/etc/p13-local/hard-a && ln {t}/etc/p13-local/hard-a {t}/etc/p13-local/hard-b && ln -s hard-a {t}/etc/p13-local/symlink && dd if=/dev/zero of={t}/etc/p13-local/sparse bs=1 count=1 seek=16777215 2>/dev/null && raw=$(printf 'raw-\377') && printf 'non-UTF8 system name\n' > {t}/etc/p13-local/"$raw""#
+            ),
+        )?;
+    }
     // Exercise the shipped setup frontend. It delegates filesystem policy to
     // the setup program installed by the system recipe and boot state to recab.
     let mut setup = format!(
         "recsetup apply --root {t} --hostname {} --root-password --passwords-stdin --machine-id --boot {} --kernel {} --options {}",
-        shell_quote(&variant.contract.identity.default_hostname), system.mode,
+        shell_quote(&variant.contract.identity.default_hostname),
+        system.mode,
         shell_quote(&format!("{LIVE_MEDIA_DIR}/{KERNEL_ISO_PATH}")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
+    if system.update_fixture {
+        setup.push_str(" --service sshd");
+    }
     // The installed system's initramfs, the ISO carries
     // it beside its own live one (that one only finds the live medium); recsetup
     // defaults to it, named here so the scenario fails loudly if the ISO lacks it.

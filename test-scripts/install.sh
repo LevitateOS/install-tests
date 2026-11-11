@@ -19,7 +19,12 @@ test_file_exists "$TARGET/etc/os-release" "os-release present"
 test_command "fstab has a root entry" "awk '\$2==\"/\" {ok=1} END{exit(ok?0:1)}' '$TARGET/etc/fstab'"
 
 section_header "Boot"
-test_file_exists "$TARGET/boot/EFI/BOOT/BOOTX64.EFI" "Boot loader installed"
+case "$(uname -m)" in
+    x86_64) EFI_BOOT=BOOTX64.EFI ;;
+    aarch64) EFI_BOOT=BOOTAA64.EFI ;;
+    *) record_failed "unsupported guest architecture"; EFI_BOOT=unsupported ;;
+esac
+test_file_exists "$TARGET/boot/EFI/BOOT/$EFI_BOOT" "Boot loader installed"
 test_file_exists "$TARGET/boot/loader/loader.conf" "systemd-boot loader config"
 case "$MODE" in
     mutable)
@@ -29,6 +34,7 @@ case "$MODE" in
         test_file_exists "$KERNEL_DIR/initramfs.img" "Installed initramfs on the ESP"
         ;;
     ab)
+        test_command "Both initial personalized roots and boot sets verify" "recab --json verify-installation --root '$TARGET'"
         test_file_exists "$TARGET/boot/loader/entries/$OS_ID-a.conf" "Boot entry of slot A"
         test_file_exists "$TARGET/boot/loader/entries/$OS_ID-b.conf" "Boot entry of slot B"
         test_command "recab names slot A known-good" "grep -q '\"known_good_slot\": \"A\"' '$TARGET${SCENARIO_STATE_FILE:?SCENARIO_STATE_FILE is not set}'"

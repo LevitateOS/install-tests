@@ -26,6 +26,85 @@ returns; `cargo xtask --help` is the command reference.
 Scenarios consume existing artifacts; products are built explicitly with
 `cargo xtask build`.
 
+## A/B continuation and signed update fixture
+
+`ab-update` exercises the existing installed disk through overlays. It checks
+first-use A and B, X plus a signed downloaded release, an unresolved conflict,
+failed and healthy trials in each direction, Y, repeated incremental
+continuation, discard and rollback. It never installs prerequisites or builds
+release artifacts. Supply an existing `RECAB_P13` fixture ISO explicitly:
+
+```sh
+cargo xtask test ab-update levitate --update-fixture /absolute/path/update-fixture.iso
+cargo xtask test ab-update acorn --update-fixture /absolute/path/acorn-update-fixture.iso
+```
+
+The existing successful A/B install must have the matching public source and
+trust policy sealed into both slots. `install --update-fixture` personalizes
+that policy before `recsetup` seals the paired systems. It also enables SSH
+through `recsetup` and seeds hardlinks, numeric ownership, sparse and raw-name
+local files. To produce such an install when an install run is requested:
+
+```sh
+cargo xtask test install levitate --update-fixture /absolute/path/update-fixture.iso
+```
+
+These are independent scenario invocations, not an ordered test ladder.
+`ab-update` refuses an unconfigured old install; it does not run `install` for
+you. Existing configured installs can be reused with another newer fixture if
+their public source/trust policy matches. Inputs, fixture SHA-256 and source
+fingerprints participate in result reuse. Changes during a run invalidate it.
+
+The fixture packer consumes a signed release manifest and its already produced
+payloads, the original installed policy and a static guest HTTP helper. Build
+the small helpers explicitly; this does not build a kernel or system image:
+
+```sh
+cargo build -p install-tests --bin ab-update-fixture
+rustc --edition 2024 --target x86_64-unknown-linux-musl -C opt-level=2 \
+  -C strip=symbols testing/install-tests/src/bin/ab-update-origin.rs -o /tmp/ab-update-origin
+target/debug/ab-update-fixture pack \
+  --manifest /absolute/path/new-release/release.json \
+  --base-policy /absolute/path/original/update-source.json \
+  --public-key "$RECAB_TEST_PUBLIC_KEY" \
+  --index-signing-key /absolute/path/private-test-key.pk8 \
+  --origin /tmp/ab-update-origin --output /absolute/path/update-fixture.iso \
+  --updated-path usr/share/example-release-data --conflict-path etc/example.conf
+```
+
+`xorriso` must be available. Use a disposable test signing key matching the
+signed release. The packer verifies that release, checks its higher sequence and
+matching channel, and signs an index using the existing release contract. Both
+selected paths must be ordinary release-owned files: `updated-path` must really
+change from the installed base, and `conflict-path` must change upstream so the
+local X edit produces a conflict. Do not select a probe-owned path. The packer
+does not build or rewrite release content. It refuses an existing output and a
+dynamic or wrong-architecture helper. The ISO contains only public policy,
+signed artifacts, acquisition recipe and helper; private signing keys stay out.
+
+The loopback-only helper deliberately truncates the first rootfs download.
+The scenario requires the refusal, retries, and verifies that acquisition kept
+the preparation and running root intact. Merge decisions keep the explicit
+local configuration and reproduce the probe through Recipe against the new
+release. Unexpected configuration/package conflicts fail with a useful error;
+they are not resolved automatically.
+
+`ab-update.json` records actual boots, generation identities, recab reports,
+producer/invocation I/O and isolated root-partition sector deltas. The 32 MiB
+probe changes one byte for Y; bounded root writes and zero unchanged payload
+writes are separate from Recipe staging/export traffic. Invocation I/O includes
+producer I/O: do not add them. These are application and virtual block-device
+observations, not physical SSD SMART or lifetime measurements.
+
+The runtime scenario also executes an output-only recipe through the installed
+Recipe/Ginux worker and runtime image, and verifies its native architecture.
+No system package is activated for that check.
+
+The new VM lifecycle is implemented but has not been run against rebuilt
+artifacts. Current Recipe/Ginux, runtime-image, builder and libvirt owners still
+require an aarch64 execution/boot port. Architecture tags or x86_64 passes on
+both distros do not satisfy REQ-DESIGN-030.
+
 ## Failing fast
 
 A scenario stops at the first fatal console line or failed step and tears its
