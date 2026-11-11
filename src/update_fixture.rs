@@ -79,6 +79,76 @@ target_mode(ctx.root,"{PROBE}/large",0o644);target_finalize(ctx.root);ctx.output
         }
     )
 }
+
+pub(crate) fn profile_recipe() -> &'static str {
+    r#"const RECIPE_API=2;
+const NEEDS=#{outputs:#{"package":"directory"}};
+let ctx=#{name:"recab-p13-user",version:"1",root:RUNTIME.paths.output+"/package"};
+fn is_acquired(ctx){ready(ctx)} fn is_built(ctx){ready(ctx)}
+fn is_installed(ctx){if !is_file(ctx.root+"/share/recab-p13-user.txt"){return needs_work(ctx,"missing profile");}ctx.outputs=#{"package":ctx.root};ready(ctx)}
+fn install(ctx){mkdir(ctx.root+"/share");write_file(ctx.root+"/share/recab-p13-user.txt","independent user profile\n");ctx.outputs=#{"package":ctx.root};ctx}
+"#
+}
+
+/// Identical file bodies with deliberately changed or removed target metadata.
+pub(crate) fn metadata_recipe(revision: u8, release: bool) -> String {
+    let needs = if release {
+        r#"inputs:#{release:"file"},"#
+    } else {
+        ""
+    };
+    let binding = if release {
+        "RECAB_RELEASE_BASE"
+    } else {
+        r#""""#
+    };
+    let verify = if release {
+        r#"verify_sha256(join_path(RUNTIME.paths.inputs,"release"),ctx.recab_release);"#
+    } else {
+        ""
+    };
+    let (uid, gid, mode) = if revision == 2 {
+        (1003, 1004, 0o644)
+    } else {
+        (1001, 1002, 0o640)
+    };
+    let mut xattrs = serde_json::Map::new();
+    if revision != 3 {
+        let hex = |b: Vec<u8>| b.iter().map(|v| format!("{v:02x}")).collect::<String>();
+        let named = if revision == 2 { 1005u32 } else { 1003 };
+        let mut acl = 2u32.to_le_bytes().to_vec();
+        for (tag, permission, id) in [
+            (1u16, 6u16, u32::MAX),
+            (2, 4, named),
+            (4, 4, u32::MAX),
+            (16, 4, u32::MAX),
+            (32, if revision == 2 { 4 } else { 0 }, u32::MAX),
+        ] {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(permission.to_le_bytes());
+            acl.extend(id.to_le_bytes());
+        }
+        xattrs.insert("system.posix_acl_access".into(), hex(acl).into());
+        xattrs.insert("user.recab-p13".into(), hex(vec![revision]).into());
+        let bit = if revision == 2 { 13 } else { 10 };
+        let cap = [0x02000001u32, 1u32 << bit, 0, 0, 0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        xattrs.insert("security.capability".into(), hex(cap).into());
+    }
+    let metadata = serde_json::json!({"version":1,"entries":{"usr/share/recab-p13-metadata/file":{"kind":"file","uid":uid,"gid":gid,"mode":mode,"xattrs":xattrs}}});
+    format!(
+        r#"const RECIPE_API=2;
+const NEEDS=#{{{needs}outputs:#{{system:"directory"}}}};
+let ctx=#{{name:"recab-p13-metadata",version:"{revision}",root:RUNTIME.paths.output+"/system",recab_release:{binding}}};
+fn is_acquired(ctx){{ready(ctx)}} fn is_built(ctx){{ready(ctx)}}
+fn is_installed(ctx){{if !is_file(ctx.root+"/usr/share/recab-p13-metadata/file"){{return needs_work(ctx,"missing metadata file");}}ctx.outputs=#{{system:ctx.root}};ready(ctx)}}
+fn install(ctx){{{verify}mkdir(ctx.root+"/usr/share/recab-p13-metadata");write_file(ctx.root+"/usr/share/recab-p13-metadata/file","unchanged metadata probe\n");write_file(ctx.root+"/.recipe-target-metadata.json",{});target_finalize(ctx.root);ctx.outputs=#{{system:ctx.root}};ctx}}
+"#,
+        serde_json::to_string(&metadata.to_string()).unwrap()
+    )
+}
 pub(crate) fn failure_recipe(init: distro_contract::profile::InitSystem) -> String {
     let (path, body, link, mode) = match init {
         distro_contract::profile::InitSystem::Systemd => (
@@ -115,6 +185,11 @@ pub fn write_recipes(dir: &Path, init: distro_contract::profile::InitSystem) -> 
         ("probe-Y.rhai", probe_recipe(true, false)),
         ("probe-release.rhai", probe_recipe(false, true)),
         ("failure.rhai", failure_recipe(init)),
+        ("user-profile.rhai", profile_recipe().into()),
+        ("metadata-1.rhai", metadata_recipe(1, false)),
+        ("metadata-2.rhai", metadata_recipe(2, false)),
+        ("metadata-3.rhai", metadata_recipe(3, false)),
+        ("metadata-release.rhai", metadata_recipe(2, true)),
     ] {
         std::fs::write(dir.join(name), source)?;
     }

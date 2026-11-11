@@ -11,7 +11,7 @@ use crate::qemu::Console;
 use anyhow::{Context, Result};
 use distro_contract::profile::Flavour;
 use distro_contract::{ScenarioId, Variant};
-use recqemu::libvirt::{runtime_dir, Domain, DomainSpec, SerialTarget, UefiVars};
+use recqemu::libvirt::{Domain, DomainSpec, SerialTarget, UefiVars, runtime_dir};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -66,6 +66,8 @@ pub struct VmSpec<'a> {
     /// Settings for the live init; only live boots read them.
     pub injection: Option<&'a BootInjection>,
     pub serial: Serial,
+    /// Explicit fresh transcript, retained by a multi-boot scenario's run.
+    pub serial_log: Option<&'a Path>,
 }
 
 impl<'a> VmSpec<'a> {
@@ -80,6 +82,7 @@ impl<'a> VmSpec<'a> {
             media: None,
             injection: None,
             serial: Serial::Harness,
+            serial_log: None,
         }
     }
 }
@@ -102,7 +105,8 @@ impl Vm {
 
     /// The forwarded SSH port; the spec must have asked for one.
     pub fn ssh_port(&self) -> Result<u16> {
-        self.ssh_port.context("this VM was started without SSH forwarding")
+        self.ssh_port
+            .context("this VM was started without SSH forwarding")
     }
 
     pub fn domain(&self) -> &Domain {
@@ -149,13 +153,26 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
     let name = format!("{}-{}", spec.variant.id, spec.scenario.key());
     let dir = runtime_dir();
     let socket = dir.join(format!("{name}.serial"));
-    let serial_log = dir.join(format!("{name}.serial.log"));
+    let serial_log = spec
+        .serial_log
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.join(format!("{name}.serial.log")));
     // Keep the previous boot's transcript (a scenario boots one VM name many times).
-    match fs::rename(&serial_log, serial_log.with_extension("log.prev")) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-            return Err(err).with_context(|| format!("keeping the previous transcript '{}'", serial_log.display()));
+    if spec.serial_log.is_some() {
+        anyhow::ensure!(
+            !serial_log.try_exists()?,
+            "boot transcript already exists: {}",
+            serial_log.display()
+        );
+    } else {
+        match fs::rename(&serial_log, serial_log.with_extension("log.prev")) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                return Err(err).with_context(|| {
+                    format!("keeping the previous transcript '{}'", serial_log.display())
+                });
+            }
+            _ => {}
         }
-        _ => {}
     }
     let absolute = |path: &Path| -> Result<PathBuf> {
         fs::canonicalize(path).with_context(|| format!("resolving '{}'", path.display()))
@@ -204,7 +221,10 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
 
     let domain = Domain::create_paused(&domain_spec)?;
     let console = match spec.serial {
-        Serial::Harness => Some(Console::connect(&socket, crate::budget::Budget::SerialConnect.get())?),
+        Serial::Harness => Some(Console::connect(
+            &socket,
+            crate::budget::Budget::SerialConnect.get(),
+        )?),
         Serial::Terminal => None,
     };
     domain.resume()?;

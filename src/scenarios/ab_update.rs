@@ -1,7 +1,9 @@
 //! Real A/B continuation across boots, against an explicit signed update fixture.
 //! No scenario builds a release, edits the running root, or mounts a candidate writable.
 use super::{Harness, InstallRun, ScenarioId};
-use crate::update_fixture::{Fixture, failure_recipe, probe_recipe};
+use crate::update_fixture::{
+    Fixture, failure_recipe, metadata_recipe, probe_recipe, profile_recipe,
+};
 use crate::{
     budget::Budget,
     qemu::{
@@ -16,7 +18,7 @@ use recab::{ChangeProgress, Finalization, Preparation, Readiness, Slot, Status};
 use recqemu::{Guest, Outcome, shell_quote};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use std::{cell::Cell, fs, path::Path, thread, time::Instant};
+use std::{fs, path::Path, thread, time::Instant};
 
 pub(super) const MEDIA: &str = "/run/recab-p13-media";
 const WORK: &str = "/var/tmp/recab-p13";
@@ -49,7 +51,7 @@ pub(super) fn run(
         vars: &vars,
         fixture,
         run_dir,
-        boots: Cell::new(0),
+        boots: 0,
         records: Vec::new(),
     }
     .exercise()
@@ -60,7 +62,7 @@ struct Machine<'a> {
     vars: &'a Path,
     fixture: &'a Path,
     run_dir: &'a Path,
-    boots: Cell<u32>,
+    boots: u32,
     records: Vec<Value>,
 }
 struct Booted {
@@ -74,7 +76,7 @@ impl Machine<'_> {
         fs::write(
             self.run_dir.join("ab-update.json"),
             serde_json::to_vec_pretty(&json!({
-                "schema_version":1,"boots":self.boots.get(),"observations":self.records,
+                "schema_version":1,"boots":self.boots,"observations":self.records,
                 "scope":"guest application counters and virtual block-device sectors; not SSD SMART or physical wear"
             }))?,
         )?;
@@ -148,11 +150,21 @@ impl Machine<'_> {
         let shared = sys.sh(&format!(
             "mkdir -p {WORK}; printf 'shared user data\n' > {WORK}/shared; sha256sum {WORK}/shared"
         ))?;
+        sys.write(&format!("{WORK}/user-profile.rhai"), profile_recipe())?;
+        let ledger = sys.sh("sha256sum /var/lib/recab/state.json")?;
+        let profile:Value=sys.json(&format!("cd {WORK} && recipe --json --package-root {WORK}/user-store --build-dir {WORK}/user-build --state-dir {WORK}/user-state install {WORK}/user-profile.rhai"),Budget::Stage)?;
+        ensure!(
+            sys.sh("sha256sum /var/lib/recab/state.json")? == ledger,
+            "independent Recipe profile changed recab state"
+        );
+        self.save("independent-Recipe-profile", profile)?;
+        sys.shared(&shared)?;
         // B is exercised at first use, before any continuation writes it.
         sys.sh("recab set-next B")?;
         sys.reboot()?;
         let mut sys = self.boot()?;
         sys.wait_committed(Slot::B)?;
+        sys.shared(&shared)?;
         sys.immutable()?;
         ensure!(
             sys.identity()? == identity && generation(&sys.status()?, Slot::B)? == first,
@@ -194,6 +206,24 @@ impl Machine<'_> {
             "Recipe staging/export IO was not reported"
         );
         self.save("Recipe-X", serde_json::to_value(&x)?)?;
+        let selections: Value = sys.json("recipe --system --json installed", Budget::Command)?;
+        ensure!(
+            selections["active"]["packages"]
+                .get("recab-p13-probe")
+                .is_none()
+                && selections["prepared"]["packages"]
+                    .get("recab-p13-probe")
+                    .is_some(),
+            "Recipe did not separate active and prepared package selections"
+        );
+        self.save("active-and-prepared-Recipe-selections", selections)?;
+        sys.sh("recipe --system isinstalled recab-p13-probe --prepared")?;
+        let initial_metadata = self.metadata_change(&mut sys, 1)?;
+        let metadata_x = self.metadata_change(&mut sys, 2)?;
+        ensure!(
+            initial_metadata["content"] == metadata_x["content"],
+            "metadata-only update changed its data"
+        );
         sys.write(&format!("{WORK}/X"), "local X survives the release\n")?;
         let edit: Value = sys.json(
             &format!(
@@ -203,7 +233,11 @@ impl Machine<'_> {
             Budget::Stage,
         )?;
         self.save("configuration-X", edit)?;
-        let p = sys.status()?.preparation.context("X has no preparation")?;
+        let before_download = sys.status()?;
+        let selection = boot_selection(&before_download);
+        let p = before_download
+            .preparation
+            .context("X has no preparation")?;
         let discovery: Value = sys.json("recab --json update check", Budget::Stage)?;
         ensure!(
             discovery["available"]["id"] == fixture.release,
@@ -219,6 +253,10 @@ impl Machine<'_> {
         sys.refuse("recab --json update download")?; // origin deliberately truncates one EROFS transfer.
         let interrupted = self.observe(&mut sys, "interrupted-download")?;
         same_preparation(&interrupted, &p)?;
+        ensure!(
+            boot_selection(&interrupted) == selection,
+            "interrupted acquisition changed boot selection"
+        );
         let download: Value = sys.json("recab --json update download", Budget::Stage)?;
         ensure!(
             download["download"]["downloaded"] == true
@@ -228,6 +266,10 @@ impl Machine<'_> {
         self.save("verified-download", download)?;
         let downloaded = self.observe(&mut sys, "X-after-download")?;
         same_preparation(&downloaded, &p)?;
+        ensure!(
+            boot_selection(&downloaded) == selection,
+            "check/download changed boot selection"
+        );
         ensure!(
             sys.inventory()? == original,
             "check/download changed the running root"
@@ -254,6 +296,10 @@ impl Machine<'_> {
         sys.write(
             &format!("{WORK}/probe-release.rhai"),
             &probe_recipe(false, true),
+        )?;
+        sys.write(
+            &format!("{WORK}/metadata-release.rhai"),
+            &metadata_recipe(2, true),
         )?;
         self.resolve(&mut sys, &fixture)?;
         sys.refuse(&format!(
@@ -287,6 +333,7 @@ impl Machine<'_> {
         self.unattended()?;
         let mut sys = self.boot()?;
         sys.wait_failed(Slot::A, Slot::B, &failed.generation.id)?;
+        sys.shared(&shared)?;
         ensure!(
             sys.identity()? == identity && sys.inventory()? == original,
             "failed trial changed protected A"
@@ -325,12 +372,15 @@ impl Machine<'_> {
         sys.reboot()?;
         let mut sys = self.boot()?;
         sys.wait_committed(Slot::B)?;
+        sys.shared(&shared)?;
         sys.immutable()?;
         ensure!(
             sys.identity()? == identity,
             "healthy B lost machine identity"
         );
         sys.probe(false)?;
+        sys.sh("recipe --system isinstalled recab-p13-probe")?;
+        sys.verify_metadata(&metadata_x)?;
         sys.verify_update(&fixture)?;
         sys.fidelity()?;
         ensure!(
@@ -394,6 +444,11 @@ impl Machine<'_> {
             "Y rewrote a full large file at the virtual root block device"
         );
         self.save("Y-root-block-IO",json!({"before_sectors":y_before,"after_sectors":y_after,"sector_bytes":512,"written_bytes":y_blocks}))?;
+        let metadata_y = self.metadata_change(&mut sys, 3)?;
+        ensure!(
+            metadata_y["content"] == metadata_x["content"],
+            "metadata removal changed its data"
+        );
         sys.write(
             &format!("{WORK}/failure.rhai"),
             &failure_recipe(self.variant.contract.profile.init),
@@ -417,6 +472,7 @@ impl Machine<'_> {
         self.unattended()?;
         let mut sys = self.boot()?;
         sys.wait_failed(Slot::B, Slot::A, &failed_a.generation.id)?;
+        sys.shared(&shared)?;
         ensure!(
             sys.inventory()? == stable && sys.identity()? == identity,
             "failed A trial changed protected B"
@@ -462,7 +518,9 @@ impl Machine<'_> {
         sys.reboot()?;
         let mut sys = self.boot()?;
         sys.wait_committed(Slot::A)?;
+        sys.shared(&shared)?;
         sys.probe(true)?;
+        sys.verify_metadata(&metadata_y)?;
         sys.verify_update(&fixture)?;
         sys.fidelity()?;
         ensure!(sys.identity()? == identity, "reverse lost machine identity");
@@ -522,7 +580,9 @@ impl Machine<'_> {
         sys.reboot()?;
         let mut sys = self.boot()?;
         sys.wait_committed(Slot::B)?;
+        sys.shared(&shared)?;
         sys.probe(true)?;
+        sys.verify_metadata(&metadata_y)?;
         sys.verify_update(&fixture)?;
         sys.fidelity()?;
         sys.sh("recab rollback")?;
@@ -530,18 +590,71 @@ impl Machine<'_> {
         let mut sys = self.boot()?;
         expect(&sys.status()?, Slot::A, true)?;
         sys.probe(true)?;
+        sys.verify_metadata(&metadata_y)?;
         sys.immutable()?;
         ensure!(
             sys.identity()? == identity && sys.filesystem_ids(&after_y)? == fs_ids,
             "repeated continuation changed identities"
         );
+        sys.shared(&shared)?;
         self.observe(&mut sys, "rollback-to-previous-complete-generation")?;
         sys.poweroff()?;
         Ok(format!(
             "A/B lifecycle across {} actual boots; signed release {}; X/update/Y retained; zero unchanged payload writes, bounded large-file writes, Recipe IO and block-sector observations in ab-update.json",
-            self.boots.get(),
-            fixture.release
+            self.boots, fixture.release
         ))
+    }
+    fn metadata_change(&mut self, sys: &mut Booted, revision: u8) -> Result<Value> {
+        let file = format!("{WORK}/metadata-{revision}.rhai");
+        sys.write(&file, &metadata_recipe(revision, false))?;
+        let action = if revision == 1 {
+            format!("install {file}")
+        } else {
+            format!("update recab-p13-metadata --producer-recipe {file}")
+        };
+        let changed: ChangeProgress =
+            sys.json(&format!("recab --json change {action}"), Budget::Stage)?;
+        ensure!(
+            changed
+                .report
+                .as_ref()
+                .is_some_and(|r| r.payload_bytes_written < 32768 && r.accounting_complete),
+            "metadata-only change rewrote unrelated system payloads"
+        );
+        self.save(
+            &format!("metadata-only-{revision}"),
+            serde_json::to_value(changed)?,
+        )?;
+        let status = sys.status()?;
+        let inventory = sys.inactive(&status, &format!("recab --json inventory --root {MOUNT}"))?;
+        let node = metadata_node(&serde_json::from_str(&inventory)?)?;
+        let (uid, gid, mode) = if revision == 2 {
+            (1003, 1004, 0o644)
+        } else {
+            (1001, 1002, 0o640)
+        };
+        ensure!(
+            node["uid"] == uid && node["gid"] == gid && node["mode"] == mode,
+            "metadata owner/mode did not change: {node}"
+        );
+        let names = node["xattrs"]
+            .as_array()
+            .context("metadata xattrs missing")?
+            .iter()
+            .map(|a| serde_json::from_value::<Vec<u8>>(a[0].clone()))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for name in [
+            b"user.recab-p13".as_slice(),
+            b"system.posix_acl_access",
+            b"security.capability",
+        ] {
+            ensure!(
+                names.iter().any(|n| n == name) == (revision != 3),
+                "metadata xattr/ACL/capability update or removal missing"
+            );
+        }
+        self.save(&format!("metadata-observed-{revision}"), node.clone())?;
+        Ok(node)
     }
     fn protected(
         &mut self,
@@ -589,7 +702,9 @@ impl Machine<'_> {
             let kind = conflict["kind"].as_str().unwrap_or("");
             let op = if kind == "package_rebuild" {
                 ensure!(
-                    conflict["path"] == "recab-p13-probe",
+                    ["recab-p13-probe", "recab-p13-metadata"]
+                        .iter()
+                        .any(|name| conflict["path"] == *name),
                     "fixture needs an explicit reproduction recipe for selected package: {conflict}"
                 );
                 status
@@ -619,10 +734,18 @@ impl Machine<'_> {
                 "conflict operation refused: {op:?}"
             );
             let args = if kind == "package_rebuild" {
+                let package = conflict["path"]
+                    .as_str()
+                    .context("package conflict missing name")?;
+                let recipe = if package == "recab-p13-metadata" {
+                    "metadata-release.rhai"
+                } else {
+                    "probe-release.rhai"
+                };
                 vec![
-                    "recab-p13-probe".to_owned(),
+                    package.to_owned(),
                     "--recipe".into(),
-                    format!("{WORK}/probe-release.rhai"),
+                    format!("{WORK}/{recipe}"),
                 ]
             } else {
                 vec!["--choice".into(), "local".into()]
@@ -632,10 +755,15 @@ impl Machine<'_> {
         }
         bail!("merge did not converge after captured recovery/resolution")
     }
-    fn boot(&self) -> Result<Booted> {
-        self.boots.set(self.boots.get() + 1);
+    fn boot(&mut self) -> Result<Booted> {
+        self.boots += 1;
+        let log = self
+            .run_dir
+            .join(format!("boot-{:02}.serial.log", self.boots));
+        self.save("boot-start",json!({"number":self.boots,"serial_log":log.file_name(),"automatic_failure_trial":false}))?;
         let mut vm = session::spawn(VmSpec {
             disk: Some(self.disk),
+            serial_log: Some(&log),
             vars: Vars::Existing(self.vars),
             media: Some(self.fixture),
             ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
@@ -648,10 +776,15 @@ impl Machine<'_> {
         )?;
         Ok(Booted { vm })
     }
-    fn unattended(&self) -> Result<()> {
-        self.boots.set(self.boots.get() + 1);
+    fn unattended(&mut self) -> Result<()> {
+        self.boots += 1;
+        let log = self
+            .run_dir
+            .join(format!("boot-{:02}.serial.log", self.boots));
+        self.save("boot-start",json!({"number":self.boots,"serial_log":log.file_name(),"automatic_failure_trial":true}))?;
         let mut vm = session::spawn(VmSpec {
             disk: Some(self.disk),
+            serial_log: Some(&log),
             vars: Vars::Existing(self.vars),
             ..VmSpec::new(self.variant, ScenarioId::AbUpdate)
         })?;
@@ -746,10 +879,9 @@ impl Booted {
         self.sh(&format!("i=0; while ! test -f {WORK}/origin.ready; do i=$((i+1)); test $i -lt 50 || {{ cat {WORK}/origin.log; exit 1; }}; sleep 0.1; done"))?;
         Ok(())
     }
-    fn inactive(&mut self, status: &Status, check: &str) -> Result<()> {
+    fn inactive(&mut self, status: &Status, check: &str) -> Result<String> {
         let device = device(status, status.inactive_slot)?;
-        self.run(&format!("(mkdir -p {MOUNT} && mount -t ext4 -o ro,noload,nosuid,nodev,noexec {} {MOUNT} && {{ trap 'umount {MOUNT}' 0; {check}; }})",shell_quote(device)),Budget::Stage)?;
-        Ok(())
+        self.run(&format!("(mkdir -p {MOUNT} && mount -t ext4 -o ro,noload,nosuid,nodev,noexec {} {MOUNT} && {{ trap 'umount {MOUNT}' 0; {check}; }})",shell_quote(device)),Budget::Stage)
     }
     fn sectors(&mut self, status: &Status) -> Result<Value> {
         self.sh("sync")?;
@@ -813,6 +945,21 @@ impl Booted {
             thread::sleep(std::time::Duration::from_secs(1));
         }
     }
+    fn verify_metadata(&mut self, expected: &Value) -> Result<()> {
+        ensure!(
+            &metadata_node(&self.inventory()?)? == expected,
+            "metadata-only intent was lost across release/trial/continuation"
+        );
+        Ok(())
+    }
+    fn shared(&mut self, expected: &str) -> Result<()> {
+        ensure!(
+            self.sh(&format!("sha256sum {WORK}/shared"))? == expected,
+            "shared data changed across continuation/trial/rollback"
+        );
+        self.sh(&format!("test \"$(cat {WORK}/user-store/profile/share/recab-p13-user.txt)\" = 'independent user profile'"))?;
+        Ok(())
+    }
     fn fidelity(&mut self) -> Result<()> {
         self.sh(r#"p=/etc/p13-local; test "$(stat -c %i $p/hard-a)" = "$(stat -c %i $p/hard-b)" && test "$(stat -c '%u:%g:%a' $p/hard-a)" = 1001:1002:640 && test "$(readlink $p/symlink)" = hard-a && test "$(stat -c %s $p/sparse)" = 16777216 && test "$(stat -c %b $p/sparse)" -lt 128 && raw=$(printf 'raw-\377') && test "$(cat $p/"$raw")" = 'non-UTF8 system name'"#)?;
         Ok(())
@@ -858,12 +1005,26 @@ fn expect(status: &Status, slot: Slot, committed: bool) -> Result<()> {
 }
 fn same_preparation(status: &Status, p: &Preparation) -> Result<()> {
     ensure!(
-        status
-            .preparation
-            .as_ref()
-            .is_some_and(|now| now.id == p.id && now.revision == p.revision),
+        status.preparation.as_ref().is_some_and(|now| now == p),
         "acquisition changed the preparation"
     );
     ensure!(!status.trial_pending, "acquisition scheduled a boot");
     Ok(())
+}
+
+fn metadata_node(inventory: &Value) -> Result<Value> {
+    let node = inventory["entries"]
+        .as_array()
+        .context("inventory entries missing")?
+        .iter()
+        .find(|n| n["path"] == json!(b"usr/share/recab-p13-metadata/file".as_slice()))
+        .context("metadata probe absent")?;
+    Ok(
+        json!({"content":node["content"],"uid":node["uid"],"gid":node["gid"],"mode":node["mode"],"xattrs":node["xattrs"]}),
+    )
+}
+
+fn boot_selection(status: &Status) -> Value {
+    json!({"active":status.active_slot,"next":status.next_boot,"default":status.default_slot,
+        "known_good":status.known_good_slot,"scheduled":status.scheduled_trial,"trial_pending":status.trial_pending})
 }

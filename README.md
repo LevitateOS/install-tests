@@ -85,13 +85,20 @@ signed artifacts, acquisition recipe and helper; private signing keys stay out.
 The loopback-only helper deliberately truncates the first rootfs download.
 The scenario requires the refusal, retries, and verifies that acquisition kept
 the preparation and running root intact. Merge decisions keep the explicit
-local configuration and reproduce the probe through Recipe against the new
-release. Unexpected configuration/package conflicts fail with a useful error;
-they are not resolved automatically.
+local configuration and reproduce the two explicitly authored probe selections
+through Recipe against the new release. Unexpected configuration/package
+conflicts fail with a useful error; they are not resolved automatically.
 
 `ab-update.json` records actual boots, generation identities, recab reports,
-producer/invocation I/O and isolated root-partition sector deltas. The 32 MiB
-probe changes one byte for Y; bounded root writes and zero unchanged payload
+producer/invocation I/O and isolated root-partition sector deltas. Each boot has
+its own `boot-NN.serial.log` in the run directory, including failed unattended
+trials; a later boot never overwrites it. Independent Recipe profile contents
+and shared data are checked after trials and rollback. Metadata-only Recipe
+revisions change owner/mode, ACLs, capabilities and user xattrs, then remove the
+attributes; unchanged file content is verified across the release and boots.
+Prepared packages must remain absent from the active Recipe selection, and
+check/download must preserve boot selection as well as the preparation.
+The 32 MiB probe changes one byte for Y; bounded root writes and zero unchanged payload
 writes are separate from Recipe staging/export traffic. Invocation I/O includes
 producer I/O: do not add them. These are application and virtual block-device
 observations, not physical SSD SMART or lifetime measurements.
