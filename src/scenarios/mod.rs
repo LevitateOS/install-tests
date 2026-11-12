@@ -707,12 +707,14 @@ fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
     ))
 }
 
-/// Desktop boot: the live-desktop ISO boots into the desktop. Its display
-/// manager runs and has logged the live user into a graphical session, no
-/// service failed, the image says it is the desktop system, and each
-/// desktop app (`DESKTOP_APPS`) is installed, has its menu entry and starts,
-/// and each helper (`DESKTOP_HELPERS`) is installed and answers `--version`
-/// (`desktop-boot.sh`, over SSH).
+/// Desktop boot: the live-desktop ISO boots into the installer, like every
+/// live ISO. No service failed, the image says it is the desktop system, its
+/// display manager is installed but not running (it starts once the system
+/// is installed), the install screen holds tty1, each desktop app
+/// (`DESKTOP_APPS`) is installed, has its menu entry and starts, and each
+/// helper (`DESKTOP_HELPERS`) is installed and answers `--version`
+/// (`desktop-boot.sh`, over SSH). The desktop session itself is the
+/// installed system's to show.
 fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut live = boot_live(h, ScenarioId::DesktopBoot, iso, None)?;
@@ -734,8 +736,8 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
                 variant.contract.desktop.display_manager.as_str(),
             ),
             (
-                "SCENARIO_LIVE_USER",
-                distro_contract::install_ux::LIVE_DESKTOP_USER,
+                "SCENARIO_INSTALL_SPLIT",
+                distro_contract::install_ux::SPLIT,
             ),
             (
                 "SCENARIO_FLAVOUR_FIELD",
@@ -749,7 +751,7 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
             ("SCENARIO_DESKTOP_HELPERS", desktop_helpers.as_str()),
         ],
     )?;
-    Ok(format!("desktop session up with its apps; {evidence}"))
+    Ok(format!("desktop system boots to the installer with its apps; {evidence}"))
 }
 
 /// Install: the live-tools ISO installs to a disk in `h.install_mode` with
