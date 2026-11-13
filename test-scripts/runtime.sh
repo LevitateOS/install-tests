@@ -37,7 +37,7 @@ RHAI
     if ! (cd "$work" && recipe --json --no-activate --build-dir "$work/build" --state-dir "$work/state" install "$work/probe.rhai") > "$work/report.json" 2> "$work/stderr"; then
         cat "$work/stderr"; return 1
     fi
-    set -- "$work"/.artifacts/ginux-export/*/proof
+    set -- "$work"/state/exports/*/proof
     [ "$#" -eq 1 ] && [ -f "$1" ] && [ "$(cat "$1")" = "$(uname -m)" ]
 }
 test_command "Native worker executes through the installed Recipe/Ginux/runtime image" "recipe_runtime"
