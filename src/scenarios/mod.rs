@@ -712,9 +712,10 @@ fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
 /// display manager is installed but not running (it starts once the system
 /// is installed), the install screen holds tty1, each desktop app
 /// (`DESKTOP_APPS`) is installed, has its menu entry and starts, and each
-/// helper (`DESKTOP_HELPERS`) is installed and answers `--version`
-/// (`desktop-boot.sh`, over SSH). The desktop session itself is the
-/// installed system's to show.
+/// helper (`DESKTOP_HELPERS`) is installed and answers `--version`, and a
+/// display server compiled from source (`desktop.display_server_recipe_script`,
+/// XLibre on AcornOS) names itself and has its drivers (`desktop-boot.sh`, over
+/// SSH). The desktop session itself is the installed system's to show.
 fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut live = boot_live(h, ScenarioId::DesktopBoot, iso, None)?;
@@ -726,6 +727,16 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let desktop_helpers = distro_contract::DESKTOP_HELPERS.join(" ");
+    // The display server compiled from source, by its recipe's name
+    // (`xlibre` for xlibre.rhai); empty when it comes from a package.
+    let display_server = variant
+        .contract
+        .desktop
+        .display_server_recipe_script
+        .as_deref()
+        .and_then(|script| Path::new(script).file_stem())
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
     let evidence = guest::run_evidence(
         &mut live.remote,
         variant,
@@ -749,6 +760,7 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
             ),
             ("SCENARIO_DESKTOP_APPS", desktop_apps.as_str()),
             ("SCENARIO_DESKTOP_HELPERS", desktop_helpers.as_str()),
+            ("SCENARIO_DISPLAY_SERVER", display_server),
         ],
     )?;
     Ok(format!("desktop system boots to the installer with its apps; {evidence}"))

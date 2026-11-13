@@ -9,7 +9,9 @@
 # field and its value), SCENARIO_DESKTOP_APPS (the desktop apps the system
 # carries, each as program:menu-entry-path, separated by spaces) and
 # SCENARIO_DESKTOP_HELPERS (the programs the apps run, which have no menu
-# entry and no window, separated by spaces), and has already logged in over
+# entry and no window, separated by spaces) and SCENARIO_DISPLAY_SERVER (the
+# display server the variant compiles from source, by its recipe's name, e.g.
+# xlibre; empty when it comes from a package), and has already logged in over
 # SSH as root.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -68,5 +70,27 @@ for helper in $SCENARIO_DESKTOP_HELPERS; do
     test_command "$helper is installed" "command -v $helper"
     test_command "$helper answers --version" "$helper --version | grep -q '^$helper '"
 done
+
+# A display server compiled from source: the one the display manager would
+# start is the one built, it runs far enough to name itself (so it links the
+# system's libraries), and the drivers built against it are where it loads
+# modules from. XLibre loads only modules built for its own ABI, in
+# xlibre-25/ under the module path; an X.Org package would put them elsewhere.
+case "${SCENARIO_DISPLAY_SERVER-}" in
+    "") ;;
+    xlibre)
+        section_header "Display server (XLibre)"
+        modules=/usr/lib/xorg/modules/xlibre-25
+        test_command "/usr/bin/X runs the wrapper script" "[ \"\$(readlink /usr/bin/X)\" = Xorg ] && grep -q /usr/libexec/Xorg.wrap /usr/bin/Xorg"
+        test_command "The wrapper is setuid root" "[ -u /usr/libexec/Xorg.wrap ] && [ \"\$(stat -c %u /usr/libexec/Xorg.wrap)\" = 0 ]"
+        test_command "The X server is XLibre" "/usr/libexec/Xorg -version 2>&1 | grep -q '^XLibre X Server '"
+        test_command "The libinput driver is installed" "[ -f $modules/input/libinput_drv.so ]"
+        test_command "The modesetting driver is installed" "[ -f $modules/drivers/modesetting_drv.so ]"
+        ;;
+    *)
+        section_header "Display server"
+        test_command "a check for display server $SCENARIO_DISPLAY_SERVER exists" "false"
+        ;;
+esac
 
 report_results "Desktop Boot"
