@@ -46,16 +46,11 @@ wait_file() {
         sleep 0.1
     done
 }
-wait_text 'choose a step'
 wait_text 'Installation'
-# The hub's real shell handoff must execute a command, not just echo its bytes.
-printf s >&3
-wait_text 'steps wait while you work in this shell'
-after=$(wc -c <"$work/terminal")
-printf "printf 'hub-shell-ok\\n' > '%s/hub'; printf 'HUB_%%s_EXECUTED\\n' SHELL; exit\n" "$guest_work" >&3
-wait_file "$guest_work/hub" "$@"
-# Wait for the shell to end and hub to draw again before switching to docs.
-wait_text 'choose a step' "$((after + 1))"
+wait_text 'root@'
+# The left pane is a root shell: it must execute a command, not just echo its bytes.
+printf "printf 'shell-ok\\n' > '%s/shell'; printf 'LEFT_%%s_EXECUTED\\n' SHELL\n" "$guest_work" >&3
+wait_file "$guest_work/shell" "$@"
 printf '\035' >&3
 wait_text 'Docs pane'
 after=$(wc -c <"$work/terminal")
@@ -79,4 +74,4 @@ text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
 if "Encounteredtwochildrenwiththesamekey" in "".join(text.split()):
     sys.exit("installer rendered duplicate React child keys")
 PY_CHECK
-printf 'INSTALL_PTY_PASS hub-shell=1 docs-input=1 host-quit=1 fallback-shell=1 unique-row-keys=1\n'
+printf 'INSTALL_PTY_PASS left-shell=1 docs-input=1 host-quit=1 fallback-shell=1 unique-row-keys=1\n'

@@ -152,7 +152,7 @@ pub fn install_pty(
         // Files are read over a separate connection: echoed keyboard bytes
         // cannot satisfy the execution handshakes.
         remote.run("checking installer shell handoffs", &format!(
-            "test \"$(cat {}/hub)\" = hub-shell-ok && test \"$(cat {}/fallback)\" = fallback-shell-ok", shell_quote(work), shell_quote(work)
+            "test \"$(cat {}/shell)\" = shell-ok && test \"$(cat {}/fallback)\" = fallback-shell-ok", shell_quote(work), shell_quote(work)
         ), Budget::Command.get())?;
         Ok(())
     })();
