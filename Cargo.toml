@@ -23,5 +23,6 @@ distro-builder = { path = "../../distro/builder" }
 recqemu = { path = "../../tools/recqemu" }
 recshuttle = { path = "../../tools/recshuttle" }
 recpart = { path = "../../tools/recpart" }
+recstrap = { path = "../../tools/recstrap" }
 recab = { path = "../../tools/recab" }
 

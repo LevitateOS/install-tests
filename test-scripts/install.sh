@@ -2,7 +2,8 @@
 # Install: what "the install passed" means, checked on the mounted target in
 # the live system. The harness passes the target recpart reported, the
 # install mode, the variant's os id, the ESP directory recab puts the kernel
-# in (mutable), recab's installation record and its recab-started service link.
+# in (mutable), recab's installation record, its recab-started service link,
+# the system's flavour and the recab desktop app's files.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
@@ -34,6 +35,9 @@ case "$MODE" in
         test_command "No recab on a mutable install" "test ! -e '$TARGET/usr/bin/recab'"
         test_command "No recab-started service on a mutable install" "test ! -e '$TARGET/usr/lib/systemd/system/recab-started.service' && test ! -e '$TARGET/etc/init.d/recab-started'"
         test_command "No /usr/lib/recab on a mutable install" "test ! -e '$TARGET/usr/lib/recab'"
+        for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; do
+            test_command "No /$file (the recab app) on a mutable install" "test ! -e '$TARGET/$file'"
+        done
         ;;
     ab)
         INSTALLATION_FILE="${SCENARIO_INSTALLATION_FILE:?SCENARIO_INSTALLATION_FILE is not set}"
@@ -49,6 +53,11 @@ case "$MODE" in
         test_file_exists "$TARGET/usr/bin/recab" "recab is in root A"
         test_command "recab-started is enabled in root A" "test -L '$TARGET/$STARTED_LINK'"
         test_file_exists "$TARGET/usr/lib/recab/immutable" "Root A's slot marker"
+        if [ "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}" = desktop ]; then
+            for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; do
+                test_file_exists "$TARGET/$file" "/$file (the recab app) in root A"
+            done
+        fi
         # Root B is a copy of root A: mount it read-only beside A and compare.
         ROOT_B=$(sed -n 's/.*"roots": *\[ *"[^"]*" *, *"\([^"]*\)".*/\1/p' "$TARGET$INSTALLATION_FILE" | tr -d '\n')
         B_MOUNT=/run/scenario-root-b

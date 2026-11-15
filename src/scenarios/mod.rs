@@ -665,6 +665,11 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
                 ProductId::Release.flavour().as_str(),
             ),
             ("SCENARIO_DESKTOP_APPS", desktop_apps.as_str()),
+            ("SCENARIO_AB_ONLY_TREE", install_tools::AB_ONLY_TREE),
+            (
+                "SCENARIO_AB_DESKTOP_FILES",
+                distro_contract::AB_DESKTOP_APP_FILES.join(" ").as_str(),
+            ),
             ("SCENARIO_DISPLAY_SERVER", display_server),
         ],
     )?;
@@ -705,6 +710,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         (mode == InstallMode::Ab).then_some(recab::Slot::A),
     );
     let installation_file = recab::installation_file();
+    let ab_desktop_files = distro_contract::AB_DESKTOP_APP_FILES.join(" ");
     let mode_name = mode.to_string();
     let evidence = guest::run_evidence(
         &mut live.remote,
@@ -717,6 +723,8 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
             ("SCENARIO_INSTALLATION_FILE", installation_file.as_str()),
             ("SCENARIO_STARTED_LINK", &started_link),
             ("SCENARIO_OTHER_MOUNT", recab::OTHER_MOUNT),
+            ("SCENARIO_FLAVOUR", h.selection.flavour.as_str()),
+            ("SCENARIO_AB_DESKTOP_FILES", ab_desktop_files.as_str()),
         ],
     )?;
     let target_q = recqemu::shell_quote(&target);

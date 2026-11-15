@@ -9,7 +9,9 @@
 # field and its value), SCENARIO_DESKTOP_APPS (the desktop apps the system
 # carries, each as program:menu-entry-path, separated by spaces) and
 # SCENARIO_DISPLAY_SERVER (the display server the variant compiles from source, by its recipe's name, e.g.
-# xlibre; empty when it comes from a package), and has already logged in over
+# xlibre; empty when it comes from a package), SCENARIO_AB_ONLY_TREE and
+# SCENARIO_AB_DESKTOP_FILES (the recab app's files, below that tree, separated
+# by spaces), and has already logged in over
 # SSH as root.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -58,6 +60,15 @@ for app in $SCENARIO_DESKTOP_APPS; do
     test_command "$program is installed" "command -v $program"
     test_command "$program has its menu entry" "[ -f /$entry ]"
     test_command "$program starts" "QT_QPA_PLATFORM=offscreen $program --version | grep -q '^$program '"
+done
+
+# The recab app is only for an A/B system: the live medium carries it in the
+# tree the A/B boot step copies into the target, not on the live system's PATH.
+section_header "The recab app, for A/B installs only"
+: "${SCENARIO_AB_ONLY_TREE:?SCENARIO_AB_ONLY_TREE is not set}"
+for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; do
+    test_command "/$file is in the A/B-only tree" "[ -f '$SCENARIO_AB_ONLY_TREE/$file' ]"
+    test_command "/$file is not on the live system" "[ ! -e '/$file' ]"
 done
 
 # A display server compiled from source: the one the display manager would
