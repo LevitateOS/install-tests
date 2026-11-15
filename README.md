@@ -33,7 +33,9 @@ Scenarios consume existing artifacts; products are built explicitly with
 Installation and build preflight select release for desktop, and the
 existing base products for base. Installed boot/login/runtime checks select an
 install of that exact flavour; the VM gets the corresponding memory size and
-the guest's actual flavour is checked. Live-only scenarios retain their own
+the guest's actual flavour is checked (every image is the base system; a
+desktop install has Recipe's system receipt from the release medium's default
+software set, a base install has none). Live-only scenarios retain their own
 named product. A wrong explicit run fails rather than substituting the newest
 product or another flavour. Old install records without a flavour establish base only.
 

@@ -3,7 +3,9 @@
 # the live system. The harness passes the target recpart reported, the
 # install mode, the variant's os id, the ESP directory recab puts the kernel
 # in (mutable), recab's installation record, its recab-started service link,
-# the system's flavour and the recab desktop app's files.
+# the system's flavour (desktop: the release medium installed the default
+# software set through Recipe), the receipt Recipe keeps in the root and the
+# recab desktop app's files.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
@@ -18,6 +20,17 @@ section_header "Root filesystem"
 test_file_exists "$TARGET/bin" "Root filesystem extracted"
 test_file_exists "$TARGET/etc/os-release" "os-release present"
 test_command "fstab has a root entry" "awk '\$2==\"/\" {ok=1} END{exit(ok?0:1)}' '$TARGET/etc/fstab'"
+
+if [ "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}" = desktop ]; then
+    section_header "Default software set (Recipe)"
+    RECEIPT="$TARGET/${SCENARIO_RECIPE_RECEIPT:?SCENARIO_RECIPE_RECEIPT is not set}"
+    test_file_exists "$RECEIPT" "Recipe's system receipt"
+    for recipe in ${SCENARIO_DEFAULT_SET:?SCENARIO_DEFAULT_SET is not set}; do
+        test_command "$recipe is in the receipt" "grep -q '\"$recipe\"' '$RECEIPT'"
+    done
+    test_command "No package cache in the installed system" "test ! -e '$TARGET${SCENARIO_RECIPE_CACHE:?SCENARIO_RECIPE_CACHE is not set}'"
+    test_command "No default-set medium tree in the installed system" "test ! -e '$TARGET${SCENARIO_DEFAULT_SET_DIR:?SCENARIO_DEFAULT_SET_DIR is not set}'"
+fi
 
 section_header "Boot"
 case "$(uname -m)" in
@@ -53,7 +66,7 @@ case "$MODE" in
         test_file_exists "$TARGET/usr/bin/recab" "recab is in root A"
         test_command "recab-started is enabled in root A" "test -L '$TARGET/$STARTED_LINK'"
         test_file_exists "$TARGET/usr/lib/recab/immutable" "Root A's slot marker"
-        if [ "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}" = desktop ]; then
+        if [ "$SCENARIO_FLAVOUR" = desktop ]; then
             for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; do
                 test_file_exists "$TARGET/$file" "/$file (the recab app) in root A"
             done

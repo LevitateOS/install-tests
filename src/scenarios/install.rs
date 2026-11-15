@@ -72,17 +72,25 @@ pub fn install(
             shell_quote(&format!("{target}/etc/fstab"))
         ),
     )?;
-    let os = run(
-        "Verify selected installed flavour",
-        format!("cat {t}/etc/os-release"),
+    // Every medium extracts the same base system; the release medium also
+    // carries the default software set, which recsetup's software step below
+    // installs through Recipe.
+    let list = shell_quote(&format!("{}/list", install_tools::DEFAULT_SET_DIR));
+    let carries = run(
+        "Verify the selected medium's default software set",
+        format!("if [ -f {list} ]; then echo yes; else echo no; fi"),
     )?;
+    let desktop = system.flavour == distro_contract::profile::Flavour::Desktop;
     anyhow::ensure!(
-        distro_contract::profile::Flavour::from_os_release(&os)? == system.flavour,
-        "selected installer extracted another system flavour"
+        (carries.trim() == "yes") == desktop,
+        "the selected {} installer {} a default software set",
+        system.flavour,
+        if desktop { "lacks" } else { "carries" }
     );
-    // Exercise the shipped setup frontend. It delegates filesystem policy to
-    // the setup program installed by the system recipe and, for A/B, the boot
-    // layout to the live medium's recab.
+    // Exercise the shipped setup frontend. It installs the medium's default
+    // software set through Recipe (when the medium carries one), delegates
+    // filesystem policy to the setup program installed by the system recipe
+    // and, for A/B, the boot layout to the live medium's recab.
     let mut setup = format!(
         "recsetup apply --root {t} --hostname {} --root-password --passwords-stdin --machine-id --boot {} --kernel {} --options {}",
         shell_quote(&variant.contract.identity.default_hostname),

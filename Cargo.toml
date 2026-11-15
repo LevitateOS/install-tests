@@ -25,4 +25,6 @@ recshuttle = { path = "../../tools/recshuttle" }
 recpart = { path = "../../tools/recpart" }
 recstrap = { path = "../../tools/recstrap" }
 recab = { path = "../../tools/recab" }
+# levitate_recipe::system::RECEIPT: where Recipe keeps a root's system receipt.
+levitate-recipe = { path = "../../tools/recipe" }
 

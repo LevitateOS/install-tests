@@ -20,7 +20,7 @@ test-scripts/
 ├── test-installed-boot.sh      # installed system healthy (no failed service), not live
 ├── automated-login.sh     # a root login runs commands
 ├── runtime.sh             # privilege policy and real Recipe/Ginux native worker execution
-└── desktop-boot.sh        # live desktop up: display manager, graphical session, no failed service
+└── desktop-boot.sh        # release medium: installer up, live network, default software set and its package cache
 ```
 
 ## Rules

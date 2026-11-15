@@ -50,7 +50,6 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
         let release = distro_contract::release::ReleaseManifest::parse(&raw)?;
         let prepared = distro_builder::PreparedProduct::read(run_dir)?.rootfs_source(run_dir);
         if release.identity.distro != variant.contract.identity.os_id
-            || release.identity.flavour != product.flavour()
             || release.identity.init != variant.contract.profile.init
             || release.identity.libc != variant.contract.profile.libc
         {
@@ -97,11 +96,14 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
                 ));
             }
         }
-        let os = std::fs::read_to_string(prepared.join("etc/os-release"))?;
-        if distro_contract::profile::Flavour::from_os_release(&os)? != product.flavour() {
+        // Every product's rootfs is the base system; the release medium's
+        // overlay carries the default software set, a test medium's none.
+        let overlay = distro_builder::PreparedProduct::read(run_dir)?.overlay(run_dir);
+        let list = overlay.join(install_tools::DEFAULT_SET_DIR.trim_start_matches('/')).join("list");
+        if list.is_file() != (product.flavour() == distro_contract::profile::Flavour::Desktop) {
             violations.push(Violation::new(
-                prepared.display().to_string(),
-                "prepared root differs from selected flavour",
+                list.display().to_string(),
+                "the overlay's default software set differs from the selected product",
             ));
         }
         checked.push("canonical release payload hashes and bound kernel/modules");

@@ -615,65 +615,41 @@ fn run_test_install_base(h: &Harness, iso: &Path, run_dir: &Path) -> Result<Stri
     ))
 }
 
-/// Desktop boot: the release ISO boots into the installer, like every
-/// live ISO. No service failed, the image says it is the desktop system, its
-/// display manager is installed but not running (it starts once the system
-/// is installed), the install screen holds tty1, each desktop app
-/// (`DESKTOP_APPS`) is installed, has its menu entry and starts, and a
-/// display server compiled from source (`desktop.display_server_recipe_script`,
-/// XLibre on AcornOS) names itself and has its drivers (`desktop-boot.sh`, over
-/// SSH). The desktop session itself is the installed system's to show.
+/// Desktop boot: the release ISO boots into the installer, like every live
+/// ISO. No service failed, the live session has its network, the install
+/// screen holds tty1, and the medium carries what recsetup's software step
+/// installs offline: the default set's list and recipes, Recipe's package
+/// cache, and the recab app for A/B installs (`desktop-boot.sh`, over SSH).
+/// The desktop itself is installed into the target, never run on the medium.
 fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut live = boot_live(h, ScenarioId::DesktopBoot, iso, None)?;
-    // Each desktop app as program:menu-entry, for the guest script.
-    let desktop_apps = distro_contract::DESKTOP_APPS
-        .iter()
-        .zip(distro_contract::DESKTOP_APP_ENTRIES)
-        .map(|(app, entry)| format!("{app}:{entry}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    // The display server compiled from source, by its recipe's name
-    // (`xlibre` for xlibre.rhai); empty when it comes from a package.
-    let display_server = variant
-        .contract
-        .desktop
-        .display_server_recipe_script
-        .as_deref()
-        .and_then(|script| Path::new(script).file_stem())
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("");
+    let default_set = variant.contract.desktop.recipes.join(" ");
+    let network_service = match variant.contract.profile.init {
+        distro_contract::profile::InitSystem::Systemd => "NetworkManager",
+        distro_contract::profile::InitSystem::Openrc => "networkmanager",
+    };
     let evidence = guest::run_evidence(
         &mut live.remote,
         variant,
         &scenario_evidence(ScenarioId::DesktopBoot)?,
         &[
             (
-                "SCENARIO_DISPLAY_MANAGER",
-                variant.contract.desktop.display_manager.as_str(),
-            ),
-            (
                 "SCENARIO_INSTALL_SPLIT",
                 distro_contract::install_ux::SPLIT,
             ),
-            (
-                "SCENARIO_FLAVOUR_FIELD",
-                distro_contract::profile::REC_FLAVOUR,
-            ),
-            (
-                "SCENARIO_FLAVOUR",
-                ProductId::Release.flavour().as_str(),
-            ),
-            ("SCENARIO_DESKTOP_APPS", desktop_apps.as_str()),
+            ("SCENARIO_NETWORK_SERVICE", network_service),
+            ("SCENARIO_DEFAULT_SET_DIR", install_tools::DEFAULT_SET_DIR),
+            ("SCENARIO_DEFAULT_SET", default_set.as_str()),
+            ("SCENARIO_RECIPE_CACHE", install_tools::RECIPE_CACHE_DIR),
             ("SCENARIO_AB_ONLY_TREE", install_tools::AB_ONLY_TREE),
             (
                 "SCENARIO_AB_DESKTOP_FILES",
                 distro_contract::AB_DESKTOP_APP_FILES.join(" ").as_str(),
             ),
-            ("SCENARIO_DISPLAY_SERVER", display_server),
         ],
     )?;
-    Ok(format!("desktop system boots to the installer with its apps; {evidence}"))
+    Ok(format!("the release medium boots to the installer with its default software set; {evidence}"))
 }
 
 /// Install: the test-install-base ISO installs to a disk in `h.install_mode` with
@@ -687,7 +663,8 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
     let disk_path = run.dir.join(INSTALL_DISK_FILENAME);
     let vars_path = run.dir.join(INSTALL_OVMF_VARS_FILENAME);
     // An A/B layout holds two 20 GiB root slots and at least 4 GiB of state
-    // (recpart's defaults); the desktop system needs larger roots. recpart
+    // (recpart's defaults); a root with the default software set needs larger
+    // roots. recpart
     // assigns remaining space to state. Every image remains sparse.
     let disk_size = match mode {
         InstallMode::Ab if h.selection.flavour == Flavour::Desktop => "96G",
@@ -711,6 +688,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
     );
     let installation_file = recab::installation_file();
     let ab_desktop_files = distro_contract::AB_DESKTOP_APP_FILES.join(" ");
+    let default_set = variant.contract.desktop.recipes.join(" ");
     let mode_name = mode.to_string();
     let evidence = guest::run_evidence(
         &mut live.remote,
@@ -725,6 +703,10 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
             ("SCENARIO_OTHER_MOUNT", recab::OTHER_MOUNT),
             ("SCENARIO_FLAVOUR", h.selection.flavour.as_str()),
             ("SCENARIO_AB_DESKTOP_FILES", ab_desktop_files.as_str()),
+            ("SCENARIO_RECIPE_RECEIPT", levitate_recipe::system::RECEIPT),
+            ("SCENARIO_DEFAULT_SET", default_set.as_str()),
+            ("SCENARIO_RECIPE_CACHE", install_tools::RECIPE_CACHE_DIR),
+            ("SCENARIO_DEFAULT_SET_DIR", install_tools::DEFAULT_SET_DIR),
         ],
     )?;
     let target_q = recqemu::shell_quote(&target);
@@ -762,9 +744,14 @@ fn installed_login(
     let console = vm.console()?;
     wait_installed_boot(console, variant)?;
     console.login("root", expect::root_password(variant), Budget::Login.get())?;
-    let os = console.exec("cat /etc/os-release", Budget::Command.get())?;
+    // The desktop flavour's install got the default software set through
+    // Recipe, whose receipt is in the root; the base install has none.
+    let receipt = console.exec(
+        &format!("test -f /{}", levitate_recipe::system::RECEIPT),
+        Budget::Command.get(),
+    )?;
     anyhow::ensure!(
-        os.success() && Flavour::from_os_release(os.output())? == install.flavour,
+        receipt.success() == (install.flavour == Flavour::Desktop),
         "booted install differs from the selected base/desktop artifact"
     );
     Ok(vm)
