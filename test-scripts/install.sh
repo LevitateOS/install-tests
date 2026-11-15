@@ -51,6 +51,12 @@ case "$MODE" in
         for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; do
             test_command "No /$file (the recab app) on a mutable install" "test ! -e '$TARGET/$file'"
         done
+        if [ "$SCENARIO_FLAVOUR" = desktop ]; then
+            for file in ${SCENARIO_MUTABLE_DESKTOP_FILES:?SCENARIO_MUTABLE_DESKTOP_FILES is not set}; do
+                test_file_exists "$TARGET/$file" "/$file (the Updater app) on a mutable install"
+            done
+        fi
+        test_command "The ESP is mounted at /boot by fstab" "awk '\$2==\"/boot\" && \$3==\"vfat\" {ok=1} END{exit(ok?0:1)}' '$TARGET/etc/fstab'"
         ;;
     ab)
         INSTALLATION_FILE="${SCENARIO_INSTALLATION_FILE:?SCENARIO_INSTALLATION_FILE is not set}"
@@ -66,6 +72,9 @@ case "$MODE" in
         test_file_exists "$TARGET/usr/bin/recab" "recab is in root A"
         test_command "recab-started is enabled in root A" "test -L '$TARGET/$STARTED_LINK'"
         test_file_exists "$TARGET/usr/lib/recab/immutable" "Root A's slot marker"
+        for file in ${SCENARIO_MUTABLE_DESKTOP_FILES:?SCENARIO_MUTABLE_DESKTOP_FILES is not set}; do
+            test_command "No /$file (the Updater app) on an A/B install" "test ! -e '$TARGET/$file'"
+        done
         if [ "$SCENARIO_FLAVOUR" = desktop ]; then
             for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; do
                 test_file_exists "$TARGET/$file" "/$file (the recab app) in root A"

@@ -647,6 +647,11 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
                 "SCENARIO_AB_DESKTOP_FILES",
                 distro_contract::AB_DESKTOP_APP_FILES.join(" ").as_str(),
             ),
+            ("SCENARIO_MUTABLE_ONLY_TREE", install_tools::MUTABLE_ONLY_TREE),
+            (
+                "SCENARIO_MUTABLE_DESKTOP_FILES",
+                distro_contract::MUTABLE_DESKTOP_APP_FILES.join(" ").as_str(),
+            ),
         ],
     )?;
     Ok(format!("the release medium boots to the installer with its default software set; {evidence}"))
@@ -688,6 +693,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
     );
     let installation_file = recab::installation_file();
     let ab_desktop_files = distro_contract::AB_DESKTOP_APP_FILES.join(" ");
+    let mutable_desktop_files = distro_contract::MUTABLE_DESKTOP_APP_FILES.join(" ");
     let default_set = variant.contract.desktop.recipes.join(" ");
     let mode_name = mode.to_string();
     let evidence = guest::run_evidence(
@@ -703,6 +709,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
             ("SCENARIO_OTHER_MOUNT", recab::OTHER_MOUNT),
             ("SCENARIO_FLAVOUR", h.selection.flavour.as_str()),
             ("SCENARIO_AB_DESKTOP_FILES", ab_desktop_files.as_str()),
+            ("SCENARIO_MUTABLE_DESKTOP_FILES", mutable_desktop_files.as_str()),
             ("SCENARIO_RECIPE_RECEIPT", levitate_recipe::system::RECEIPT),
             ("SCENARIO_DEFAULT_SET", default_set.as_str()),
             ("SCENARIO_RECIPE_CACHE", install_tools::RECIPE_CACHE_DIR),

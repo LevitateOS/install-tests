@@ -66,4 +66,12 @@ for file in ${SCENARIO_AB_DESKTOP_FILES:?SCENARIO_AB_DESKTOP_FILES is not set}; 
     test_command "/$file is not on the live system" "[ ! -e '/$file' ]"
 done
 
+# The Updater app is only for a mutable system: the mirror image of the above.
+section_header "The Updater app, for mutable installs only"
+: "${SCENARIO_MUTABLE_ONLY_TREE:?SCENARIO_MUTABLE_ONLY_TREE is not set}"
+for file in ${SCENARIO_MUTABLE_DESKTOP_FILES:?SCENARIO_MUTABLE_DESKTOP_FILES is not set}; do
+    test_command "/$file is in the mutable-only tree" "[ -f '$SCENARIO_MUTABLE_ONLY_TREE/$file' ]"
+    test_command "/$file is not on the live system" "[ ! -e '/$file' ]"
+done
+
 report_results "Desktop Boot"

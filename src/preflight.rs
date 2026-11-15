@@ -54,7 +54,7 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
             || release.identity.libc != variant.contract.profile.libc
         {
             violations.push(Violation::new(
-                "release.json",
+                distro_contract::release::MANIFEST,
                 "selected release does not match distro/product/profile",
             ));
         }
