@@ -107,7 +107,7 @@ impl Evidence {
     /// The scenario's own script, `<key>.sh`, for the scenarios that run one.
     pub fn of(scenario: ScenarioId) -> Option<Self> {
         match scenario {
-            ScenarioId::BuildPreflight | ScenarioId::AbUpdate => None,
+            ScenarioId::BuildPreflight | ScenarioId::OtherRoot => None,
             ScenarioId::TestLiveSsh
             | ScenarioId::TestInstallBase
             | ScenarioId::Install

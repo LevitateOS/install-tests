@@ -16,12 +16,19 @@ test_command "The ESP is mounted at /boot" "findmnt -n /boot >/dev/null"
 test_command "Temporary state is writable" "touch /tmp/.scenario-test && rm /tmp/.scenario-test"
 
 if [ -f /usr/lib/recab/immutable ]; then
-    section_header "Immutable generation"
-    test_command "Already committed generation and sealed boot set verify" "recab --json status | grep -q '\"committed\":true' && recab --json commit"
+    section_header "A/B: the booted root is locked, the other unlocked"
+    test_command "recab reports the booted and the other root" "recab --json status | grep -q '\"other_mount\":\"/run/recab/other\"'"
+    test_command "The other root is mounted read-write" "findmnt -n -o OPTIONS /run/recab/other | tr ',' '\\n' | grep -qx rw"
     test_command "Root mount is read-only" "findmnt -n -o OPTIONS / | tr ',' '\\n' | grep -qx ro"
     test_command "Root device is protected" '[ "$(blockdev --getro "$(findmnt -n -o SOURCE /)")" = 1 ]'
     test_command "Configuration uses the immutable root" '[ "$(findmnt -n -T /etc -o TARGET)" = / ]'
     test_command "System writes are refused" 'if (printf forbidden > /etc/.scenario-refused) 2>/dev/null; then false; else true; fi'
+fi
+
+if [ ! -f /usr/lib/recab/immutable ]; then
+    section_header "Mutable: no recab"
+    test_command "recab is not installed" "! command -v recab >/dev/null && test ! -e /usr/bin/recab"
+    test_command "No /usr/lib/recab" "test ! -e /usr/lib/recab"
 fi
 
 section_header "Installed System Separation"

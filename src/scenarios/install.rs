@@ -22,8 +22,6 @@ const SERIAL_CONSOLE: &str = "console=ttyS0,115200n8";
 pub struct TestSystem<'a> {
     pub mode: InstallMode,
     pub root_password: &'a str,
-    pub update_fixture: bool,
-    pub public_update: Option<crate::update_fixture::PublicUpdate>,
     pub flavour: distro_contract::profile::Flavour,
 }
 
@@ -82,83 +80,9 @@ pub fn install(
         distro_contract::profile::Flavour::from_os_release(&os)? == system.flavour,
         "selected installer extracted another system flavour"
     );
-    if let Some(public) = &system.public_update {
-        anyhow::ensure!(
-            !system.update_fixture && system.mode == InstallMode::Ab,
-            "public mode cannot mount local fixture media or install a mutable system"
-        );
-        let original: distro_contract::release::Policy = serde_json::from_str(&run(
-            "Read original production policy",
-            format!("cat {t}/usr/lib/recab/update-source.json"),
-        )?)?;
-        public.personalize(&original)?;
-        let raw = run(
-            "Bind the exact existing baseline release",
-            format!("cat {LIVE_MEDIA_DIR}/release.json"),
-        )?;
-        let manifest = distro_contract::release::ReleaseManifest::parse(raw.as_bytes())?;
-        // SSH output may append framing whitespace; hash the actual media bytes in the guest.
-        let digest = run(
-            "Hash canonical baseline manifest",
-            format!("sha256sum {LIVE_MEDIA_DIR}/release.json"),
-        )?;
-        anyhow::ensure!(
-            manifest.identity == public.baseline
-                && digest.split_whitespace().next() == Some(public.baseline_release.as_str()),
-            "public descriptor does not identify this exact baseline release"
-        );
-        run(
-            "Capture baseline before candidate policy personalization",
-            format!("recab baseline --root {t}"),
-        )?;
-        let raw = serde_json::to_string(&public.source)?;
-        run(
-            "Personalize candidate discovery before both roots are sealed",
-            format!(
-                "printf '%s' {} > {t}/usr/lib/recab/update-source.json && chmod 644 {t}/usr/lib/recab/update-source.json",
-                shell_quote(&raw)
-            ),
-        )?;
-    }
-    if system.update_fixture {
-        anyhow::ensure!(
-            system.mode == InstallMode::Ab,
-            "update fixture requires an A/B installation"
-        );
-        run("Mount explicit update fixture", "mkdir -p /run/recab-p13-media && mount -o ro /dev/disk/by-label/RECAB_P13 /run/recab-p13-media".into())?;
-        let original: distro_contract::release::Policy = serde_json::from_str(&run(
-            "Read original release policy",
-            format!("cat {t}/usr/lib/recab/update-source.json"),
-        )?)?;
-        let fixture: distro_contract::release::Policy = serde_json::from_str(&run(
-            "Read fixture public source policy",
-            "cat /run/recab-p13-media/source.json".into(),
-        )?)?;
-        fixture.validate()?;
-        anyhow::ensure!(
-            original.channel == fixture.channel
-                && original.sequence == fixture.sequence
-                && fixture.source.is_some()
-                && fixture.trust.is_some(),
-            "fixture must configure this original release, not change its identity/sequence"
-        );
-        run(
-            "Capture original release and seed public test policy",
-            format!(
-                "recab baseline --root {t} && cp /run/recab-p13-media/source.json {t}/usr/lib/recab/update-source.json && cp /run/recab-p13-media/acquire.rhai {t}/usr/share/recab/update-acquire.rhai && umount /run/recab-p13-media"
-            ),
-        )?;
-    }
-    if system.update_fixture || system.public_update.is_some() {
-        run(
-            "Seed local fidelity probes before either root is sealed",
-            format!(
-                r#"mkdir -p {t}/etc/p13-local && printf 'local hardlinks and metadata\n' > {t}/etc/p13-local/hard-a && chmod 640 {t}/etc/p13-local/hard-a && chown 1001:1002 {t}/etc/p13-local/hard-a && ln {t}/etc/p13-local/hard-a {t}/etc/p13-local/hard-b && ln -s hard-a {t}/etc/p13-local/symlink && dd if=/dev/zero of={t}/etc/p13-local/sparse bs=1 count=1 seek=16777215 2>/dev/null && raw=$(printf 'raw-\377') && printf 'non-UTF8 system name\n' > {t}/etc/p13-local/"$raw""#
-            ),
-        )?;
-    }
     // Exercise the shipped setup frontend. It delegates filesystem policy to
-    // the setup program installed by the system recipe and boot state to recab.
+    // the setup program installed by the system recipe and, for A/B, the boot
+    // layout to the live medium's recab.
     let mut setup = format!(
         "recsetup apply --root {t} --hostname {} --root-password --passwords-stdin --machine-id --boot {} --kernel {} --options {}",
         shell_quote(&variant.contract.identity.default_hostname),
@@ -166,9 +90,6 @@ pub fn install(
         shell_quote(&format!("{LIVE_MEDIA_DIR}/{KERNEL_ISO_PATH}")),
         shell_quote(&format!("{VGA_CONSOLE} {SERIAL_CONSOLE}")),
     );
-    if system.update_fixture || system.public_update.is_some() {
-        setup.push_str(" --service sshd");
-    }
     // The installed system's initramfs, the ISO carries
     // it beside its own live one (that one only finds the live medium); recsetup
     // defaults to it, named here so the scenario fails loudly if the ISO lacks it.

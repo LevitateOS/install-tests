@@ -62,8 +62,6 @@ pub struct VmSpec<'a> {
     pub disk: Option<&'a Path>,
     pub vars: Vars<'a>,
     pub ssh: Ssh,
-    /// An image attached as a CD the guest can read but does not boot.
-    pub media: Option<&'a Path>,
     /// Settings for the live init; only live boots read them.
     pub injection: Option<&'a BootInjection>,
     pub serial: Serial,
@@ -85,7 +83,6 @@ impl<'a> VmSpec<'a> {
             disk: None,
             vars: Vars::Temporary,
             ssh: Ssh::None,
-            media: None,
             injection: None,
             serial: Serial::Harness,
             serial_log: None,
@@ -201,9 +198,6 @@ pub fn spawn(spec: VmSpec<'_>) -> Result<Vm> {
         Ssh::Port(port) => Some(port),
     };
     let mut extra_cdroms = Vec::new();
-    if let Some(media) = spec.media {
-        extra_cdroms.push(absolute(media)?);
-    }
     if let Some(injection) = spec.injection {
         extra_cdroms.push(absolute(&injection.iso())?);
     }

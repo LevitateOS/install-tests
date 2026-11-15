@@ -26,16 +26,12 @@ pub enum Budget {
     Command,
     /// Copying and running an evidence script.
     Evidence,
-    /// One install step (recpart, recstrap, recsetup) or an A/B stage.
+    /// One install step (recpart, recstrap, recsetup) or a recab copy or compare.
     Stage,
     /// For the guest to end after `poweroff` or `reboot`.
     Shutdown,
-    /// A degraded A/B trial: boot, start-up, recab's decision and the reboot.
-    TrialReboot,
-    /// For recab-trial to commit a healthy trial.
-    Commit,
-    /// Explicit public payload download/interruption; bounded independently of local staging.
-    PublicDownload,
+    /// For recab-started to make a root that finished starting the boot default.
+    Started,
 }
 
 impl Budget {
@@ -49,9 +45,7 @@ impl Budget {
             Self::Evidence => 120,
             Self::Stage => 900,
             Self::Shutdown => 180,
-            Self::TrialReboot => 300,
-            Self::Commit => 200,
-            Self::PublicDownload => 3600,
+            Self::Started => 300,
         }
     }
 

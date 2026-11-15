@@ -2,7 +2,7 @@
 # Install: what "the install passed" means, checked on the mounted target in
 # the live system. The harness passes the target recpart reported, the
 # install mode, the variant's os id, the ESP directory recab puts the kernel
-# in, recab's state file and its trial service link.
+# in (mutable), recab's installation record and its recab-started service link.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
@@ -31,26 +31,35 @@ case "$MODE" in
         KERNEL_DIR="$TARGET/boot/${SCENARIO_KERNEL_DIR:?SCENARIO_KERNEL_DIR is not set}"
         test_file_exists "$KERNEL_DIR/vmlinuz" "Kernel on the ESP"
         test_file_exists "$KERNEL_DIR/initramfs.img" "Installed initramfs on the ESP"
+        test_command "No recab on a mutable install" "test ! -e '$TARGET/usr/bin/recab'"
+        test_command "No recab-started service on a mutable install" "test ! -e '$TARGET/usr/lib/systemd/system/recab-started.service' && test ! -e '$TARGET/etc/init.d/recab-started'"
+        test_command "No /usr/lib/recab on a mutable install" "test ! -e '$TARGET/usr/lib/recab'"
         ;;
     ab)
-        test_command "Both initial personalized roots and boot sets verify" "recab --json verify-installation --root '$TARGET'"
-        test_file_exists "$TARGET/boot/loader/entries/$OS_ID-a.conf" "Boot entry of slot A"
-        test_file_exists "$TARGET/boot/loader/entries/$OS_ID-b.conf" "Boot entry of slot B"
-        test_command "recab names slot A known-good" "grep -q '\"known_good_slot\": \"A\"' '$TARGET${SCENARIO_STATE_FILE:?SCENARIO_STATE_FILE is not set}'"
+        INSTALLATION_FILE="${SCENARIO_INSTALLATION_FILE:?SCENARIO_INSTALLATION_FILE is not set}"
+        STARTED_LINK="${SCENARIO_STARTED_LINK:?SCENARIO_STARTED_LINK is not set}"
+        test_command "The A/B installation verifies" "recab --json verify-installation --root '$TARGET'"
         for slot in a b; do
-            entry="$TARGET/boot/loader/entries/$OS_ID-$slot.conf"
-            kernel=$(awk '$1=="linux" {print $2}' "$entry")
-            initrd=$(awk '$1=="initrd" {print $2}' "$entry")
-            case "$kernel:$initrd" in
-                /recab/objects/*.linux:/recab/objects/*.initrd)
-                    test_file_exists "$TARGET/boot$kernel" "Generation kernel of slot $slot"
-                    test_file_exists "$TARGET/boot$initrd" "Generation initramfs of slot $slot" ;;
-                *) record_failed "slot $slot lacks its immutable boot objects" ;;
-            esac
+            test_file_exists "$TARGET/boot/loader/entries/$OS_ID-$slot.conf" "Boot entry of root $slot"
+            test_file_exists "$TARGET/boot/$OS_ID-$slot/vmlinuz" "Kernel of root $slot on the ESP"
+            test_file_exists "$TARGET/boot/$OS_ID-$slot/initramfs.img" "Installed initramfs of root $slot on the ESP"
         done
-        ready=$(recab --json status --root "$TARGET" | grep -o '"generation_ready":true' | wc -l)
-        test_command "Both initial generations are ready" "test '$ready' -eq 2"
-        test_command "recab's trial service is enabled" "test -L '$TARGET/${SCENARIO_TRIAL_LINK:?SCENARIO_TRIAL_LINK is not set}'"
+        test_command "Root A is the boot default" "grep -qx 'default $OS_ID-a.conf' '$TARGET/boot/loader/loader.conf'"
+        test_file_exists "$TARGET$INSTALLATION_FILE" "recab's installation record"
+        test_file_exists "$TARGET/usr/bin/recab" "recab is in root A"
+        test_command "recab-started is enabled in root A" "test -L '$TARGET/$STARTED_LINK'"
+        test_file_exists "$TARGET/usr/lib/recab/immutable" "Root A's slot marker"
+        # Root B is a copy of root A: mount it read-only beside A and compare.
+        ROOT_B=$(sed -n 's/.*"roots": *\[ *"[^"]*" *, *"\([^"]*\)".*/\1/p' "$TARGET$INSTALLATION_FILE" | tr -d '\n')
+        B_MOUNT=/run/scenario-root-b
+        if [ -n "$ROOT_B" ] && mkdir -p "$B_MOUNT" && mount -o ro "/dev/disk/by-partuuid/$ROOT_B" "$B_MOUNT"; then
+            recab --json compare --roots "$TARGET" "$B_MOUNT" > /tmp/scenario-compare.json
+            test_command "Root B is a copy of root A" "grep -q '\"differences\":\[\]' /tmp/scenario-compare.json && grep -q '\"more\":0' /tmp/scenario-compare.json"
+            test_command "recab-started is enabled in root B" "test -L '$B_MOUNT/$STARTED_LINK'"
+            umount "$B_MOUNT"
+        else
+            record_failed "root B (PARTUUID '$ROOT_B') could not be mounted to compare it with root A"
+        fi
         ;;
     *) record_failed "unknown install mode '$MODE'" ;;
 esac

@@ -15,4 +15,3 @@ pub mod preflight;
 pub mod qemu;
 pub mod scenarios;
 
-pub mod update_fixture;

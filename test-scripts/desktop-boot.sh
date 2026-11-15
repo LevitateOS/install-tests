@@ -8,9 +8,7 @@
 # to /), SCENARIO_FLAVOUR_FIELD and SCENARIO_FLAVOUR (the image's os-release
 # field and its value), SCENARIO_DESKTOP_APPS (the desktop apps the system
 # carries, each as program:menu-entry-path, separated by spaces) and
-# SCENARIO_DESKTOP_HELPERS (the programs the apps run, which have no menu
-# entry and no window, separated by spaces) and SCENARIO_DISPLAY_SERVER (the
-# display server the variant compiles from source, by its recipe's name, e.g.
+# SCENARIO_DISPLAY_SERVER (the display server the variant compiles from source, by its recipe's name, e.g.
 # xlibre; empty when it comes from a package), and has already logged in over
 # SSH as root.
 
@@ -22,7 +20,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 : "${SCENARIO_FLAVOUR_FIELD:?SCENARIO_FLAVOUR_FIELD is not set}"
 : "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}"
 : "${SCENARIO_DESKTOP_APPS:?SCENARIO_DESKTOP_APPS is not set}"
-: "${SCENARIO_DESKTOP_HELPERS:?SCENARIO_DESKTOP_HELPERS is not set}"
 
 # The install screen's split pane running on tty1.
 install_screen_on_tty1() {
@@ -61,14 +58,6 @@ for app in $SCENARIO_DESKTOP_APPS; do
     test_command "$program is installed" "command -v $program"
     test_command "$program has its menu entry" "[ -f /$entry ]"
     test_command "$program starts" "QT_QPA_PLATFORM=offscreen $program --version | grep -q '^$program '"
-done
-
-# The helpers have no menu entry and no window: each is on PATH and answers
-# --version, which needs no display and no agent program.
-section_header "Desktop helpers"
-for helper in $SCENARIO_DESKTOP_HELPERS; do
-    test_command "$helper is installed" "command -v $helper"
-    test_command "$helper answers --version" "$helper --version | grep -q '^$helper '"
 done
 
 # A display server compiled from source: the one the display manager would
