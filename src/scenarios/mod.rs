@@ -177,7 +177,26 @@ pub enum Outcome {
     Missing(Missing),
     /// It did not run because a scenario it consumes failed in this run.
     NotRun(String),
+    /// It does not apply to its input (login on a system without reclogin):
+    /// why. Not a pass and not a failure; no run is recorded.
+    Skipped(String),
 }
+
+/// The error a scenario returns when it does not apply to its input: why.
+/// `run` turns it into [`Outcome::Skipped`].
+#[derive(Debug, Clone)]
+pub struct Skipped(pub String);
+
+impl std::fmt::Display for Skipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Skipped {}
+
+/// The login screen's program: the login scenario runs only where it exists.
+const RECLOGIND: &str = "/usr/bin/reclogind";
 
 /// What every scenario of one run shares: the variant, loaded once, the
 /// guest login, the extra injection and the install mode.
@@ -273,9 +292,10 @@ pub fn run(
             match run_one(&harness, scenario, options.force) {
                 Ok(Some(evidence)) => Outcome::Passed(evidence),
                 Ok(None) => Outcome::Cached,
-                Err(err) => match err.downcast_ref::<Missing>() {
-                    Some(missing) => Outcome::Missing(missing.clone()),
-                    None => Outcome::Failed(err),
+                Err(err) => match (err.downcast_ref::<Missing>(), err.downcast_ref::<Skipped>()) {
+                    (Some(missing), _) => Outcome::Missing(missing.clone()),
+                    (None, Some(skipped)) => Outcome::Skipped(skipped.0.clone()),
+                    (None, None) => Outcome::Failed(err),
                 },
             }
         };
@@ -302,6 +322,13 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
         );
     }
     let inputs = Inputs::resolve(repo, distro_id, scenario, &h.selection)?;
+    if scenario == ScenarioId::Login
+        && inputs.install.as_ref().is_some_and(|install| install.flavour != Flavour::Desktop)
+    {
+        let why = "login checks the login screen of a desktop install (--flavour desktop); a base install has none";
+        eprintln!("{} {}: {why}", "[SKIP]".yellow(), scenario.title());
+        return Err(Skipped(why.to_string()).into());
+    }
     let fingerprint = scenario_input_fingerprint(variant, scenario, &inputs, h.install_mode)?;
 
     if force {
@@ -354,8 +381,18 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
             ScenarioId::Runtime => run_runtime(h, inputs.install(scenario)?, &run.dir),
             ScenarioId::OtherRoot => other_root::run(h, inputs.install(scenario)?, &run.dir),
             ScenarioId::DesktopBoot => run_desktop_boot(h, inputs.iso(scenario)?),
+            ScenarioId::Login => run_login(h, inputs.install(scenario)?, &run.dir),
         }
     })();
+
+    // A scenario that does not apply leaves no record: nothing was checked.
+    if let Some(skipped) = result.as_ref().err().and_then(|e| e.downcast_ref::<Skipped>()).cloned() {
+        let dir = run.dir.clone();
+        drop(run);
+        fs::remove_dir_all(&dir).with_context(|| format!("removing the skipped run '{}'", dir.display()))?;
+        eprintln!("{} {}: {skipped}", "[SKIP]".yellow(), scenario.title());
+        return Err(skipped.into());
+    }
 
     let result = result.and_then(|evidence| {
         anyhow::ensure!(
@@ -807,6 +844,30 @@ fn run_runtime(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<Stri
     Ok(format!("{tools}; {evidence}"))
 }
 
+/// Login: on a desktop install whose login screen is reclogin, reclogind and the
+/// greeter run (the greeter as the account `reclogin`), console 7 is the shown
+/// console, nothing of SDDM is left, and console 1 still offers a text login
+/// (`login.sh`). An install without `/usr/bin/reclogind` (SDDM is still the
+/// login screen) is skipped with that reason.
+fn run_login(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let variant = &h.variant;
+    let mut vm = installed_login(h, install, ScenarioId::Login, run_dir)?;
+    let console = vm.console()?;
+    if !console.exec(&format!("test -x {RECLOGIND}"), Budget::Command.get())?.success() {
+        return Err(Skipped(format!(
+            "this install has no {RECLOGIND}: its login screen is not reclogin yet (tools/reclogin/dist/recipe/SWITCH.md)"
+        ))
+        .into());
+    }
+    let evidence = guest::run_evidence(
+        console,
+        variant,
+        &scenario_evidence(ScenarioId::Login)?,
+        &[("SCENARIO_LOGIN_CONSOLE", "7"), ("SCENARIO_TEXT_CONSOLE", "1")],
+    )?;
+    Ok(format!("reclogin is the login screen on console 7; {evidence}"))
+}
+
 /// The ISO of the latest successful release build of `product`, and its run.
 pub(crate) fn resolve_release(
     repo: &Path,
@@ -1169,6 +1230,13 @@ fn failure_hints(scenario: ScenarioId) -> &'static [&'static str] {
             "the display manager did not start, or its autologin found no session",
             "a desktop package's setup (accounts, caches, services) did not run in the rootfs recipe",
             "a desktop app is missing, or was compiled against another Qt than the desktop ships",
+        ],
+        ScenarioId::Login => &[
+            "the login-screen group is not installed, or its service is not enabled (display-manager.service, the default runlevel)",
+            "reclogind gave up after three greeter failures: its reason is in the system log and on console 1",
+            "the account reclogin is missing, so the greeter cannot start",
+            "an SDDM package or file is still pinned by a group (plasma, login-screen): regenerate the pins",
+            "console 1's getty is still masked (plasma's configure)",
         ],
     }
 }

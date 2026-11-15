@@ -20,7 +20,8 @@ test-scripts/
 ├── test-installed-boot.sh      # installed system healthy (no failed service), not live
 ├── automated-login.sh     # a root login runs commands
 ├── runtime.sh             # privilege policy and real Recipe/Ginux native worker execution
-└── desktop-boot.sh        # release medium: installer up, live network, default software set and its package cache
+├── desktop-boot.sh        # release medium: installer up, live network, default software set and its package cache
+└── login.sh               # desktop install: reclogin on console 7 (greeter as reclogin), no SDDM, text login on console 1
 ```
 
 ## Rules
