@@ -418,10 +418,10 @@ fn run_one(h: &Harness, scenario: ScenarioId, force: bool) -> Result<Option<Stri
         }
         match scenario {
             ScenarioId::BuildPreflight => bail!("the registry gives build-preflight no ISO"),
-            ScenarioId::LiveBoot => run_live_boot(h, inputs.iso(scenario)?),
-            ScenarioId::LiveTools => run_live_tools(h, inputs.iso(scenario)?, &run.dir),
+            ScenarioId::TestLiveSsh => run_test_live_ssh(h, inputs.iso(scenario)?),
+            ScenarioId::TestInstallBase => run_test_install_base(h, inputs.iso(scenario)?, &run.dir),
             ScenarioId::Install => run_installation(h, inputs.iso(scenario)?, &mut run),
-            ScenarioId::InstalledBoot => run_installed_boot(h, inputs.install(scenario)?, &run.dir),
+            ScenarioId::TestInstalledBoot => run_test_installed_boot(h, inputs.install(scenario)?, &run.dir),
             ScenarioId::AutomatedLogin => {
                 run_automated_login(h, inputs.install(scenario)?, &run.dir)
             }
@@ -666,12 +666,12 @@ pub(crate) fn verify_live_boot_ssh_login(
 }
 
 /// Live boot: the ISO boots, takes an SSH login, and its services run.
-fn run_live_boot(h: &Harness, iso: &Path) -> Result<String> {
-    let mut live = boot_live(h, ScenarioId::LiveBoot, iso, None)?;
+fn run_test_live_ssh(h: &Harness, iso: &Path) -> Result<String> {
+    let mut live = boot_live(h, ScenarioId::TestLiveSsh, iso, None)?;
     let evidence = guest::run_evidence(
         &mut live.remote,
         &h.variant,
-        &scenario_evidence(ScenarioId::LiveBoot)?,
+        &scenario_evidence(ScenarioId::TestLiveSsh)?,
         &[],
     )?;
     Ok(format!("live shell up, SSH login works; {evidence}"))
@@ -679,9 +679,9 @@ fn run_live_boot(h: &Harness, iso: &Path) -> Result<String> {
 
 /// Live tools: every tool the contract lists runs, the install screen's
 /// launcher works, and the live environment is set up (all over SSH).
-fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
+fn run_test_install_base(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
     let variant = &h.variant;
-    let mut live = boot_live(h, ScenarioId::LiveTools, iso, None)?;
+    let mut live = boot_live(h, ScenarioId::TestInstallBase, iso, None)?;
     let remote = &mut live.remote;
     let tools = guest::check_tools(remote, variant, &variant.contract.live_tools())?;
     remote.run(
@@ -699,7 +699,7 @@ fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
     let evidence = guest::run_evidence(
         remote,
         variant,
-        &scenario_evidence(ScenarioId::LiveTools)?,
+        &scenario_evidence(ScenarioId::TestInstallBase)?,
         &[],
     )?;
     Ok(format!(
@@ -707,7 +707,7 @@ fn run_live_tools(h: &Harness, iso: &Path, run_dir: &Path) -> Result<String> {
     ))
 }
 
-/// Desktop boot: the live-desktop ISO boots into the installer, like every
+/// Desktop boot: the release ISO boots into the installer, like every
 /// live ISO. No service failed, the image says it is the desktop system, its
 /// display manager is installed but not running (it starts once the system
 /// is installed), the install screen holds tty1, each desktop app
@@ -756,7 +756,7 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
             ),
             (
                 "SCENARIO_FLAVOUR",
-                ProductId::LiveDesktop.flavour().as_str(),
+                ProductId::Release.flavour().as_str(),
             ),
             ("SCENARIO_DESKTOP_APPS", desktop_apps.as_str()),
             ("SCENARIO_DESKTOP_HELPERS", desktop_helpers.as_str()),
@@ -766,7 +766,7 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     Ok(format!("desktop system boots to the installer with its apps; {evidence}"))
 }
 
-/// Install: the live-tools ISO installs to a disk in `h.install_mode` with
+/// Install: the test-install-base ISO installs to a disk in `h.install_mode` with
 /// the tools it ships, and `install.sh` finds a complete install; the guest
 /// then powers off cleanly.
 fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
@@ -869,13 +869,13 @@ fn installed_login(
 }
 
 /// Installed boot: the installed system reaches its login prompt, starts up
-/// with no failed service, and is not a live system (`installed-boot.sh`).
-fn run_installed_boot(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
-    let mut vm = installed_login(h, install, ScenarioId::InstalledBoot, run_dir)?;
+/// with no failed service, and is not a live system (`test-installed-boot.sh`).
+fn run_test_installed_boot(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
+    let mut vm = installed_login(h, install, ScenarioId::TestInstalledBoot, run_dir)?;
     let evidence = guest::run_evidence(
         vm.console()?,
         &h.variant,
-        &scenario_evidence(ScenarioId::InstalledBoot)?,
+        &scenario_evidence(ScenarioId::TestInstalledBoot)?,
         &[],
     )?;
     Ok(format!(
@@ -1268,14 +1268,14 @@ pub(crate) fn overlay_install(install: &InstallRun, run_dir: &Path) -> Result<(P
 fn failure_hints(scenario: ScenarioId) -> &'static [&'static str] {
     match scenario {
         ScenarioId::BuildPreflight => {
-            &["the base-rootfs ISO or the kernel predates the variant's contract: rebuild them"]
+            &["the test-base-rootfs ISO or the kernel predates the variant's contract: rebuild them"]
         }
-        ScenarioId::LiveBoot => &[
+        ScenarioId::TestLiveSsh => &[
             "the ISO is not built or is corrupted",
             "the kernel panics, or the live initramfs cannot find the live medium",
             "the UEFI firmware finds no boot entry",
         ],
-        ScenarioId::LiveTools => &[
+        ScenarioId::TestInstallBase => &[
             "a tool is missing from the variant's packages or the builder's live tools",
             "a tool is on PATH but fails to run (a missing library)",
         ],
@@ -1284,7 +1284,7 @@ fn failure_hints(scenario: ScenarioId) -> &'static [&'static str] {
             "the disk is too small or partitioning failed",
             "the boot loader or the slot entries were not written",
         ],
-        ScenarioId::InstalledBoot => &[
+        ScenarioId::TestInstalledBoot => &[
             "the boot loader entry, kernel or installed initramfs on the ESP is wrong",
             "kernel modules for the disk are missing",
         ],

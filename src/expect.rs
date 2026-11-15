@@ -108,10 +108,10 @@ impl Evidence {
     pub fn of(scenario: ScenarioId) -> Option<Self> {
         match scenario {
             ScenarioId::BuildPreflight | ScenarioId::AbUpdate => None,
-            ScenarioId::LiveBoot
-            | ScenarioId::LiveTools
+            ScenarioId::TestLiveSsh
+            | ScenarioId::TestInstallBase
             | ScenarioId::Install
-            | ScenarioId::InstalledBoot
+            | ScenarioId::TestInstalledBoot
             | ScenarioId::AutomatedLogin
             | ScenarioId::Runtime
             | ScenarioId::DesktopBoot => Some(Self::named(scenario.key())),

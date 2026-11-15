@@ -4,7 +4,7 @@
 //! (the ISO the run manifest names, the rootfs and overlay images, the live
 //! initramfs, the installed system's initramfs, and for a live-session product its overlay and rootfs trees), and
 //! the contract's runtime checks must pass
-//! (`distro_contract::validate_build_runtime`, `validate_live_boot_runtime`).
+//! (`distro_contract::validate_build_runtime`, `validate_test_live_ssh_runtime`).
 //!
 //! It reads files only: the builder verifies the kernel recipe's output and
 //! each producer its own artifacts when it builds them.
@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use distro_builder::kernel::{KERNEL_IMAGE_PATH, KERNEL_MODULES_DIR, KERNEL_RELEASE_PATH};
 use distro_contract::runs;
 use distro_contract::{
-    BuildRuntimeArtifacts, LiveBootRuntimeArtifacts, ProductId, Variant, Violation,
-    validate_build_runtime, validate_live_boot_runtime,
+    BuildRuntimeArtifacts, TestLiveSshRuntimeArtifacts, ProductId, Variant, Violation,
+    validate_build_runtime, validate_test_live_ssh_runtime,
 };
 use std::path::Path;
 
@@ -129,10 +129,10 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
         ));
     }
     if build.live_session {
-        checked.push("live-boot runtime");
-        violations.extend(validate_live_boot_runtime(
+        checked.push("test-live-ssh runtime");
+        violations.extend(validate_test_live_ssh_runtime(
             &variant.contract,
-            &LiveBootRuntimeArtifacts {
+            &TestLiveSshRuntimeArtifacts {
                 rootfs_image: run_dir.join(&artifacts.rootfs),
                 initramfs_live: run_dir.join(&artifacts.initramfs_live),
                 overlay_image: run_dir.join(&artifacts.overlay),

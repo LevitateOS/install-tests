@@ -30,7 +30,7 @@ Scenarios consume existing artifacts; products are built explicitly with
 
 `cargo xtask test` and `cargo xtask run` accept `--flavour base|desktop`,
 `--release-run /absolute/existing/run` and `--install-run /absolute/existing/run`.
-Installation and build preflight select live-desktop for desktop, and the
+Installation and build preflight select release for desktop, and the
 existing base products for base. Installed boot/login/runtime checks select an
 install of that exact flavour; the VM gets the corresponding memory size and
 the guest's actual flavour is checked. Live-only scenarios retain their own

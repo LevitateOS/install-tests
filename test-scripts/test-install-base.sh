@@ -1,11 +1,11 @@
 #!/bin/sh
-# Live tools: the live environment around the tools. The harness runs every
-# contract tool itself (the live-tools scenario) and then this script.
+# Test install base: the live environment around the tools. The harness runs every
+# contract tool itself (the test-install-base scenario) and then this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 
-scenario_header "Live Tools"
+scenario_header "Test Install Base"
 
 section_header "Live Environment"
 test_command "PATH includes /usr/local/bin" "echo \"\$PATH\" | tr ':' '\\n' | grep -qx '/usr/local/bin'"
@@ -19,4 +19,4 @@ section_header "Live Overlay"
 test_file_exists /live-boot-marker "Live overlay marker"
 test_command "Root is overlayfs over /live-overlay and /rootfs" "mount | grep ' type overlay ' | grep -q 'lowerdir=/live-overlay:/rootfs'"
 
-report_results "Live Tools"
+report_results "Test Install Base"

@@ -13,10 +13,10 @@ test-scripts/
 │   └── init/
 │       ├── systemd.sh     # svc_enabled, svc_running, svc_failed, svc_boot_done,
 │       └── openrc.sh      # svc_pid1, svc_autologin, svc_diagnose, svc_add_failing, svc_remove
-├── live-boot.sh           # live system up, its services running, sshd, a default route
-├── live-tools.sh          # the live environment around the tools, the live overlay
+├── test-live-ssh.sh           # live system up, its services running, sshd, a default route
+├── test-install-base.sh          # the live environment around the tools, the live overlay
 ├── install.sh             # what "the install passed" means, on the mounted target
-├── installed-boot.sh      # installed system healthy (no failed service), not live
+├── test-installed-boot.sh      # installed system healthy (no failed service), not live
 ├── automated-login.sh     # a root login runs commands
 ├── runtime.sh             # privilege policy and real Recipe/Ginux native worker execution
 └── desktop-boot.sh        # live desktop up: display manager, graphical session, no failed service
@@ -37,4 +37,4 @@ test-scripts/
   by these scripts.
 
 To run one by hand in a guest, copy the tree there and set the environment:
-`SCENARIO_PASS_MARKER=OK SCENARIO_INIT=systemd SCENARIO_SERVICES=sshd sh live-boot.sh`.
+`SCENARIO_PASS_MARKER=OK SCENARIO_INIT=systemd SCENARIO_SERVICES=sshd sh test-live-ssh.sh`.

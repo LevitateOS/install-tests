@@ -1,11 +1,11 @@
 #!/bin/sh
-# Installed boot: the installed system came up healthy and is not a live
+# Test installed boot: the installed system came up healthy and is not a live
 # system. Runs on the installed system after a root login.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 
-scenario_header "Installed Boot"
+scenario_header "Test Installed Boot"
 
 section_header "Boot"
 test_command "Start-up finished" "svc_boot_done"

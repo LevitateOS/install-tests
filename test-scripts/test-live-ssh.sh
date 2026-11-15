@@ -1,5 +1,5 @@
 #!/bin/sh
-# Live boot: the live system is up and serves SSH, the same checks on every
+# Test live SSH: the live system is up and serves SSH, the same checks on every
 # variant. The harness passes the services the contract says the live system
 # runs (SCENARIO_SERVICES, init-system unit names) and has already logged in
 # over SSH as root.
@@ -7,7 +7,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/common.sh"
 
-scenario_header "Live Boot"
+scenario_header "Test Live SSH"
 
 section_header "System"
 test_file_exists /proc/cmdline "Kernel command line"
@@ -25,4 +25,4 @@ test_command "root has an SSH directory" "test -d /root/.ssh"
 section_header "Network"
 test_command "A default route exists" "ip route | grep -q '^default '"
 
-report_results "Live Boot"
+report_results "Test Live SSH"
