@@ -15,7 +15,8 @@ test-scripts/
 │       └── openrc.sh      # svc_pid1, svc_autologin, svc_diagnose, svc_add_failing, svc_remove
 ├── test-live-ssh.sh           # live system up, its services running, sshd, a default route
 ├── test-install-base.sh          # the live environment around the tools, the live overlay
-├── install.sh             # what "the install passed" means, on the mounted target
+├── install.sh             # what "the install passed" means, on the mounted target (A/B: both roots, both entries, recab; mutable: no recab)
+├── install-pty.sh         # host-side driver of the live install screen over an SSH-allocated PTY (not run in the guest)
 ├── test-installed-boot.sh      # installed system healthy (no failed service), not live
 ├── automated-login.sh     # a root login runs commands
 ├── runtime.sh             # privilege policy and real Recipe/Ginux native worker execution
@@ -33,6 +34,8 @@ test-scripts/
   `test_file_exists`, which record the result and carry on, so a failing
   script reports every failed check.
 - A check tests a property; it never changes the guest to make itself pass.
+- `other-root` has no script: `src/scenarios/other_root.rs` drives it over the
+  serial console and SSH.
 - The tools themselves are run by the harness from the contract's lists, not
   by these scripts.
 

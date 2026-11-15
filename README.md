@@ -46,10 +46,11 @@ selector builds artifacts or invokes another scenario as a prerequisite.
 
 ## The A/B scenarios
 
-`install` checks, on the mounted target in the live system: an A/B install
+`install` installs the way a user does, with the tools the ISO ships, then
+checks, on the mounted target in the live system: an A/B install
 verifies with `recab verify-installation`, has both boot entries and kernels,
-root A as the boot default, recab, its `recab-started` service and the slot
-marker in root A, and root B equal to root A (`recab compare --roots`). A
+root A as the boot default, recab, its `recab-started` service and the root
+marker file (`/usr/lib/recab/immutable`) in root A, and root B equal to root A (`recab compare --roots`). A
 mutable install has no `usr/bin/recab`, no `recab-started` service and no
 `usr/lib/recab`: only the A/B boot step of `recsetup` puts recab there.
 `test-installed-boot` checks, on an A/B install, that the booted root is
