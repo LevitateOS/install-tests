@@ -19,22 +19,16 @@ section_header "Recipe and Ginux runtime"
 recipe_runtime() {
     local work
     work=$(mktemp -d /var/tmp/recipe-runtime.XXXXXX) || return 1
-    cat > "$work/probe.rhai" <<'RHAI'
-const RECIPE_API = 2;
+    cat > "$work/scenario-native-worker.rhai" <<'RHAI'
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ proof: "file" } };
-let ctx = #{ name: "scenario-native-worker", version: "1", path: RUNTIME.paths.output + "/native-worker-ok" };
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !is_file(ctx.path) { return needs_work(ctx, "missing worker output"); }
-    ctx.outputs = #{ proof: ctx.path }; ready(ctx)
-}
-fn install(ctx) {
-    write_file(ctx.path, RUNTIME.target.arch + "\n");
-    ctx.outputs = #{ proof: ctx.path }; ctx
+const PACKAGE = #{ name: "scenario-native-worker", version: "1" };
+// The worker runs a program and writes its answer: the architecture it runs on.
+fn build(src, out) {
+    write_file(out, trim(exec_output("uname", ["-m"])) + "\n");
 }
 RHAI
-    if ! (cd "$work" && recipe --json --no-activate --build-dir "$work/build" --state-dir "$work/state" install "$work/probe.rhai") > "$work/report.json" 2> "$work/stderr"; then
+    if ! (cd "$work" && recipe --json --no-activate --build-dir "$work/build" --state-dir "$work/state" install "$work/scenario-native-worker.rhai") > "$work/report.json" 2> "$work/stderr"; then
         cat "$work/stderr"; return 1
     fi
     set -- "$work"/state/exports/*/proof
