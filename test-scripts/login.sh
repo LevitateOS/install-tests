@@ -2,7 +2,7 @@
 # Login: reclogin is the login screen of the installed desktop system. Runs
 # on the installed system after a root login on the serial console; the
 # harness runs it only when /usr/bin/reclogind exists (otherwise the
-# scenario is skipped).
+# scenario fails).
 #   SCENARIO_LOGIN_CONSOLE  the console the login screen takes (7)
 #   SCENARIO_TEXT_CONSOLE   the console that keeps its text login (1)
 

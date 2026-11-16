@@ -844,20 +844,17 @@ fn run_runtime(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<Stri
     Ok(format!("{tools}; {evidence}"))
 }
 
-/// Login: on a desktop install whose login screen is reclogin, reclogind and the
-/// greeter run (the greeter as the account `reclogin`), console 7 is the shown
-/// console, nothing of SDDM is left, and console 1 still offers a text login
-/// (`login.sh`). An install without `/usr/bin/reclogind` (SDDM is still the
-/// login screen) is skipped with that reason.
+/// Login: on a desktop install, whose login screen is reclogin (the
+/// `login-screen` group of the default set), reclogind and the greeter run (the
+/// greeter as the account `reclogin`), console 7 is the shown console, nothing
+/// of SDDM is left, and console 1 still offers a text login (`login.sh`). A
+/// desktop install without `/usr/bin/reclogind` fails.
 fn run_login(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut vm = installed_login(h, install, ScenarioId::Login, run_dir)?;
     let console = vm.console()?;
     if !console.exec(&format!("test -x {RECLOGIND}"), Budget::Command.get())?.success() {
-        return Err(Skipped(format!(
-            "this install has no {RECLOGIND}: its login screen is not reclogin yet (tools/reclogin/dist/recipe/SWITCH.md)"
-        ))
-        .into());
+        bail!("this desktop install has no {RECLOGIND}: the login-screen group of the default set is not installed");
     }
     let evidence = guest::run_evidence(
         console,
@@ -1235,7 +1232,7 @@ fn failure_hints(scenario: ScenarioId) -> &'static [&'static str] {
             "the login-screen group is not installed, or its service is not enabled (display-manager.service, the default runlevel)",
             "reclogind gave up after three greeter failures: its reason is in the system log and on console 1",
             "the account reclogin is missing, so the greeter cannot start",
-            "an SDDM package or file is still pinned by a group (plasma, login-screen): regenerate the pins",
+            "a group still pins an SDDM package or file: regenerate the pins (cargo xtask base lock, base groups)",
             "console 1's getty is still masked (plasma's configure)",
         ],
     }
