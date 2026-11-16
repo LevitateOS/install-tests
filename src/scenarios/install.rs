@@ -111,11 +111,11 @@ pub fn install(
             let a = slots
                 .slot_a_device
                 .as_ref()
-                .context("recpart reported no slot A device")?;
+                .context("recpart reported no root A device")?;
             let b = slots
                 .slot_b_device
                 .as_ref()
-                .context("recpart reported no slot B device")?;
+                .context("recpart reported no root B device")?;
             setup.push_str(&format!(
                 " --slot-a {} --slot-b {}",
                 shell_quote(a),

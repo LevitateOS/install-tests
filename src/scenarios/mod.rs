@@ -723,7 +723,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
     };
     let (target, steps) = install::install(&mut live.remote, variant, &system)?;
     let started_link = recab::started_service_link(variant.contract.profile.init);
-    // The directory recab puts the installed kernel in: slot A's, or the one root's.
+    // The directory recab puts the installed kernel in: root A's, or the one root's.
     let kernel_dir = recab::layout_name(
         &variant.contract.identity.os_id,
         (mode == InstallMode::Ab).then_some(recab::Slot::A),
