@@ -829,12 +829,13 @@ fn run_automated_login(h: &Harness, install: &InstallRun, run_dir: &Path) -> Res
     Ok(format!("root logged in; {evidence}"))
 }
 
-/// Runtime: every tool the contract lists for the installed system runs.
+/// Runtime: every tool the contract lists for the installed system runs (a
+/// desktop install also the default set's, such as nmcli).
 fn run_runtime(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<String> {
     let variant = &h.variant;
     let mut vm = installed_login(h, install, ScenarioId::Runtime, run_dir)?;
     let console = vm.console()?;
-    let tools = guest::check_tools(console, variant, &variant.contract.installed_tools())?;
+    let tools = guest::check_tools(console, variant, &variant.contract.installed_tools(install.flavour))?;
     let evidence = guest::run_evidence(
         console,
         variant,
