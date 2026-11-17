@@ -85,7 +85,7 @@ case "$MODE" in
         B_MOUNT=/run/scenario-root-b
         if [ -n "$ROOT_B" ] && mkdir -p "$B_MOUNT" && mount -o ro "/dev/disk/by-partuuid/$ROOT_B" "$B_MOUNT"; then
             recab --json compare --roots "$TARGET" "$B_MOUNT" > /tmp/scenario-compare.json
-            test_command "Root B is a copy of root A" "grep -q '\"differences\":\[\]' /tmp/scenario-compare.json && grep -q '\"more\":0' /tmp/scenario-compare.json"
+            test_command "Root B is a copy of root A" "grep -Eq '\"differences\": *\[\]' /tmp/scenario-compare.json && grep -Eq '\"more\": *0' /tmp/scenario-compare.json"
             test_command "recab-started is enabled in root B" "test -L '$B_MOUNT/$STARTED_LINK'"
             umount "$B_MOUNT"
         else

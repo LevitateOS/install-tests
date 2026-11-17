@@ -17,7 +17,7 @@ test_command "Temporary state is writable" "touch /tmp/.scenario-test && rm /tmp
 
 if [ -f /usr/lib/recab/immutable ]; then
     section_header "A/B: the booted root is locked, the other unlocked"
-    test_command "recab reports the booted and the other root" "recab --json status | grep -q '\"other_mount\":\"/run/recab/other\"'"
+    test_command "recab reports the booted and the other root" "recab --json status | grep -Eq '\"other_mount\": *\"/run/recab/other\"'"
     test_command "The other root is mounted read-write" "findmnt -n -o OPTIONS /run/recab/other | tr ',' '\\n' | grep -qx rw"
     test_command "Root mount is read-only" "findmnt -n -o OPTIONS / | tr ',' '\\n' | grep -qx ro"
     test_command "Root device is protected" '[ "$(blockdev --getro "$(findmnt -n -o SOURCE /)")" = 1 ]'

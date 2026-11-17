@@ -165,10 +165,11 @@ impl Booted {
 
     /// Wait for `recab-started` to make `slot` the boot default.
     fn expect_default(&mut self, slot: Slot) -> Result<()> {
-        let wanted = format!("\"boot_default\":\"{slot}\"");
+        // recab prints pretty JSON, so the colon is followed by a space.
+        let wanted = format!("\"boot_default\": *\"{slot}\"");
         self.run(
             &format!(
-                "i=0; while [ $i -lt 100 ]; do recab --json status | grep -q {} && exit 0; i=$((i+1)); sleep 2; done; exit 1",
+                "i=0; while [ $i -lt 100 ]; do recab --json status | grep -Eq {} && exit 0; i=$((i+1)); sleep 2; done; exit 1",
                 shell_quote(&wanted)
             ),
             Budget::Started,
@@ -237,9 +238,19 @@ pub(super) fn run(h: &Harness, install: &InstallRun, run_dir: &Path) -> Result<S
     sys.expect_default(Slot::B)?;
     sys.run("recab copy", Budget::Stage)?;
     let compared = sys.run("recab --json compare", Budget::Stage)?;
+    // recab prints pretty JSON, so parse it rather than match its spacing.
+    let parsed = serde_json::from_str::<serde_json::Value>(&compared);
+    let equal = parsed.as_ref().is_ok_and(|value| {
+        value["differences"].as_array().is_some_and(Vec::is_empty)
+            && value["more"].as_u64() == Some(0)
+    });
+    let parse_note = match &parsed {
+        Ok(_) => String::new(),
+        Err(error) => format!(" (compare output is not JSON: {error})"),
+    };
     ensure!(
-        compared.contains("\"differences\":[]") && compared.contains("\"more\":0"),
-        "after recab copy the roots still differ:\n{compared}"
+        equal,
+        "after recab copy the roots still differ{parse_note}:\n{compared}"
     );
     sys.sh(&format!(
         "test \"$(cat {other}/{PROBE})\" = {}",
