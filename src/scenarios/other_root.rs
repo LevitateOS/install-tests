@@ -167,9 +167,11 @@ impl Booted {
     fn expect_default(&mut self, slot: Slot) -> Result<()> {
         // recab prints pretty JSON, so the colon is followed by a space.
         let wanted = format!("\"boot_default\": *\"{slot}\"");
+        // The loop runs in a subshell so its `exit` ends only the subshell; a bare
+        // `exit` would log out the guest's interactive login shell.
         self.run(
             &format!(
-                "i=0; while [ $i -lt 100 ]; do recab --json status | grep -Eq {} && exit 0; i=$((i+1)); sleep 2; done; exit 1",
+                "(i=0; while [ $i -lt 100 ]; do recab --json status | grep -Eq {} && exit 0; i=$((i+1)); sleep 2; done; exit 1)",
                 shell_quote(&wanted)
             ),
             Budget::Started,
