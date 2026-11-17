@@ -5,7 +5,7 @@ use crate::qemu::session::{self, Serial, Ssh, Vars, VmSpec};
 use crate::qemu::wait_live_boot;
 use crate::scenarios::{self, Harness, RunOptions, ScenarioId};
 use anyhow::{Context, Result, bail};
-use recqemu::libvirt::runtime_dir;
+use distro_contract::runs;
 use std::path::Path;
 use std::process::Command;
 
@@ -81,7 +81,9 @@ pub fn open(
         })?
     } else {
         let install = scenarios::resolve_install_selected(repo, distro_id, options)?;
-        let dir = runtime_dir().join(format!("{distro_id}-{scenario}"));
+        let dir = runs::distro_output_dir(repo, distro_id)
+            .join("interactive")
+            .join(format!("{distro_id}-{scenario}"));
         std::fs::create_dir_all(&dir).with_context(|| format!("creating '{}'", dir.display()))?;
         let (disk, vars) = scenarios::overlay_install(&install, &dir)?;
         eprintln!(
