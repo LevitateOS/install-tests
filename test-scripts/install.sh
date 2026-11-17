@@ -81,7 +81,7 @@ case "$MODE" in
             done
         fi
         # Root B is a copy of root A: mount it read-only beside A and compare.
-        ROOT_B=$(sed -n 's/.*"roots": *\[ *"[^"]*" *, *"\([^"]*\)".*/\1/p' "$TARGET$INSTALLATION_FILE" | tr -d '\n')
+        ROOT_B=$(tr -d ' \n' < "$TARGET$INSTALLATION_FILE" | sed -n 's/.*"roots":\["[^"]*","\([^"]*\)".*/\1/p')
         B_MOUNT=/run/scenario-root-b
         if [ -n "$ROOT_B" ] && mkdir -p "$B_MOUNT" && mount -o ro "/dev/disk/by-partuuid/$ROOT_B" "$B_MOUNT"; then
             recab --json compare --roots "$TARGET" "$B_MOUNT" > /tmp/scenario-compare.json
