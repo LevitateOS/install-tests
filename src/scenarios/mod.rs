@@ -1053,14 +1053,12 @@ fn scenario_input_fingerprint(
         use std::os::unix::fs::MetadataExt;
         let m = fs::metadata(&install.disk_path)?;
         parts.push(format!(
-            "install-disk:{}:{}:{}:{}:{}:{}:{}",
+            "install-disk:{}:{}:{}:{}:{}",
             m.dev(),
             m.ino(),
             m.len(),
             m.mtime(),
-            m.mtime_nsec(),
-            m.ctime(),
-            m.ctime_nsec()
+            m.mtime_nsec()
         ));
         parts.push(format!(
             "install-manifest:{}",
