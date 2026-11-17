@@ -28,6 +28,9 @@ pub enum Budget {
     Evidence,
     /// One install step (recpart, recstrap, recsetup) or a recab copy or compare.
     Stage,
+    /// The recsetup step of an install: on the desktop flavour it installs
+    /// the default software set (about 33 groups) and copies root A to root B.
+    Setup,
     /// For the guest to end after `poweroff` or `reboot`.
     Shutdown,
     /// For recab-started to make a root that finished starting the boot default.
@@ -44,6 +47,7 @@ impl Budget {
             Self::Command => 30,
             Self::Evidence => 120,
             Self::Stage => 900,
+            Self::Setup => 3600,
             Self::Shutdown => 180,
             Self::Started => 300,
         }

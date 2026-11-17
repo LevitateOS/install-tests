@@ -33,14 +33,14 @@ pub fn install(
     system: &TestSystem<'_>,
 ) -> Result<(String, usize)> {
     let mut steps = 0usize;
-    let mut run = |what: &str, cmd: String| -> Result<String> {
+    let mut run = |what: &str, cmd: String, budget: Budget| -> Result<String> {
         eprintln!("    -> {what}");
         steps += 1;
-        remote.run(what, &cmd, Budget::Stage.get())
+        remote.run(what, &cmd, budget.get())
     };
 
     let disks: DiskListResult =
-        serde_json::from_str(&run("List disks", "recpart list-disks --json".to_string())?)
+        serde_json::from_str(&run("List disks", "recpart list-disks --json".to_string(), Budget::Stage)?)
             .context("parsing recpart list-disks JSON")?;
     let disk = disks
         .disks
@@ -59,18 +59,20 @@ pub fn install(
             shell_quote(&disk),
             system.mode
         ),
+        Budget::Stage,
     )?)
     .context("parsing recpart apply JSON")?;
     let target = applied.handoff.install_target.clone();
     let t = shell_quote(&target);
 
-    run("Extract rootfs (recstrap)", format!("recstrap --force {t}"))?;
+    run("Extract rootfs (recstrap)", format!("recstrap --force {t}"), Budget::Stage)?;
     run(
         "Generate fstab (recfstab)",
         format!(
             "recfstab {t} >> {}",
             shell_quote(&format!("{target}/etc/fstab"))
         ),
+        Budget::Stage,
     )?;
     // Every medium extracts the same base system; the release medium also
     // carries the default software set, which recsetup's software step below
@@ -79,6 +81,7 @@ pub fn install(
     let carries = run(
         "Verify the selected medium's default software set",
         format!("if [ -f {list} ]; then echo yes; else echo no; fi"),
+        Budget::Stage,
     )?;
     let desktop = system.flavour == distro_contract::profile::Flavour::Desktop;
     anyhow::ensure!(
@@ -139,6 +142,7 @@ pub fn install(
             "printf '%s\\n' {} | {setup}",
             shell_quote(&format!("root:{}", system.root_password)),
         ),
+        Budget::Setup,
     )?;
     Ok((target, steps))
 }
