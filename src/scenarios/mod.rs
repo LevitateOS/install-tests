@@ -655,8 +655,10 @@ fn run_test_install_base(h: &Harness, iso: &Path, run_dir: &Path) -> Result<Stri
 /// Desktop boot: the release ISO boots into the installer, like every live
 /// ISO. No service failed, the live session has its network, the install
 /// screen holds tty1, and the medium carries what recsetup's software step
-/// installs offline: the default set's list and recipes, Recipe's package
-/// cache, and the recab app for A/B installs (`desktop-boot.sh`, over SSH).
+/// installs: the default set's list and recipes and the tools that fetch its
+/// package parts (`recupdate`, the release record, the production release
+/// key); the medium itself holds no package cache. It also carries the recab app
+/// for A/B installs (`desktop-boot.sh`, over SSH).
 /// The desktop itself is installed into the target, never run on the medium.
 fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
     let variant = &h.variant;
@@ -679,6 +681,8 @@ fn run_desktop_boot(h: &Harness, iso: &Path) -> Result<String> {
             ("SCENARIO_DEFAULT_SET_DIR", install_tools::DEFAULT_SET_DIR),
             ("SCENARIO_DEFAULT_SET", default_set.as_str()),
             ("SCENARIO_RECIPE_CACHE", install_tools::RECIPE_CACHE_DIR),
+            ("SCENARIO_RELEASE_RECORD", crate::channel::MEDIUM_RELEASE_RECORD),
+            ("SCENARIO_RELEASE_KEYS", crate::channel::MEDIUM_RELEASE_KEYS),
             ("SCENARIO_AB_ONLY_TREE", install_tools::AB_ONLY_TREE),
             (
                 "SCENARIO_AB_DESKTOP_FILES",
@@ -720,6 +724,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
         mode,
         root_password: expect::root_password(variant),
         flavour: h.selection.flavour,
+        release_dir: iso.parent().context("the release ISO has no directory")?,
     };
     let (target, steps) = install::install(&mut live.remote, variant, &system)?;
     let started_link = recab::started_service_link(variant.contract.profile.init);
@@ -750,6 +755,7 @@ fn run_installation(h: &Harness, iso: &Path, run: &mut Run) -> Result<String> {
             ("SCENARIO_RECIPE_RECEIPT", levitate_recipe::system::RECEIPT),
             ("SCENARIO_DEFAULT_SET", default_set.as_str()),
             ("SCENARIO_RECIPE_CACHE", install_tools::RECIPE_CACHE_DIR),
+            ("SCENARIO_FETCHED_PARTS_DIR", install_tools::FETCHED_PARTS_DIR),
             ("SCENARIO_DEFAULT_SET_DIR", install_tools::DEFAULT_SET_DIR),
         ],
     )?;

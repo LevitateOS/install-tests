@@ -8,8 +8,10 @@ use recpart::InstallMode;
 use recpart::types::{ApplyResult, CONFIRM_TOKEN, DiskListResult};
 use recqemu::shell_quote;
 use recshuttle::Remote;
+use std::path::Path;
 
 use crate::budget::Budget;
+use crate::channel::Channel;
 
 use distro_contract::Variant;
 
@@ -23,6 +25,9 @@ pub struct TestSystem<'a> {
     pub mode: InstallMode,
     pub root_password: &'a str,
     pub flavour: distro_contract::profile::Flavour,
+    /// The release run directory (`release.json` and the `parts-*.tar.zst` files), whose
+    /// parts the installer fetches from a local signed channel; the desktop flavour only.
+    pub release_dir: &'a Path,
 }
 
 /// Install onto the guest's first writable disk and leave it mounted at the
@@ -136,13 +141,49 @@ pub fn install(
             setup.push_str(&format!(" --root-device {}", shell_quote(device)));
         }
     }
+    let passwords = format!(
+        "printf '%s\\n' {}",
+        shell_quote(&format!("root:{}", system.root_password))
+    );
+    // The release medium carries no package cache: recsetup's software step fetches the
+    // release's parts with `recupdate fetch-parts`. The scenario gives it a channel on the
+    // host, signed with a throwaway key that is the only one the live system trusts for
+    // this run (recsetup hands its environment on to recupdate).
+    let mut channel = None;
+    let mut env = String::new();
+    if desktop {
+        let gateway = run(
+            "Find the host address the live session reaches (its default gateway)",
+            "ip -4 route show default | awk '{print $3; exit}'".to_string(),
+            Budget::Command,
+        )?;
+        let started = Channel::start(system.release_dir, &gateway)?;
+        run(
+            "Trust the run's throwaway release key in the live session",
+            started.guest_setup(),
+            Budget::Command,
+        )?;
+        env = format!("{} ", started.guest_env());
+        // A part that is missing must stop the software step with the way forward: the
+        // folder holds the signed manifest and none of the parts. recsetup keeps nothing
+        // of a step that failed, so the real run below starts the same plan.
+        let folder = shell_quote(started.guest_manifest_dir());
+        run(
+            "A missing package part stops recsetup with the way forward",
+            format!(
+                "out=$({passwords} | {env}{setup} --parts-from {folder} 2>&1); rc=$?; printf '%s\\n' \"$out\"; \
+                 [ \"$rc\" -ne 0 ] && printf '%s\\n' \"$out\" | grep -q 'Parts still to fetch: parts-' \
+                 && printf '%s\\n' \"$out\" | grep -q -e '--parts-from DIR'"
+            ),
+            Budget::Stage,
+        )?;
+        channel = Some(started);
+    }
     run(
         "Configure and boot the installed system (recsetup)",
-        format!(
-            "printf '%s\\n' {} | {setup}",
-            shell_quote(&format!("root:{}", system.root_password)),
-        ),
+        format!("{passwords} | {env}{setup}"),
         Budget::Setup,
     )?;
+    drop(channel);
     Ok((target, steps))
 }

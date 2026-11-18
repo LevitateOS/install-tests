@@ -145,6 +145,11 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
         ));
     }
 
+    if product.flavour() == distro_contract::profile::Flavour::Desktop {
+        checked.push("release.json and the category parts");
+        check_parts(run_dir, variant, &mut violations);
+    }
+
     if !violations.is_empty() {
         let list: Vec<String> = violations.iter().map(|v| format!("  - {v}")).collect();
         bail!(
@@ -164,4 +169,46 @@ pub fn require_preflight(iso: &Path, product: ProductId, variant: &Variant) -> R
         manifest.run_id,
         checked.join(", ")
     ))
+}
+
+/// The release medium carries no package cache: the installer fetches it as category parts,
+/// which the scenario serves from this run directory. `release.json` must list one part
+/// per `[[desktop.categories]]` entry of the variant, and each `parts-<category>.tar.zst`
+/// must be next to it.
+fn check_parts(run_dir: &Path, variant: &Variant, violations: &mut Vec<Violation>) {
+    let rebuild = format!(
+        "rebuild the release (`cargo xtask build release {}`): it writes release.json with one entry per category of \
+         [[desktop.categories]] and one parts-<category>.tar.zst per category beside the ISO",
+        variant.id
+    );
+    let path = run_dir.join("release.json");
+    let manifest: Option<serde_json::Value> = std::fs::read(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok());
+    let Some(manifest) = manifest else {
+        violations.push(Violation::new(
+            path.display().to_string(),
+            format!("the release's update manifest is missing or not JSON; {rebuild}"),
+        ));
+        return;
+    };
+    let listed: Vec<&str> = manifest["parts"]
+        .as_array()
+        .map(|parts| parts.iter().filter_map(|p| p["category"].as_str()).collect())
+        .unwrap_or_default();
+    for category in &variant.contract.desktop.categories {
+        if !listed.contains(&category.name.as_str()) {
+            violations.push(Violation::new(
+                path.display().to_string(),
+                format!("release.json lists no part for the category '{}'; {rebuild}", category.name),
+            ));
+        }
+        let file = run_dir.join(format!("parts-{}.tar.zst", category.name));
+        if !file.is_file() {
+            violations.push(Violation::new(
+                file.display().to_string(),
+                format!("the category '{}' has no part file; {rebuild}", category.name),
+            ));
+        }
+    }
 }

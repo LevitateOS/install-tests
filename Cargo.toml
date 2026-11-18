@@ -27,4 +27,7 @@ recstrap = { path = "../../tools/recstrap" }
 recab = { path = "../../tools/recab" }
 # levitate_recipe::system::RECEIPT: where Recipe keeps a root's system receipt.
 levitate-recipe = { path = "../../tools/recipe" }
+# The install scenario signs a local copy of the release manifest with a throwaway key.
+ed25519-dalek = "2"
+base64 = "0.22"
 

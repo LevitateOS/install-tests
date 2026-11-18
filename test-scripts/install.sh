@@ -4,7 +4,8 @@
 # install mode, the variant's os id, the ESP directory recab puts the kernel
 # in (mutable), recab's installation record, its recab-started service link,
 # the system's flavour (desktop: the release medium installed the default
-# software set through Recipe), the receipt Recipe keeps in the root and the
+# software set through Recipe, with the package parts fetched into the target
+# disk and removed again), the receipt Recipe keeps in the root and the
 # recab desktop app's files.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +30,7 @@ if [ "${SCENARIO_FLAVOUR:?SCENARIO_FLAVOUR is not set}" = desktop ]; then
         test_command "$recipe is in the receipt" "grep -q '\"$recipe\"' '$RECEIPT'"
     done
     test_command "No package cache in the installed system" "test ! -e '$TARGET${SCENARIO_RECIPE_CACHE:?SCENARIO_RECIPE_CACHE is not set}'"
+    test_command "No fetched package parts left on the target disk" "test ! -e '$TARGET${SCENARIO_FETCHED_PARTS_DIR:?SCENARIO_FETCHED_PARTS_DIR is not set}'"
     test_command "No default-set medium tree in the installed system" "test ! -e '$TARGET${SCENARIO_DEFAULT_SET_DIR:?SCENARIO_DEFAULT_SET_DIR is not set}'"
 fi
 

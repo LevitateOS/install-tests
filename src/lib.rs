@@ -4,10 +4,13 @@
 //! - QEMU sessions and the serial console (`qemu`)
 //! - Named install-test scenarios (`scenarios`) and what each expects of a
 //!   variant (`expect`)
+//! - The signed local release channel the install scenario fetches the release's
+//!   package parts from (`channel`)
 //! - Preflight checks of built artifacts against the variant (`preflight`)
 
 pub mod boot_injection;
 pub mod budget;
+pub mod channel;
 pub mod guest;
 pub mod expect;
 pub mod interactive;

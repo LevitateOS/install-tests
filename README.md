@@ -17,7 +17,10 @@ returns; `cargo xtask --help` is the command reference.
   one is the scenario's status.
 - The one VM launcher, for scenarios and `cargo xtask run`: `src/qemu/session.rs`;
   `cargo xtask run` itself: `src/interactive.rs`.
-- Checks of the ISO before a VM starts: `src/preflight.rs`.
+- Checks of the ISO before a VM starts: `src/preflight.rs` (a desktop release
+  also needs its `release.json` and one `parts-<category>.tar.zst` per category).
+- The local release channel the desktop install fetches its package parts from:
+  `src/channel.rs` (below).
 - Settings handed to a live boot: `src/boot_injection.rs` (with the guest side in
   `recinit::live`).
 - The serial console: `src/qemu/serial/`.
@@ -45,6 +48,20 @@ including explicit historical artifacts. Preflight checks the selected release's
 own canonical payload hashes and kernel/module binding; it does not substitute
 the checkout's current kernel for a selected historical baseline. No input
 selector builds artifacts or invokes another scenario as a prerequisite.
+
+## The desktop install's package parts
+
+The release medium carries no package cache; recsetup's software step runs
+`recupdate fetch-parts`. The install scenario takes the release run directory's
+unsigned `release.json` and `parts-*.tar.zst`, fills each part's url, sha256 and
+size for a local http address, signs the manifest with a throwaway Ed25519 key
+made for the run, and serves it from the host. The live session reaches the host
+through its default gateway (passt maps it to the host's loopback); it trusts
+only the throwaway key (`RECUPDATE_KEYS_DIR`) and reads the channel through
+`RECUPDATE_RELEASE_BASE_URL`, both set on the `recsetup apply` command line.
+Before the real run, one run with `--parts-from` a folder that holds the signed
+manifest and no part must fail with recsetup's list of missing parts and the way
+forward. Nothing goes to the internet.
 
 ## The A/B scenarios
 
