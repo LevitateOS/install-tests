@@ -4,4 +4,4 @@
 pub mod serial;
 pub mod session;
 
-pub use serial::{wait_installed_boot, wait_live_boot, Console};
+pub use serial::{login, wait_installed_boot, wait_live_boot, Console};

@@ -787,7 +787,7 @@ fn installed_login(
     let mut vm = installed_vm(variant, install, scenario, run_dir)?;
     let console = vm.console()?;
     wait_installed_boot(console, variant)?;
-    console.login("root", expect::root_password(variant), Budget::Login.get())?;
+    crate::qemu::login(console, "root", expect::root_password(variant))?;
     // The desktop flavour's install got the default software set through
     // Recipe, whose receipt is in the root; the base install has none.
     let receipt = console.exec(

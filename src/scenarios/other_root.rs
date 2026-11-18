@@ -80,11 +80,7 @@ impl Machine<'_> {
         let variant = &self.h.variant;
         let mut vm = self.spawn()?;
         wait_installed_boot(vm.console()?, variant)?;
-        vm.console()?.login(
-            "root",
-            crate::expect::root_password(variant),
-            Budget::Login.get(),
-        )?;
+        crate::qemu::login(vm.console()?, "root", crate::expect::root_password(variant))?;
         Ok(Booted { vm })
     }
 
