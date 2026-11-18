@@ -156,9 +156,12 @@ impl Drop for Channel {
     }
 }
 
+/// The part files of a release, as (name served under, path on disk).
+type PartFiles = Vec<(String, PathBuf)>;
+
 /// The unsigned `release.json` of `dir` with every part's url, sha256 and size filled for
 /// `base`, as the bytes to sign, and the part files by the name they are served under.
-fn fill_manifest(dir: &Path, base: &str) -> Result<(Vec<u8>, Vec<(String, PathBuf)>)> {
+fn fill_manifest(dir: &Path, base: &str) -> Result<(Vec<u8>, PartFiles)> {
     let path = dir.join("release.json");
     let mut manifest: Value = serde_json::from_slice(
         &fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
